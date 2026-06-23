@@ -685,6 +685,72 @@ time a second release actually happened.
 `https://github.com/Hawi254/chesswright/releases/tag/v0.1.1` is the
 real, current, fixed release.
 
+**v0.1.2, published 2026-06-24 — a second real bug, found by the same
+person actually running v0.1.1 on Linux.** `./chesswright` now started
+the server fine (the v0.1.1 fix held) but then crashed immediately:
+`[pywebview] GTK cannot be loaded ... ModuleNotFoundError: No module
+named 'gi'`, then the same for Qt, then a hard
+`webview.errors.WebViewException`. The exact same `gi`/PyGObject gap
+this project had already hit and fixed ONCE before — but only in the
+local dev venv, never carried over to CI.
+
+Root cause, confirmed by reading what the existing CI steps actually do
+rather than re-guessing: `actions/setup-python@v5` downloads and
+installs its OWN self-contained Python build, completely separate from
+the Linux runner image's pre-installed system `python3` — the one the
+workflow's own `apt-get install python3-gi` step actually populates.
+Every later step (`pip install`, `pyinstaller`) was running against
+that downloaded, separate interpreter, which never had `gi` available
+at all — so PyInstaller's Analysis phase correctly never bundled it; it
+genuinely wasn't importable during the build. The CI build "succeeding"
+every single time up to this point gave no signal this was wrong, since
+nothing had ever checked for `gi`'s actual presence inside the frozen
+output, only that the build process exited zero.
+
+Fixed by applying the exact mechanism already proven once before in
+this project (the local dev venv's own `--system-site-packages` fix),
+now to CI specifically: build a venv from the runner's SYSTEM `python3`
+(not `setup-python`'s separate one) with `--system-site-packages`, then
+prepend its `bin/` to `GITHUB_PATH` so every later Linux step's plain
+`python`/`pip`/`pyinstaller` calls resolve into it automatically with no
+other step needing to change. Windows/macOS are unaffected and keep
+using `setup-python` as before — they have no equivalent `gi`
+dependency (native Edge WebView2 / Cocoa backends instead).
+
+**Verified the mechanism directly before pushing, not just by
+reasoning about it**: confirmed live that a plain venv can't `import
+gi` while one created with `--system-site-packages` can (the precise
+distinction the fix turns on), and confirmed the real local build's
+actual bundle layout (`dist/chesswright/_internal/gi/` genuinely exists
+once the venv is right) before writing the new CI check against that
+same path. Added a permanent regression guard in the `build` job
+itself — checks `dist/chesswright/_internal/gi` exists in the frozen
+bundle and fails the build loudly if not, rather than letting a
+"successful" build ship silently broken again. Confirmed passing on the
+real v0.1.2 run, not assumed: `OK: gi package is present in the frozen
+Linux bundle.` The Linux zip grew from 248MB to 287MB as a direct,
+expected consequence — it now actually contains the GTK/WebKit
+introspection data it was silently missing the whole time.
+
+Same versioning approach as before: `v0.1.1` was already public, so
+this shipped as `v0.1.2` rather than rewriting it.
+`https://github.com/Hawi254/chesswright/releases/tag/v0.1.2` is the
+real, current release — both the executable-permission fix (v0.1.1) and
+the gi/GTK bundling fix (v0.1.2) confirmed intact in the same run.
+
+**Pattern worth naming explicitly, not just noting per-bug**: two real,
+independent CI/packaging bugs in a row were each found only because a
+real person ran the actual artifact on actual Linux hardware, not by
+anything in the build process itself reporting failure. This is a live,
+concrete instance of exactly the verification gap §2 already
+predicted — "a successful CI build proves the artifact exists, not that
+it runs" — playing out before Phase D's pilot group has even formally
+started. The user has deliberately chosen to personally confirm the
+Linux build runs cleanly end-to-end before recruiting anyone (task
+tracking updated accordingly) — a sensible tightening of the original
+plan, not a deviation from it: don't hand a possibly-still-rough build
+to real pilot testers while still finding bugs of this class.
+
 **Phase D — Small pilot group (the explicit checkpoint before wider
 release).**
 
