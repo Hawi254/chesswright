@@ -1,0 +1,28 @@
+.venv/
+__pycache__/
+*.pyc
+.ruff_cache/
+.playwright-mcp/
+.claude/
+.streamlit/secrets.toml
+
+# personal game data, never version-controlled
+*.db
+*.db-wal
+*.db-shm
+# sample.pgn was copied from the original chess-analyzer project during
+# Phase A for local testing convenience and contains real personal game
+# data (the original author's real lichess username plus real opponent
+# usernames) -- caught before ever being pushed (see BRIEF.md S5/Phase C
+# for the full incident) and removed for good. Never re-add a PGN fixture
+# copied from that project; a fresh, synthetic, or freshly-fetched-from-
+# a-real-public-account fixture is fine, copying private personal data
+# into this public repo is not.
+sample.pgn
+
+# local-only generated artifacts
+dist/
+build/
+# NOT *.spec -- chesswright.spec is a real, deliberate, version-controlled
+# build config (Phase C), not a PyInstaller-auto-generated throwaway. A
+# blanket *.spec rule here would silently exclude it from every commit.
