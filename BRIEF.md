@@ -586,6 +586,36 @@ already used throughout Phases A–C's own live verification, e.g.
 `DrNykterstein`) or genuinely synthetic — never a copy of the private
 project's real data.
 
+**CI build matrix confirmed working on real Windows and macOS runners
+(2026-06-24)**, not just locally on Linux — exactly the verification §2
+called "realistic to build without owning the hardware." Triggered
+manually (`gh workflow run`) right after the repo went live, rather than
+waiting for the first tag push, specifically to find out now whether the
+spec file needed Windows/macOS-specific fixes the same way the Linux
+build needed three rounds of real fixes (§ above) — it didn't. All three
+jobs (`ubuntu-latest`, `windows-latest`, `macos-latest`) succeeded
+cleanly on the first attempt: real, correctly-sized artifacts
+(Linux 250MB, Windows 142MB, macOS 174MB zipped — all consistent with a
+genuine PyInstaller bundle, not an empty or truncated one), and every
+warning in all three logs is well-known, benign PyInstaller noise
+(pandas/matplotlib pulling in their own test submodules via
+`collect_all`, matplotlib's font-cache scan failing to parse one macOS
+system font file, generic Windows-library ctypes probes that don't
+apply on macOS/Linux and vice versa) — none of it a real error.
+
+**Still genuinely unverified, and this run does not change that**: per
+§2's own distinction, a successful CI build proves the artifact exists
+and is non-trivial, not that it actually *runs* correctly on that OS —
+code-signing/Gatekeeper warnings, antivirus false-positives on an
+unsigned `.exe`, and real GTK/WebKit-equivalent backend issues on
+Windows/macOS (the kind the Linux build needed real live testing to
+catch, not just a successful build) are exactly what Phase D's pilot
+testers are still needed for. One concrete, named follow-up the warnings
+above point at: `collect_all()` for `pandas`/`matplotlib` is pulling in
+their internal test suites, inflating every platform's bundle size for
+no real benefit — worth excluding (`*.tests`) as a deliberate
+size-optimization pass, not urgent enough to block on now.
+
 **Phase D — Small pilot group (the explicit checkpoint before wider
 release).**
 
