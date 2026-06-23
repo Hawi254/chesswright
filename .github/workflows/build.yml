@@ -102,6 +102,20 @@ jobs:
         with:
           path: artifacts
 
+      # actions/upload-artifact does NOT preserve POSIX permission bits
+      # (a well-documented GitHub Actions limitation, not something this
+      # workflow did wrong specifically) -- the `build` job's PyInstaller
+      # step produces an executable `chesswright` binary with the exec
+      # bit set, but it comes back out of the artifact non-executable.
+      # Confirmed live: v0.1.0's first published release had this exact
+      # bug -- `./chesswright` on Linux failed with "Permission denied".
+      # Re-applying chmod here, before re-zipping, is the standard fix --
+      # Windows' .exe needs no equivalent (NTFS doesn't use exec bits).
+      - name: Restore executable permission lost by upload-artifact
+        run: |
+          chmod +x artifacts/chesswright-linux/chesswright
+          chmod +x artifacts/chesswright-macos/chesswright
+
       # Each platform's artifact is a whole directory (PyInstaller
       # --onedir, not --onefile -- see chesswright.spec's own notes on
       # why) -- zipped here so the release page offers one downloadable
@@ -113,6 +127,24 @@ jobs:
             name="${dir%/}"
             zip -r "../${name}.zip" "$name"
           done
+
+      # Checks the fix actually worked, in THIS run, on the ACTUAL zips
+      # about to be published -- not just trusting that chmod+zip do what
+      # they're supposed to. Downloading a multi-hundred-MB release asset
+      # back down to verify it by hand is real but slow/unreliable from a
+      # typical dev machine; checking it here, right after creating it,
+      # costs nothing extra and catches a regression before it ships
+      # rather than after a pilot tester reports it again.
+      - name: Verify executable permission survived the zip
+        run: |
+          mkdir -p /tmp/permcheck
+          cd /tmp/permcheck
+          unzip -q "$GITHUB_WORKSPACE/chesswright-linux.zip" chesswright-linux/chesswright
+          if [ ! -x chesswright-linux/chesswright ]; then
+            echo "::error::chesswright-linux/chesswright is not executable inside the zip -- the exact bug from v0.1.0's first release."
+            exit 1
+          fi
+          echo "OK: chesswright-linux/chesswright is executable inside the published zip."
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
