@@ -1,0 +1,172 @@
+# Shared configuration for the chess analysis pipeline.
+#
+# Precedence: a CLI flag (e.g. --depth 24) always overrides the value here
+# for that one run. Edit this file to change your everyday defaults so you
+# don't have to repeat flags on every invocation.
+
+database:
+  path: chess.db
+
+player:
+  name: "CHANGE_ME"          # your lichess username, exactly as it appears
+                               # in your profile URL (lichess.org/@/CHANGE_ME).
+                               # Every script reads this -- nothing else in
+                               # the pipeline is hardcoded to a specific player.
+
+engine:
+  path: null          # null = auto-detect (stockfish / /usr/games/stockfish / etc.)
+                        # If Stockfish isn't found, install it yourself from
+                        # https://stockfishchess.org/download/ -- this app
+                        # never bundles or auto-downloads the engine binary
+                        # (see BRIEF.md S1 for why).
+  depth: 14             # fixed search depth per move. 14 is a starting default,
+                          # not a measured fact about YOUR hardware -- the original
+                          # project this pipeline is based on found its "safe-looking"
+                          # depth estimate was off by nearly 4x once measured for real
+                          # (see BRIEF.md). Re-benchmark a small batch on your own
+                          # machine before trusting any full-dataset time estimate.
+  multipv: 3              # candidate lines searched per move. Cost is NOT linear --
+                            # benchmarked ~1.85x-4.3x slower than multipv=1, varies by
+                            # position sharpness. Re-benchmark on your hardware if you
+                            # change this.
+  threads: 4               # Stockfish search threads
+  hash_mb: 256               # Stockfish transposition table size, in MB
+  pv_max_len: 15              # plies of each line's continuation to store (storage vs. detail)
+
+worker:
+  max_games: 100             # stop after this many games per run -- matches a
+                               # batches-of-100 workflow; raise/lower or pass
+                               # --max-games on the CLI to override per-run
+  max_duration: null            # optional wall-clock cap, e.g. "2h" or "45m"; null = no cap
+  consecutive_failure_limit: 3    # stop the batch after this many games fail in a row,
+                                    # rather than silently failing the whole queue
+  commit_every_n_moves: 1           # 1 = commit after every move (safest -- a crash loses
+                                      # at most the in-flight position). Engine search time
+                                      # (seconds/move) dwarfs SQLite commit overhead, so
+                                      # raising this buys negligible speed for real risk --
+                                      # kept configurable for completeness, not recommended
+                                      # to change.
+
+ingestion:
+  variant_policy: skip               # skip | include
+                                       # non-Standard variants (Chess960, Atomic, ...) --
+                                       # standard Stockfish/python-chess assume normal rules,
+                                       # so "include" is only safe if you plan to analyze
+                                       # those games with a variant-aware engine separately.
+  queue_strategy: interleaved_by_year  # interleaved_by_year | chronological | reverse_chronological
+                                         # controls the order worker.py processes games in;
+                                         # interleaved_by_year gives an early representative
+                                         # sample across your whole history rather than only
+                                         # your oldest (or newest) games first.
+  berserk_max_clock_fraction: 0.75       # a color is flagged berserk when its first %clk
+                                           # reading is <= this fraction of base_seconds.
+                                           # 0.75 sits midway between a normal clock (1.0x)
+                                           # and a berserked one (0.5x); not a sensitive
+                                           # tuning knob.
+
+annotation:
+  mate_score_cap_cp: 1000   # any value >=~800 already saturates the win% sigmoid past 97%,
+                              # so this isn't a sensitive tuning knob -- 1000 is just a clean
+                              # round number. Must be ONE shared constant applied symmetrically
+                              # to both ply i and ply i+1, or mate-to-mate comparisons stop
+                              # correctly cancelling to cpl=0 ("always winning" stays cpl=0).
+  thresholds:                 # win%-DROP cutoffs (win_prob_before - win_prob_after), ascending.
+                                # "best" is handled separately (played move == engine's rank-1
+                                # choice), not by these thresholds. Deliberately round starting
+                                # points, not precision-fit -- revisit after seeing the real
+                                # distribution across your own games; no code change needed to retune.
+    excellent: 0.02            # <=2pp drop -- rounding/multipv-tie noise
+    good: 0.05                  # <=5pp drop -- a slightly-suboptimal but reasonable move
+    inaccuracy: 0.10              # <=10pp drop -- small real error
+    mistake: 0.20                  # <=20pp drop -- a real tactical/positional error
+    blunder: 1.00                   # >20pp drop -- game-losing-grade error
+  brilliant_material_threshold_cp: 300  # minimum opponent-recapture material_delta (cp-like
+                                          # x100 units -- 300 = knight/bishop) for a move to
+                                          # qualify as a "brilliant move candidate". Smallest
+                                          # minor-piece sacrifice this flag is tuned to catch.
+  puzzle:                                 # puzzle-candidate sequence detection.
+    trigger_classifications: [mistake, blunder]    # ply T's own classification, reusing the
+                                                      # existing labels above, no new threshold.
+    accurate_classifications: [best, excellent]      # what the OTHER side's follow-up plies
+                                                        # (T+1, T+3, ...) must clear, each in a
+                                                        # row -- "other side" = whichever color
+                                                        # didn't play the trigger blunder; this
+                                                        # is symmetric, not opponent-only.
+    min_sequence_length: 3                             # consecutive accurate follow-up plies
+                                                          # required to flag T as is_puzzle_trigger.
+  best_move_streak:                       # player matches the engine's literal top move
+                                            # (san=best_move_san) for 3+ consecutive own turns.
+                                            # "Competitive margin" = moves.sharpness (the
+                                            # rank1-vs-rank2 gap), read inverted here -- small
+                                            # gap means several moves were genuinely close in
+                                            # quality, so finding the best one was a real choice.
+    min_streak_length: 3                                # the length is always stored as a number
+                                                          # (best_move_streak_length); this only
+                                                          # gates the is_best_move_streak_trigger flag.
+    unforced_competitive_margin_max_cp: 5               # reuses the "flat" sharpness bucket
+                                                          # boundary found useful in the original
+                                                          # project's own data -- a reasonable
+                                                          # starting point, not a universal constant;
+                                                          # revisit against your own data distribution.
+
+analytics:
+  min_sample_size: 5          # groups below this many analyzed games are shown but
+                                 # marked "(small sample)" rather than hidden -- avoid
+                                 # false confidence on noisy small groups, but don't
+                                 # hide data either.
+  min_games_per_group: 5        # opening_family rows need at least this many analyzed
+                                  # games to be included at all -- a single fluke game
+                                  # isn't a "your X repertoire" finding.
+  top_n_openings: 15              # cap the opening breakdown to the N most-played
+                                    # (by analyzed-game count), sorted by ACPL desc.
+  utc_offset_hours: 0                 # your local timezone offset from UTC -- hour_utc is
+                                        # converted by this before bucketing, so "time-of-day"
+                                        # findings are in YOUR local time, not silently UTC.
+                                        # CHANGE_ME -- this default (0) is almost certainly
+                                        # wrong for you.
+  rating_diff_buckets:                  # ascending boundaries, in rating points.
+    underdog_max: -100                   # rating_diff <= -100
+    favorite_min: 100                     # rating_diff >= 100 (between = "even")
+  hour_buckets:                           # local-hour ranges, [start, end).
+    night: [0, 6]
+    morning: [6, 12]
+    afternoon: [12, 18]
+    evening: [18, 24]
+  session_gap_minutes: 30                  # a new "session" starts after this many minutes
+                                             # of inactivity (start-to-start gap between games --
+                                             # simplification, no stored game-duration field;
+                                             # fine for blitz/rapid, less meaningful for
+                                             # correspondence-heavy accounts).
+  losing_streak_cap: 3                       # report buckets 0,1,...,(cap-1),"{cap}+" consecutive
+                                               # prior losses within a session.
+  session_position_cap: 4                     # report buckets 1,2,...,(cap-1),"{cap}+" for
+                                                 # position within a session.
+  middlegame_ply: 24                  # fixed ply checkpoint sampled as "middlegame structure"
+                                         # (12 full moves -- "opening has plausibly finished",
+                                         # not a precise detector).
+  endgame_max_pieces: 6                 # non-pawn, non-king piece COUNT (both sides combined,
+                                          # not point value) at or below this marks "reached an
+                                          # endgame" -- the FIRST ply meeting this per game is
+                                          # that game's "endgame structure".
+  castling_min_plies: 30                    # only count a game toward "did not castle" if it
+                                              # lasted at least this many plies -- a reasonable
+                                              # starting point based on the original project's
+                                              # own real-game distribution (p95 ~= 30); shorter
+                                              # games just hadn't gotten there yet.
+  hallucination_min_material_delta: 300       # the opponent's IMMEDIATE next-ply recapture must
+                                                # gain at least this much material_delta to count
+                                                # as "hung a real piece," not just a pawn.
+  hallucination_max_moves_to_resign: 3          # how many full moves after the hanging-piece
+                                                  # blunder still counts as "resigned right away
+                                                  # or shortly after" -- converted to plies (x2)
+                                                  # since either side may move in between.
+  structure_min_games_per_group: 5        # min games reaching a structure to include it at all.
+  structure_top_n: 15                       # cap each structure report to the N most-frequent.
+
+sync:                                # incremental fetch of new games via lichess's public
+                                       # games-export API. No separate username field --
+                                       # deliberately reuses player.name above so the two
+                                       # can never silently drift apart.
+  request_timeout_seconds: 30          # single HTTP request to lichess; no retry/backoff
+                                         # built in (one small periodic fetch for one personal
+                                         # account is well under any reasonable rate limit).
