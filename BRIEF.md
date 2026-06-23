@@ -616,6 +616,35 @@ their internal test suites, inflating every platform's bundle size for
 no real benefit — worth excluding (`*.tests`) as a deliberate
 size-optimization pass, not urgent enough to block on now.
 
+**First tagged release, v0.1.0, published 2026-06-24** —
+`https://github.com/Hawi254/chesswright/releases/tag/v0.1.0`. This is
+the actual download link the README points pilot testers at. A real
+bug surfaced on the first attempt, not a packaging one this time: the
+tag's first CI run built all three platforms again without issue, but
+the `release` job's final step (creating the GitHub Release itself)
+failed with a 403 — `"Resource not accessible by integration"`. Root
+cause, confirmed by reading the actual error rather than guessing: the
+default `GITHUB_TOKEN` GitHub Actions provides is read-only unless a
+job explicitly requests write access via a `permissions:` block, and
+`build.yml` never had one. Fixed by adding `permissions: contents:
+write` to the `release` job specifically (not the whole workflow — no
+other job needs it). Since the failed attempt never actually created
+anything on GitHub's side (confirmed via `gh release list` before
+touching anything further), moving the not-yet-published `v0.1.0` tag
+to the fixed commit and re-pushing was safe — no public release history
+was rewritten, because none existed yet. The re-run succeeded cleanly;
+the release now has all three platform zips attached at their full,
+correct sizes (Linux 248MB, macOS 173MB, Windows 142MB).
+
+Also published alongside this release: a real end-user `README.md`
+(install steps per platform, the Stockfish-install prerequisite,
+expected SmartScreen/Gatekeeper friction on these unsigned builds and
+how to get past it, the first-run wizard walkthrough, troubleshooting)
+and an MIT `LICENSE` with an explicit note that Stockfish itself stays
+under its own GPLv3 and is never bundled — both didn't exist before
+this point, and Phase D's "published docs only, no hand-holding" design
+depends entirely on them actually existing and being accurate.
+
 **Phase D — Small pilot group (the explicit checkpoint before wider
 release).**
 
