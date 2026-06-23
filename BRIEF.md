@@ -645,6 +645,46 @@ under its own GPLv3 and is never bundled — both didn't exist before
 this point, and Phase D's "published docs only, no hand-holding" design
 depends entirely on them actually existing and being accurate.
 
+**v0.1.1, published 2026-06-24 — a real bug found by actually running
+v0.1.0, not by re-reading the CI logs.** `./chesswright` on Linux failed
+with `bash: ./chesswright: Permission denied`. Root cause, confirmed by
+reading the actual error rather than guessing (same discipline as every
+other fix in this log): `actions/upload-artifact` does not preserve
+POSIX permission bits — a well-documented GitHub Actions limitation,
+not something this workflow did uniquely wrong. The `build` job's
+PyInstaller step sets the executable bit on the `chesswright` binary as
+part of a normal build; that bit was already gone by the time the
+`release` job downloaded the artifact and re-zipped it, so every Linux
+and macOS user who downloaded v0.1.0 would have hit this identically —
+not an edge case.
+
+Fixed two ways, not one: (1) `chmod +x` re-applied to both the Linux and
+macOS binaries immediately before re-zipping in the `release` job: (2) a
+new verification step added in the SAME job that unzips the actual
+about-to-be-published Linux artifact and checks the bit directly,
+failing the build loudly if it's ever missing again — added specifically
+so a regression here gets caught by CI, not by the next pilot tester.
+Confirmed working by reading that step's own log output on the real
+v0.1.1 run, not assumed from the fix alone: `OK: chesswright-linux/
+chesswright is executable inside the published zip.`
+
+**Versioning decision, since this was the first time a real bug needed
+fixing after a release had genuinely gone out (v0.1.0 was already
+published and possibly already downloaded by the time this was
+caught)**: cut `v0.1.1` rather than deleting/moving the `v0.1.0` tag the
+way the earlier (never-actually-published) release-permissions bug was
+handled. Once something is real and public, fix forward with a new
+version — rewriting a tag that's already been pointed at is the
+destructive operation this project's own working norms (§ CLAUDE.md)
+say to avoid without explicit cause. `README.md` needed no change: it
+already links to the general `/releases` page (GitHub shows the latest
+release first) and references the version-agnostic zip filenames
+(`chesswright-linux.zip`, etc.) rather than a pinned version number —
+written that way from the start, which turned out to matter the first
+time a second release actually happened.
+`https://github.com/Hawi254/chesswright/releases/tag/v0.1.1` is the
+real, current, fixed release.
+
 **Phase D — Small pilot group (the explicit checkpoint before wider
 release).**
 
