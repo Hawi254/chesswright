@@ -320,6 +320,35 @@ def fetch_games_to_annotate(conn, game_id=None):
     return conn.execute("SELECT id FROM games WHERE last_analyzed_ply > 0").fetchall()
 
 
+def count_games_awaiting_annotation(conn) -> int:
+    """For the Analysis Jobs dashboard view's "K games awaiting
+    annotation" notification -- NOT the same query as
+    fetch_games_to_annotate() above. That one is deliberately broad (any
+    previously-analyzed game, since annotate_game() is a cheap, idempotent
+    full recompute, safe to re-run against everything every time) -- a
+    notification needs to be narrow instead, or it would permanently read
+    "K games awaiting annotation" for every game ever analyzed, since
+    annotate.py has no separate "already annotated" marker column at all
+    (confirmed by reading annotate_game(): it always recomputes cpl/
+    classification/etc. for every eligible ply, every run).
+
+    The real, narrow signal: a move with its own eval already written
+    (worker.py's job) but no cpl yet (annotate.py's job) -- excluding each
+    game's structurally LAST analyzed ply, which never gets a cpl by
+    design (there's no "next ply" to diff against, see annotate_game()'s
+    `range(len(rows) - 1)`), so it would otherwise read as a permanent
+    false positive on every game ever analyzed."""
+    row = conn.execute("""
+        SELECT COUNT(DISTINCT m.game_id)
+        FROM moves m
+        JOIN games g ON g.id = m.game_id
+        WHERE (m.eval_cp IS NOT NULL OR m.eval_mate IS NOT NULL)
+          AND m.cpl IS NULL
+          AND m.ply < g.num_plies
+    """).fetchone()
+    return row[0]
+
+
 def run(db_path, mate_cap, thresholds, brilliant_threshold, puzzle_cfg, streak_cfg, game_id):
     migrate(db_path)
     conn = get_connection(db_path)

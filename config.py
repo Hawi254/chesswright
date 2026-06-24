@@ -67,13 +67,66 @@ def set_database_path(db_path, path=None):
     path = pathlib.Path(path) if path else DEFAULT_CONFIG_PATH
     text = path.read_text()
     new_text, n = re.subn(
-        r'(?ms)^(database:\n(?:[ \t].*\n)*?)(\s*)path:\s*\S+(\s*#.*)?$',
+        r'(?m)^(database:\n(?:[ \t].*\n)*?)(\s*)path:\s*\S+(\s*#.*)?$',
         lambda m: f'{m.group(1)}{m.group(2)}path: {db_path}{m.group(3) or ""}',
         text, count=1)
     if n == 0:
         raise ValueError(
             f"Could not find a database.path line to update in {path}.")
     path.write_text(new_text)
+
+
+def _set_section_scalar(section: str, key: str, value, path=None):
+    """Same comment-preserving substitution approach as set_player_name/
+    set_database_path/set_engine_path, generalized to any bare (unquoted)
+    scalar under a given top-level section -- used by the Analysis Jobs
+    view (depth/multipv/threads/hash_mb/max_games/max_duration) so each
+    setting doesn't need its own copy-pasted regex function.
+
+    Scoped to `section:`'s OWN `key:` line, not a bare `key:` match
+    anywhere in the file -- config.yaml repeats some key names across
+    sections (`path:` under both `database:` and `engine:`, the exact
+    case set_database_path()/set_engine_path() already had to guard
+    against), so an unscoped regex would silently rewrite whichever
+    same-named key happens to appear first.
+
+    value=None writes the YAML `null` literal (e.g. clearing
+    worker.max_duration back to "no cap"), not the literal string "None".
+
+    (?m) only, deliberately NOT (?ms): with DOTALL, `.` inside
+    `[ \t].*\n` matches newlines too, so the non-greedy line-walk through
+    a long, comment-heavy section (engine: has far more lines than
+    database:'s, which is why set_database_path()'s near-identical
+    pattern never surfaced this) can swallow many lines per iteration and
+    then backtrack character-by-character across the rest of the file --
+    confirmed live: this hung for over a minute against the real
+    engine.depth/worker.max_games before being fixed to plain (?m), where
+    `.` correctly stops at each line's own `\n`."""
+    path = pathlib.Path(path) if path else DEFAULT_CONFIG_PATH
+    text = path.read_text()
+    rendered = "null" if value is None else str(value)
+    pattern = rf'(?m)^({section}:\n(?:[ \t].*\n)*?)(\s*){key}:\s*\S+(\s*#.*)?$'
+    new_text, n = re.subn(
+        pattern,
+        lambda m: f'{m.group(1)}{m.group(2)}{key}: {rendered}{m.group(3) or ""}',
+        text, count=1)
+    if n == 0:
+        raise ValueError(f"Could not find a {section}.{key} line to update in {path}.")
+    path.write_text(new_text)
+
+
+def set_engine_setting(key: str, value, path=None):
+    """key in {depth, multipv, threads, hash_mb} -- NOT path (see
+    set_engine_path(), which needs quoting for Windows paths with
+    spaces; these are all bare numbers)."""
+    _set_section_scalar("engine", key, value, path)
+
+
+def set_worker_setting(key: str, value, path=None):
+    """key in {max_games, max_duration} -- value=None is meaningful for
+    both ("no cap" for either, matching config.yaml's own documented
+    default), not an error case to special-case away."""
+    _set_section_scalar("worker", key, value, path)
 
 
 def set_engine_path(engine_path, path=None):
@@ -88,7 +141,7 @@ def set_engine_path(engine_path, path=None):
     path = pathlib.Path(path) if path else DEFAULT_CONFIG_PATH
     text = path.read_text()
     new_text, n = re.subn(
-        r'(?ms)^(engine:\n(?:[ \t].*\n)*?)(\s*)path:\s*\S+(\s*#.*)?$',
+        r'(?m)^(engine:\n(?:[ \t].*\n)*?)(\s*)path:\s*\S+(\s*#.*)?$',
         lambda m: f'{m.group(1)}{m.group(2)}path: "{engine_path}"{m.group(3) or ""}',
         text, count=1)
     if n == 0:

@@ -40,6 +40,7 @@ import chess.engine
 from migrate import migrate
 from db import get_connection
 from config import load_config, pick
+import joblock
 
 
 def now_iso():
@@ -120,7 +121,7 @@ def score_to_fields(score, mover_color):
 
 
 def analyze_game(conn, engine, game_row, depth, multipv, pv_max_len, commit_every_n_moves,
-                  engine_version, run_id, deadline=None, max_plies=None):
+                  engine_version, run_id, deadline=None, max_plies=None, stop_event=None):
     game_id, num_plies, last_analyzed_ply = game_row
     if num_plies is None or num_plies == 0:
         conn.execute("UPDATE games SET analysis_status='done', analysis_completed_at=? WHERE id=?",
@@ -236,6 +237,15 @@ def analyze_game(conn, engine, game_row, depth, multipv, pv_max_len, commit_ever
             conn.commit()
             return analyzed_this_game, False  # calibration cutoff, not a real batch limit -- game left in_progress, safe to resume later
 
+        if stop_event is not None and stop_event.is_set():
+            conn.commit()
+            # Same per-move checkpoint the deadline check above already uses --
+            # engine.analyse() itself can't be interrupted mid-search, so this
+            # is the finest granularity available, and it's the same one
+            # max_duration already relies on in production (not a new, less-
+            # proven cancellation path). Game left in_progress, safe to resume.
+            return analyzed_this_game, False
+
     conn.commit()
     conn.execute("UPDATE games SET analysis_status='done', analysis_completed_at=? WHERE id=?",
                  (now_iso(), game_id))
@@ -320,14 +330,26 @@ def calibrate(db_path, depth, multipv, threads, hash_mb, pv_max_len, engine_path
 
 def run(db_path, depth, multipv, threads, hash_mb, pv_max_len, engine_path,
          max_games, max_duration_s, consecutive_failure_limit, commit_every_n_moves,
-         on_game_done=None):
+         on_game_done=None, stop_event=None):
     """on_game_done(games_done, n_plies, finished): optional callback fired
     after each game, used by the packaged app's onboarding wizard to drive
     a live progress bar in-process (BRIEF.md Phase C found that launching
     this as a `sys.executable worker.py` subprocess -- fine from a source
     checkout -- breaks once frozen by PyInstaller, since sys.executable
     IS the bundled app itself there, not a separate runnable worker.py).
-    CLI usage (`python3 worker.py ...`) passes nothing, unaffected."""
+    CLI usage (`python3 worker.py ...`) passes nothing, unaffected.
+
+    stop_event: optional threading.Event, checked between moves (same
+    granularity as max_duration's own deadline check) so the Analysis
+    Jobs dashboard view can cancel a batch running on a background thread
+    without killing the process. None for CLI usage -- only Ctrl-C
+    (KeyboardInterrupt, already handled below) applies there.
+
+    joblock.acquire()/release(): closes the cross-process duplicate-run
+    gap named in BRIEF.md S6 -- a second `worker.py` (CLI or another
+    dashboard instance) against the SAME database raises immediately
+    instead of silently running two engine processes against one queue."""
+    joblock.acquire()
     migrate(db_path)
     conn = get_connection(db_path)
 
@@ -338,6 +360,7 @@ def run(db_path, depth, multipv, threads, hash_mb, pv_max_len, engine_path,
         # SystemExit would otherwise silently kill the whole dashboard
         # server it's running inside.
         conn.close()
+        joblock.release()
         raise RuntimeError(
             "Could not find a stockfish binary. Install it (e.g. `sudo apt install stockfish`) "
             "or set engine.path in config.yaml / pass --engine-path.")
@@ -371,6 +394,9 @@ def run(db_path, depth, multipv, threads, hash_mb, pv_max_len, engine_path,
             if deadline is not None and time.monotonic() >= deadline:
                 print(f"Stopping: reached --max-duration ({max_duration_s}s elapsed).")
                 break
+            if stop_event is not None and stop_event.is_set():
+                print("Stopping: cancelled.")
+                break
 
             game_row = fetch_next_game(conn)
             if game_row is None:
@@ -381,7 +407,8 @@ def run(db_path, depth, multipv, threads, hash_mb, pv_max_len, engine_path,
             t0 = time.monotonic()
             try:
                 n_plies, finished = analyze_game(conn, engine, game_row, depth, multipv, pv_max_len,
-                                                  commit_every_n_moves, engine_version, run_id, deadline)
+                                                  commit_every_n_moves, engine_version, run_id, deadline,
+                                                  stop_event=stop_event)
                 consecutive_failures = 0
             except chess.engine.EngineTerminatedError:
                 raise  # engine itself died; not worth continuing the batch
@@ -426,6 +453,7 @@ def run(db_path, depth, multipv, threads, hash_mb, pv_max_len, engine_path,
         conn.commit()
         engine.quit()
         conn.close()
+        joblock.release()
 
     print(f"Session summary: {games_done} games, {total_plies} plies, "
           f"{time.monotonic()-start_time:.1f}s elapsed.")
