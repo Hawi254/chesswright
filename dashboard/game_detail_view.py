@@ -27,7 +27,17 @@ def cached_game_detail(_duck_conn, game_id):
 def _eval_graph(moves, ply, on_point_click_ply_key):
     wp = narrative.player_win_prob_series(moves)
     if len(wp) < 2:
-        return  # too few annotated plies for a meaningful trace -- not an error, just skip
+        # win_prob_after is only populated once BOTH worker.py (analysis)
+        # AND annotate.py (annotation) have run on this game -- a game
+        # that's been analyzed but not yet annotated has zero rows here,
+        # not a partial trace. Previously a silent `return` -- left the
+        # user with no chart and no explanation (reported live as "I
+        # can't see the evaluation graph"). Tell them why, and point at
+        # the Analysis Jobs page, which now surfaces exactly this gap.
+        st.info("Not enough annotated moves yet to draw an evaluation graph for this game. "
+                "It's likely been analyzed but not yet annotated -- check the Analysis Jobs "
+                "page for games awaiting annotation.")
+        return
     fig = go.Figure()
     fig.add_hline(y=0.5, line_dash="dot", line_color=theme.rgba(theme.TEXT, 0.25))
     fig.add_trace(go.Scatter(
