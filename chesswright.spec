@@ -22,6 +22,7 @@ ROOT = pathlib.Path(".").resolve()
 BACKEND_MODULES = [
     "ingest.py", "worker.py", "annotate.py", "analytics.py", "db.py",
     "config.py", "chess_utils.py", "migrate.py", "sync.py", "opening_explorer.py",
+    "db_import.py",
 ]
 
 datas = [(str(ROOT / "config.yaml"), ".")]
@@ -60,7 +61,7 @@ datas += [(str(ROOT / ".streamlit"), ".streamlit")]
 hiddenimports = []
 binaries = []
 for pkg in ["streamlit", "chess", "yaml", "duckdb", "pandas", "matplotlib",
-            "anthropic", "requests", "plotly", "keyring"]:
+            "anthropic", "requests", "plotly", "keyring", "jinja2"]:
     pkg_datas, pkg_binaries, pkg_hiddenimports = collect_all(pkg)
     datas += pkg_datas
     binaries += pkg_binaries

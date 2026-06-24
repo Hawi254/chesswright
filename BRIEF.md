@@ -110,6 +110,84 @@ guarantee.
    enough to build and pilot on, not solid enough to bet a public launch
    on without a second opinion.
 
+**Item 3's deferral, revisited and resolved (2026-06-24) — still
+deferred, not reopened.** The user explicitly delegated this re-decision
+rather than skipping it, given the real legal/distribution surface
+involved. Weighed the actual severity of the practical problem (manual
+install friction, with zero real pilot evidence yet — Phase D hasn't
+started recruiting) against reopening a legal question that still has no
+clean, citable answer regardless of whether a Stockfish fetch is
+silently bundled or an explicit one-click opt-in at runtime: either way,
+this app becomes the one doing the fetching on the user's behalf, which
+is a more conventional distribution act than talking to a binary over
+UCI. §1's original choice to make the GPL question moot by construction
+(never be the distributor, full stop) was deliberate specifically because
+that question has no clean answer — reopening it without a single real
+pilot tester's evidence that guided-manual install is actually
+insufficient would be the same shape of premature risk-taking this
+project has avoided elsewhere (§5's shared-core extraction, §4's
+auto-update infra: solve the cheap part first, defer the risky part until
+there's evidence it's needed). Phase D's own go/no-go design already has
+the right escape valve if this turns out wrong in practice: a diagnosed,
+non-generalizing install failure is an accepted, documented exception,
+not an automatic block (§6 Phase D) — and a *generalizing* failure across
+multiple testers would be the real evidence that justifies revisiting
+this, with data instead of a guess.
+
+**Decision: stop at (a) — no auto-download, ever, at this stage.**
+Built instead, as the piece that improves the experience regardless of
+which way this question landed: structured, OS-specific install
+instructions (package-manager command first, manual download as
+fallback, detected via `platform.system()`) replacing the old flat
+one-sentence-plus-link version, plus a "browse for the engine executable
+you just installed" file picker (`st.file_uploader` — a real native OS
+file-browser dialog on click, the literal ask, even though the
+underlying mechanism is upload-and-copy rather than a path-only native
+dialog; see §1a below for why that's the right tradeoff here) ending in
+a real UCI handshake to confirm it actually works before accepting it.
+
+**Folded into the same decision, not a separate feature: generalized
+beyond Stockfish specifically to any UCI-compatible engine.**
+`worker.py` already talks to the engine via python-chess's
+`chess.engine.SimpleEngine.popen_uci()` — generic UCI, not Stockfish-
+specific code — so this cost almost nothing extra, and it strengthens
+the case for stopping at (a): a pilot tester who already has any other
+UCI engine installed (plausible for the kind of serious player Phase D's
+"real game history" requirement already selects for) can use the app
+immediately with zero new installs, narrowing the actual friction case
+further before ever needing to revisit the legal question. One real bug
+this surfaced and fixed: `worker.py`'s `engine.configure({"Threads":
+..., "Hash": ...})` calls were unconditional, and python-chess raises if
+an engine doesn't report supporting an option name — not every UCI
+engine exposes both (notably some NN-based engines). Fixed with a new
+`configure_supported()` helper that only passes options the connected
+engine actually reports, tested directly against both a real engine and
+fake-engine stubs missing one option. Explicitly NOT claimed to be
+solved by this: per-engine move-classification calibration
+(`annotate.py`'s centipawn-based thresholds hold for other classical
+engines, untested for radically different ones like lc0) — flagged as a
+known limitation, not silently assumed solved.
+
+## 1a. Why upload-and-copy, not a native path-only file dialog
+
+Worth stating outright rather than leaving as an implementation detail:
+a true native OS file-dialog that returns a path string (`pywebview.
+create_file_dialog`) lives in the launcher process, not the Streamlit
+server subprocess the engine-picker page actually runs in —
+`desktop_app.py`'s two-process split (built for an unrelated reason, the
+SIGTERM-handler/main-thread constraint, see §"Phase C — Linux build
+done") has no bridge between them today, and building one is real new
+complexity for a single picker widget. `st.file_uploader` already opens
+a real native OS file-browser on click, satisfying the actual ask from
+the user's side of the screen — the only difference is Streamlit
+receives bytes rather than a path, so those bytes get saved into this
+app's own data directory and the executable bit restored. This is also
+no riskier on the GPL question than referencing the file in place would
+have been: it's the user's own already-legitimately-acquired binary,
+copied locally on their own machine, no third party involved at any
+point — the same reasoning `db_import.py`'s copy-not-reference decision
+(§5) already used for imported databases.
+
 ## 2. Packaging — pywebview-wrapped Streamlit, cross-platform
 
 **Confirmed, not just assumed**: wrapping the existing Streamlit/Plotly

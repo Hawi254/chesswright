@@ -74,3 +74,24 @@ def set_database_path(db_path, path=None):
         raise ValueError(
             f"Could not find a database.path line to update in {path}.")
     path.write_text(new_text)
+
+
+def set_engine_path(engine_path, path=None):
+    """Same targeted-substitution approach as set_database_path(), scoped
+    to the `engine:` section's `path:` key specifically -- the same reason
+    set_database_path() already documents (config.yaml has a SECOND `path:`
+    key, and a naive regex would rewrite whichever one appears first).
+
+    Quoted (unlike set_database_path()'s bare value): a Windows engine path
+    routinely contains spaces (`C:\\Program Files\\...`), which the database
+    path didn't need to handle but this one realistically does."""
+    path = pathlib.Path(path) if path else DEFAULT_CONFIG_PATH
+    text = path.read_text()
+    new_text, n = re.subn(
+        r'(?ms)^(engine:\n(?:[ \t].*\n)*?)(\s*)path:\s*\S+(\s*#.*)?$',
+        lambda m: f'{m.group(1)}{m.group(2)}path: "{engine_path}"{m.group(3) or ""}',
+        text, count=1)
+    if n == 0:
+        raise ValueError(
+            f"Could not find an engine.path line to update in {path}.")
+    path.write_text(new_text)

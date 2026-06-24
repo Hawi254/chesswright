@@ -38,9 +38,13 @@ def migrate(db_path: str):
             conn.commit()
         except sqlite3.OperationalError as e:
             conn.rollback()
-            print(f"  FAILED: {e}", file=sys.stderr)
-            print("  Stopping — fix the migration before continuing.", file=sys.stderr)
-            sys.exit(1)
+            # raise, not sys.exit() -- sys.exit() raises SystemExit, a
+            # BaseException an in-process caller's `except Exception` (e.g.
+            # the Settings-page database-import feature) would NOT catch.
+            # Same bug class worker.run()'s missing-engine case already hit
+            # and fixed once (BRIEF.md Phase C) -- fixed the same way here,
+            # not freshly invented.
+            raise RuntimeError(f"Migration {path.name} failed: {e}") from e
     print(f"Applied {len(pending)} migration(s). Database is up to date.")
 
 
@@ -48,4 +52,9 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--db", default="chess.db")
     args = ap.parse_args()
-    migrate(args.db)
+    try:
+        migrate(args.db)
+    except RuntimeError as e:
+        print(f"  FAILED: {e}", file=sys.stderr)
+        print("  Stopping — fix the migration before continuing.", file=sys.stderr)
+        sys.exit(1)
