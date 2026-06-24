@@ -829,6 +829,52 @@ tracking updated accordingly) — a sensible tightening of the original
 plan, not a deviation from it: don't hand a possibly-still-rough build
 to real pilot testers while still finding bugs of this class.
 
+**Personal pre-pilot validation pass (2026-06-24)** — exactly the
+tightened step named above: the user personally ran the actual frozen
+Linux executable end to end (real desktop session for launch/window
+checks, the proven Xvfb+mss method for the full onboarding wizard and
+every dashboard view's screenshots, since pixel capture of the real
+Wayland session turned out to be blocked by two independent causes —
+Xwayland running rootless with no composited root buffer, and GNOME
+Shell's screenshot D-Bus API rejecting this sandboxed caller). Confirmed
+v0.1.1/v0.1.2's fixes hold on a fresh download of the actual published
+release, not just the build environment. Found and fixed four real
+issues this way, none of them hypothetical:
+1. `dashboard/game_detail_view.py`'s move-classification coloring
+   (`.style.map(...)`) crashed with `AttributeError` — jinja2 missing
+   from `chesswright.spec`'s `collect_all()`, compounded by the only
+   transitively-available jinja2 (3.1.2) being below pandas's own
+   minimum (>=3.1.5) regardless. Fixed by pinning `jinja2==3.1.6`
+   explicitly and adding it to `collect_all()`.
+2. The onboarding wizard's fetch step told a mistyped-username user to
+   "go back," with no actual way to do so anywhere in the wizard. Added
+   a real "Back" button.
+3. Built a database-import feature (`db_import.py` + a new Settings
+   section) for returning users with an existing chesswright-compatible
+   database, scoped and signed off before building: copy-not-reference
+   (same isolation posture as never touching the original
+   `chess-analyzer` project's database), schema-compatibility and
+   foreign-key validation before accepting a file, suggested-not-
+   silently-set username inference. Surfaced and fixed the same
+   `sys.exit(1)`-as-`BaseException` bug class in `migrate.py` that
+   `worker.run()` had already hit once.
+4. Generalized the engine-detection step beyond Stockfish specifically
+   (structured OS-specific install instructions, a file picker accepting
+   any UCI-compatible engine, validated with a real UCI handshake) after
+   explicitly re-deciding §1's auto-download deferral rather than
+   silently reopening or silently leaving it stale — reaffirmed: still no
+   auto-download, pending real Phase D evidence rather than a guess.
+
+**v0.1.3, published 2026-06-24** —
+`https://github.com/Hawi254/chesswright/releases/tag/v0.1.3`. All three
+platform builds succeeded on the first attempt, both CI regression
+guards (executable-bit survival, gi/GTK bundling) confirmed passing in
+the actual run log rather than assumed from a green checkmark, and
+artifact sizes grew consistently with this release's real changes
+(Linux 287MB→**301MB**, macOS 173MB→**181MB**, Windows 142MB→**149MB**)
+rather than looking truncated. No tag-rewrite needed — fix-forward, same
+versioning discipline as v0.1.1/v0.1.2.
+
 **Phase D — Small pilot group (the explicit checkpoint before wider
 release).**
 
