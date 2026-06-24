@@ -22,10 +22,22 @@ def render():
     with st.container(border=True):
         st.subheader("Game end type breakdown")
         overall_df, by_tc_df = cached_game_end_type_breakdown(duck_conn)
-        st.plotly_chart(charts.bar_chart(overall_df, "game_end_type", "n", theme.ACCENT_GOLD),
-                         theme=None)
+        # Guard against an empty/missing result -- e.g. no games with a
+        # known game_end_type analyzed yet. df[x] on a None/empty frame
+        # is exactly what crashed here live (TypeError: 'NoneType' object
+        # is not subscriptable); same "don't render a broken chart on
+        # thin data" philosophy theme.thin_data_message() already exists
+        # for, just never wired up to this panel.
+        if overall_df is None or overall_df.empty:
+            st.info(theme.thin_data_message(0, 1))
+        else:
+            st.plotly_chart(charts.bar_chart(overall_df, "game_end_type", "n", theme.ACCENT_GOLD),
+                             theme=None)
 
     with st.container(border=True):
         st.subheader("Game end type % by time control")
-        st.plotly_chart(charts.heatmap(by_tc_df, theme.SEQUENTIAL_GOLD_COLORSCALE, value_suffix="%"),
-                         theme=None)
+        if by_tc_df is None or by_tc_df.empty:
+            st.info(theme.thin_data_message(0, 1))
+        else:
+            st.plotly_chart(charts.heatmap(by_tc_df, theme.SEQUENTIAL_GOLD_COLORSCALE, value_suffix="%"),
+                             theme=None)
