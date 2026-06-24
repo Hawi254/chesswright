@@ -15,6 +15,10 @@ games, player.name is set) skips straight to a small "add more games"
 shortcut into the fetch/plan/running steps, rather than forcing the
 whole wizard again.
 """
+import pathlib
+import platform
+import stat
+
 import requests
 import streamlit as st
 
@@ -119,27 +123,97 @@ def _render_username():
         _set_step("engine")
 
 
+def _engine_install_instructions():
+    """OS-specific, package-manager-first / manual-download-fallback
+    instructions -- replaces the old flat one-sentence-plus-link version.
+    Never bundles or auto-downloads anything itself (BRIEF.md S1's
+    deliberately-kept GPL boundary -- the app is never the distributor),
+    but the manual path is no longer the ONLY path: most installs are a
+    single recommended command away."""
+    system = platform.system()
+    if system == "Linux":
+        st.markdown(
+            "**Recommended -- via your package manager:** open a terminal "
+            "and run:\n```\nsudo apt install stockfish\n```\n"
+            "(Debian/Ubuntu; use your distro's equivalent -- `dnf install "
+            "stockfish`, `pacman -S stockfish`, etc. -- if different). Then "
+            "click **\"Check again\"** below.\n\n"
+            "**Manual download:** "
+            "[stockfishchess.org/download](https://stockfishchess.org/download/) "
+            "(Linux build) -- extract it, then use the picker below to "
+            "select the extracted binary.")
+    elif system == "Darwin":
+        st.markdown(
+            "**Recommended -- via Homebrew:** open Terminal and run:\n"
+            "```\nbrew install stockfish\n```\n"
+            "(needs [Homebrew](https://brew.sh) installed first). Then "
+            "click **\"Check again\"** below.\n\n"
+            "**Manual download:** "
+            "[stockfishchess.org/download](https://stockfishchess.org/download/) "
+            "(macOS build) -- then use the picker below to select it. "
+            "macOS may block an unsigned binary on first run -- right-click "
+            "it, choose **Open**, then confirm.")
+    else:
+        st.markdown(
+            "**Download:** "
+            "[stockfishchess.org/download](https://stockfishchess.org/download/) "
+            "(Windows build, a `.zip`). Extract it anywhere (e.g. your "
+            "Desktop), then use the picker below to select the `.exe` "
+            "file inside the extracted folder.")
+
+
+def _render_engine_picker():
+    """Generalized beyond Stockfish specifically: ANY UCI-compatible chess
+    engine the user already has works, since worker.py talks to it over
+    the standard UCI protocol either way (chess.engine.SimpleEngine.
+    popen_uci -- not Stockfish-specific code). Stockfish is recommended
+    (the instructions above point there), not required. Saved into this
+    app's own data directory (same copy-not-reference posture db_import.py
+    already uses) rather than referenced in place, and validated with a
+    real UCI handshake before being accepted -- rejects the wrong file
+    with a clear message instead of failing on the next real analysis
+    run."""
+    uploaded = st.file_uploader(
+        "Already have a UCI chess engine installed (Stockfish or another)? "
+        "Browse for its executable file:")
+    if uploaded is None:
+        return
+    engines_dir = pathlib.Path(config_module.DEFAULT_CONFIG_PATH).parent / "engines"
+    engines_dir.mkdir(parents=True, exist_ok=True)
+    dest = engines_dir / uploaded.name
+    dest.write_bytes(uploaded.getvalue())
+    dest.chmod(dest.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+    with st.spinner("Checking it speaks UCI..."):
+        try:
+            engine_name = worker.validate_engine_path(str(dest))
+        except RuntimeError as e:
+            dest.unlink(missing_ok=True)
+            st.error(str(e))
+            return
+    config_module.set_engine_path(str(dest))
+    st.success(f"Confirmed: {engine_name}.")
+    _set_step("fetch")
+
+
 def _render_engine():
-    st.subheader("Step 2 of 5: Stockfish")
+    st.subheader("Step 2 of 5: chess engine")
     path = worker.find_engine_path(None)
     if path:
-        st.success(f"Found Stockfish at `{path}`.")
+        st.success(f"Found a chess engine at `{path}`.")
         if st.button("Continue", type="primary"):
             _set_step("fetch")
     else:
-        st.error("No Stockfish installation found on this computer.")
-        st.markdown(
-            "This app never bundles or auto-downloads the engine itself "
-            "(it's a separate, independently-licensed project) -- please "
-            "install it yourself, then come back:\n\n"
-            "- **Windows / macOS / Linux**: download from "
-            "[stockfishchess.org/download](https://stockfishchess.org/download/)\n"
-            "- **Linux (apt-based)**: `sudo apt install stockfish`\n"
-            "- **macOS (Homebrew)**: `brew install stockfish`\n\n"
-            "Once installed, make sure it's on your system PATH (or set "
-            "`engine.path` directly in `config.yaml`), then click below.")
+        st.error("No chess engine found on this computer.")
+        st.caption(
+            "This app never bundles or auto-downloads an engine itself -- "
+            "Stockfish (recommended) and any other UCI-compatible engine "
+            "are separate, independently-licensed projects.")
+        _engine_install_instructions()
         if st.button("I've installed it -- check again"):
             st.rerun()
+        st.divider()
+        _render_engine_picker()
 
 
 def _render_fetch(db_path):
@@ -150,7 +224,14 @@ def _render_fetch(db_path):
         f"lichess (`{cfg['player']['name']}`) -- enough to measure real timing "
         "and give you a starter batch to analyze. This does not touch lichess "
         "in any way other than a normal read of your public game history.")
-    if st.button("Fetch my games", type="primary"):
+    back_col, fetch_col = st.columns([1, 3])
+    with back_col:
+        if st.button("Back"):
+            _set_step("username")
+            st.rerun()
+    with fetch_col:
+        fetch_clicked = st.button("Fetch my games", type="primary")
+    if fetch_clicked:
         with st.spinner("Talking to lichess..."):
             try:
                 sync.run(db_path, cfg["player"]["name"], cfg["ingestion"]["queue_strategy"],

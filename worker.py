@@ -69,6 +69,37 @@ def find_engine_path(explicit_path):
     return None
 
 
+def configure_supported(engine, desired: dict):
+    """Like engine.configure(desired), but silently drops any option name
+    the connected engine doesn't actually report supporting, rather than
+    letting python-chess raise. "Threads"/"Hash" are near-universal across
+    classical UCI engines (Stockfish, Komodo, Ethereal, ...) but not every
+    UCI-compliant engine exposes both -- some NN-based engines don't -- and
+    this app now accepts ANY UCI engine the user points it at (the
+    Settings/onboarding engine picker), not just Stockfish specifically."""
+    supported = {name: value for name, value in desired.items() if name in engine.options}
+    if supported:
+        engine.configure(supported)
+
+
+def validate_engine_path(path: str) -> str:
+    """Confirms `path` is a real, working UCI engine by actually performing
+    the UCI handshake (popen_uci already does this) -- returns the engine's
+    self-reported name (engine.id["name"]), or raises RuntimeError with a
+    clear message on any failure. Used by the engine-picker UI (onboarding
+    + Settings) to reject a wrong file before it's accepted as engine.path,
+    rather than discovering the problem on the next real analysis run."""
+    try:
+        engine = chess.engine.SimpleEngine.popen_uci(path)
+    except Exception as e:
+        raise RuntimeError(
+            f"Couldn't start this as a UCI chess engine: {e}") from e
+    try:
+        return engine.id.get("name", "unknown engine")
+    finally:
+        engine.quit()
+
+
 def fetch_next_game(conn):
     row = conn.execute("""
         SELECT id, num_plies, last_analyzed_ply
@@ -247,7 +278,7 @@ def calibrate(db_path, depth, multipv, threads, hash_mb, pv_max_len, engine_path
         raise RuntimeError("No pending games to calibrate against -- fetch a few real games first.")
 
     engine = chess.engine.SimpleEngine.popen_uci(path)
-    engine.configure({"Threads": threads, "Hash": hash_mb})
+    configure_supported(engine, {"Threads": threads, "Hash": hash_mb})
     engine_version = engine.id.get("name", "unknown")
 
     cur = conn.execute("""
@@ -312,7 +343,7 @@ def run(db_path, depth, multipv, threads, hash_mb, pv_max_len, engine_path,
             "or set engine.path in config.yaml / pass --engine-path.")
 
     engine = chess.engine.SimpleEngine.popen_uci(path)
-    engine.configure({"Threads": threads, "Hash": hash_mb})
+    configure_supported(engine, {"Threads": threads, "Hash": hash_mb})
     engine_version = engine.id.get("name", "unknown")
     print(f"Engine: {engine_version} | depth={depth} multipv={multipv} threads={threads} hash={hash_mb}MB "
           f"| max_games={max_games} max_duration={max_duration_s}")

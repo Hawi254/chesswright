@@ -5,9 +5,13 @@ project's "set ANTHROPIC_API_KEY and restart" rule, adapted for an
 installer who isn't assumed to be comfortable with environment
 variables or a terminal at all.
 """
+import pathlib
+
 import streamlit as st
 
 import api_key_store
+import config
+import db_import
 
 
 def render():
@@ -67,3 +71,53 @@ def render():
         api_key_store.clear_api_key()
         st.success("Saved key removed.")
         st.rerun()
+
+    st.divider()
+    st.subheader("Import an existing database")
+    st.caption(
+        "For returning users: point at a chesswright-compatible database "
+        "file already on this computer (e.g. from a previous install, or "
+        "built by running the original open backend standalone) instead "
+        "of starting fresh through the onboarding wizard. The file is "
+        "copied into this app's own data directory -- the original file is "
+        "never modified or referenced afterward.")
+
+    pending_path = st.session_state.get("import_pending_path")
+
+    if not pending_path:
+        src = st.text_input("Path to the database file on this computer",
+                             placeholder="/home/you/some-folder/chess.db")
+        if st.button("Import"):
+            try:
+                dest_dir = pathlib.Path(config.DEFAULT_CONFIG_PATH).parent
+                imported_path = db_import.import_database(pathlib.Path(src.strip()), dest_dir)
+            except db_import.DatabaseImportError as e:
+                st.error(str(e))
+            else:
+                st.session_state["import_pending_path"] = str(imported_path)
+                st.session_state["import_suggested_username"] = \
+                    db_import.suggest_player_name(imported_path) or ""
+                st.rerun()
+    else:
+        st.success(f"Imported and migrated: `{pending_path}`.")
+        suggested = st.session_state.get("import_suggested_username", "")
+        st.caption(
+            "Confirm whose account this database belongs to -- the most "
+            "frequently-appearing username was pre-filled below, but this "
+            "isn't auto-detected with certainty, so please check it before "
+            "continuing.")
+        username = st.text_input("Lichess username for this database", value=suggested)
+        col1, col2 = st.columns(2)
+        if col1.button("Use this database", type="primary", disabled=not username.strip()):
+            config.set_database_path(pending_path)
+            config.set_player_name(username.strip())
+            del st.session_state["import_pending_path"]
+            st.session_state.pop("import_suggested_username", None)
+            st.cache_resource.clear()
+            st.success("Switched to the imported database.")
+            st.rerun()
+        if col2.button("Cancel"):
+            pathlib.Path(pending_path).unlink(missing_ok=True)
+            del st.session_state["import_pending_path"]
+            st.session_state.pop("import_suggested_username", None)
+            st.rerun()
