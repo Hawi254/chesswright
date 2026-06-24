@@ -34,6 +34,10 @@ import game_explorer_view
 import game_detail_view
 import settings_view
 import onboarding_view
+import analysis_jobs_view
+import annotate
+import job_runner
+import joblock
 
 st.set_page_config(page_title="Chesswright", layout="wide")
 st.markdown(theme.CSS, unsafe_allow_html=True)
@@ -110,6 +114,39 @@ if "last_refreshed" in st.session_state:
     st.sidebar.caption(f"Last refreshed: {st.session_state['last_refreshed']:%Y-%m-%d %H:%M:%S}")
 
 
+@st.fragment(run_every="5s")
+def _sidebar_job_status():
+    """Persistent indicator, visible from every page -- not a toast,
+    since a batch running (or games piling up unannotated) while the
+    user is elsewhere in the app is exactly the kind of state a one-shot
+    toast (confirmed live: doesn't survive a rerun, let alone a page
+    navigation) can't be relied on to surface. Mirrors the "Refresh
+    data"/"Last refreshed" pattern just above, the one place this app
+    already does a persistent sidebar status."""
+    # A fragment can't call st.sidebar.X()/`with st.sidebar:` itself --
+    # confirmed live, both raise the same StreamlitAPIException. The
+    # `with st.sidebar:` has to wrap the CALL to this fragment function
+    # instead (see below), with the fragment body just using plain
+    # st.info/st.caption -- whatever container the fragment is called
+    # from is where its output lands.
+    if job_runner.is_running():
+        state = job_runner.get_state()
+        st.info(f"Analysis running: {state.get('games_done', 0)} game(s) so far.")
+    else:
+        lock_info = joblock.status()
+        if lock_info is not None and lock_info.alive:
+            st.warning(f"Analysis running (pid {lock_info.pid}, outside this app).")
+
+    awaiting = annotate.count_games_awaiting_annotation(sqlite_conn)
+    if awaiting:
+        st.caption(f"{awaiting} game(s) awaiting annotation -- see Analysis Jobs.")
+
+
+if not NEEDS_ONBOARDING:
+    with st.sidebar:
+        _sidebar_job_status()
+
+
 # ---------- Navigation ----------
 # visibility="hidden" -- Game Detail is reachable only via st.switch_page
 # from a row click (Game Explorer, Tactical Highlights, Matchups &
@@ -132,6 +169,7 @@ highlights_page = st.Page(lambda: tactical_highlights_view.render(highlights_pag
 explorer_page = st.Page(lambda: game_explorer_view.render(explorer_page, detail_page),
                          title="Game Explorer", url_path="game-explorer")
 settings_page = st.Page(settings_view.render, title="Settings", url_path="settings")
+analysis_jobs_page = st.Page(analysis_jobs_view.render, title="Analysis Jobs", url_path="analysis-jobs")
 # BRIEF.md Phase B: defaults to first when the database has no games yet
 # or player.name is still the placeholder -- a fresh install should never
 # land on Overview with nothing to show before walking through setup.
@@ -142,7 +180,7 @@ pg = st.navigation({
     "Career": [overview_page, patterns_page, openings_page, matchups_page,
                endings_page, highlights_page],
     "Explore": [explorer_page],
-    "App": [settings_page, onboarding_page],
+    "App": [settings_page, analysis_jobs_page, onboarding_page],
     " ": [detail_page],
 })
 pg.run()
