@@ -10,7 +10,6 @@ evolve independently, exactly like the backend modules themselves were
 brought into this repo.
 """
 import pathlib
-import shutil
 import sqlite3
 
 import migrate
@@ -87,7 +86,24 @@ def import_database(src_path: pathlib.Path, dest_dir: pathlib.Path) -> pathlib.P
     raw (no schema_migrations table), or already-up-to-date file, so no
     special-casing is needed here for "how old is this file's schema."
     Returns the path of the imported copy; raises DatabaseImportError and
-    cleans up the copy on any failure."""
+    cleans up the copy on any failure.
+
+    Uses sqlite3's own backup() API, not a raw byte copy -- every
+    chesswright database is WAL-mode (migrations/0001_init.sql), and a
+    plain shutil.copy2() of a WAL-mode file that's open or being actively
+    written by another process can read a torn, structurally-inconsistent
+    snapshot straight off disk. A real, reproduced incident: exactly this
+    happened live -- a plain-copy import produced a file ~60MB shorter
+    than two other imports of presumably the same source, unopenable
+    (`sqlite3.DatabaseError: database disk image is malformed`), and
+    nothing here caught it, since the only post-copy check was a
+    foreign-key consistency check, which doesn't validate page-level
+    structure at all. backup() takes a real, consistent SQLite-level
+    snapshot (the same mechanism VACUUM INTO uses), safe against a
+    concurrently-written source. The integrity_check below is a second,
+    independent line of defense -- it also catches a SOURCE file that was
+    already corrupted before we ever touched it, which backup() alone
+    can't rule out."""
     validate_source(src_path)
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest_path = dest_dir / f"imported_{src_path.stem}.db"
@@ -95,9 +111,23 @@ def import_database(src_path: pathlib.Path, dest_dir: pathlib.Path) -> pathlib.P
     while dest_path.exists():
         dest_path = dest_dir / f"imported_{src_path.stem}_{counter}.db"
         counter += 1
-    shutil.copy2(src_path, dest_path)
+
+    src_conn = sqlite3.connect(str(src_path))
+    try:
+        dest_conn = sqlite3.connect(str(dest_path))
+        try:
+            src_conn.backup(dest_conn)
+        finally:
+            dest_conn.close()
+    finally:
+        src_conn.close()
 
     try:
+        integrity = sqlite3.connect(str(dest_path)).execute("PRAGMA integrity_check").fetchall()
+        if integrity != [("ok",)]:
+            raise DatabaseImportError(
+                "The imported database failed an integrity check -- it may be "
+                "corrupted or was still being written to when copied. Not importing it.")
         migrate.migrate(str(dest_path))
         conn = sqlite3.connect(str(dest_path))
         try:
