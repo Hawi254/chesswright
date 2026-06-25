@@ -32,6 +32,7 @@ import game_endings_view
 import tactical_highlights_view
 import game_explorer_view
 import game_detail_view
+import insights_view
 import settings_view
 import onboarding_view
 import analysis_jobs_view
@@ -166,6 +167,7 @@ endings_page = st.Page(game_endings_view.render, title="Game Endings",
                         url_path="game-endings")
 highlights_page = st.Page(lambda: tactical_highlights_view.render(highlights_page, detail_page),
                            title="Tactical Highlights", url_path="tactical-highlights")
+insights_page = st.Page(insights_view.render, title="Insights", url_path="insights")
 explorer_page = st.Page(lambda: game_explorer_view.render(explorer_page, detail_page),
                          title="Game Explorer", url_path="game-explorer")
 settings_page = st.Page(settings_view.render, title="Settings", url_path="settings")
@@ -178,7 +180,7 @@ onboarding_page = st.Page(lambda: onboarding_view.render(overview_page), title="
 
 pg = st.navigation({
     "Career": [overview_page, patterns_page, openings_page, matchups_page,
-               endings_page, highlights_page],
+               endings_page, highlights_page, insights_page],
     "Explore": [explorer_page],
     "App": [settings_page, analysis_jobs_page, onboarding_page],
     " ": [detail_page],

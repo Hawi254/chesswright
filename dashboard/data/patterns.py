@@ -7,7 +7,7 @@ import pandas as pd
 import analytics
 from _common import get_config
 
-from ._shared import TIME_PRESSURE_BUCKETS, THINKING_TIME_BUCKETS
+from ._shared import TIME_PRESSURE_BUCKETS, THINKING_TIME_BUCKETS, bucket_acpl_blunder_rate
 
 # Mirrors analysis/sharpness_correlation.py's BUCKETS.
 SHARPNESS_BUCKETS = [
@@ -30,13 +30,7 @@ def get_blunder_rate_by_time_pressure(duck_conn):
         WHERE m.is_player_move=1 AND m.cpl IS NOT NULL
           AND m.clock_seconds IS NOT NULL AND g.base_seconds IS NOT NULL AND g.base_seconds > 0
     """).fetchdf()
-    rows = []
-    for label, lo, hi in TIME_PRESSURE_BUCKETS:
-        sub = df[(df.time_fraction >= lo) & (df.time_fraction < hi)]
-        if len(sub):
-            rows.append((label, len(sub), sub.cpl.mean(),
-                         100.0 * (sub.classification == "blunder").sum() / len(sub)))
-    return pd.DataFrame(rows, columns=["bucket", "n_moves", "acpl", "blunder_rate"])
+    return bucket_acpl_blunder_rate(df, "time_fraction", TIME_PRESSURE_BUCKETS)
 
 
 def get_acpl_by_time_control(sqlite_conn):
@@ -332,15 +326,10 @@ def get_sharpness_blunder_correlation(duck_conn):
     finding in Phase 5 (blunder rate climbs ~9x from flat to forcing
     positions), never previously surfaced in the dashboard."""
     df = duck_conn.execute("""
-        SELECT sharpness, classification FROM db.moves
+        SELECT cpl, sharpness, classification FROM db.moves
         WHERE is_player_move=1 AND cpl IS NOT NULL AND sharpness IS NOT NULL
     """).fetchdf()
-    rows = []
-    for label, lo, hi in SHARPNESS_BUCKETS:
-        sub = df[(df.sharpness >= lo) & (df.sharpness < hi)]
-        if len(sub):
-            rows.append((label, len(sub), 100.0 * (sub.classification == "blunder").sum() / len(sub)))
-    return pd.DataFrame(rows, columns=["bucket", "n_moves", "blunder_rate"])
+    return bucket_acpl_blunder_rate(df, "sharpness", SHARPNESS_BUCKETS)
 
 
 def get_thinking_time_blunder_correlation(duck_conn):
@@ -353,10 +342,4 @@ def get_thinking_time_blunder_correlation(duck_conn):
         WHERE is_player_move=1 AND cpl IS NOT NULL
           AND time_spent_seconds IS NOT NULL AND time_spent_seconds >= 0
     """).fetchdf()
-    rows = []
-    for label, lo, hi in THINKING_TIME_BUCKETS:
-        sub = df[(df.time_spent_seconds >= lo) & (df.time_spent_seconds < hi)]
-        if len(sub):
-            rows.append((label, len(sub), sub.cpl.mean(),
-                         100.0 * (sub.classification == "blunder").sum() / len(sub)))
-    return pd.DataFrame(rows, columns=["bucket", "n_moves", "acpl", "blunder_rate"])
+    return bucket_acpl_blunder_rate(df, "time_spent_seconds", THINKING_TIME_BUCKETS)

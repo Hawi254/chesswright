@@ -5,6 +5,8 @@ more than one analysis/*.py-mirroring query and must stay in exact sync
 across them, so they live here once rather than in whichever domain
 module happened to need them first.
 """
+import pandas as pd
+
 import analytics
 
 # Mirrors analysis/time_pressure.py's BUCKETS.
@@ -29,6 +31,25 @@ GIANT_KILLING_COLLAPSE_THRESHOLD = 300
 # Mirrors analysis/comebacks.py's COMEBACK_THRESHOLD/COLLAPSE_THRESHOLD.
 COMEBACK_WP_THRESHOLD = 0.10
 COLLAPSE_WP_THRESHOLD = 0.90
+
+
+def bucket_acpl_blunder_rate(df, value_col, buckets):
+    """Buckets df by value_col into the given (label, lo, hi) ranges,
+    returning one row per non-empty bucket with columns [bucket, n_moves,
+    acpl, blunder_rate]. df must have cpl and classification columns.
+
+    Shared by every per-move correlation query that buckets the SAME
+    "is_player_move=1 AND cpl IS NOT NULL" set of moves by a different
+    column (sharpness, thinking time, clock-remaining fraction) -- each
+    used to re-implement this loop independently, which is exactly the
+    kind of near-identical-copy drift this was pulled out to prevent."""
+    rows = []
+    for label, lo, hi in buckets:
+        sub = df[(df[value_col] >= lo) & (df[value_col] < hi)]
+        if len(sub):
+            rows.append((label, len(sub), sub.cpl.mean(),
+                         100.0 * (sub.classification == "blunder").sum() / len(sub)))
+    return pd.DataFrame(rows, columns=["bucket", "n_moves", "acpl", "blunder_rate"])
 
 
 # ---------- Claude commentary persistence (Claude-API extension, 2026-06) ----------

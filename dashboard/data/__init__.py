@@ -67,6 +67,7 @@ from .game_explorer import (
     BLUNDER_FEST_THRESHOLD, BRILLIANT_FIND_THRESHOLD, NAIL_BITER_THRESHOLD,
     get_lead_changes, get_game_badges, get_game_explorer_table, get_game_detail,
 )
+from .insights import get_career_findings
 
 __all__ = [
     "TIME_PRESSURE_BUCKETS", "THINKING_TIME_BUCKETS",
@@ -94,4 +95,5 @@ __all__ = [
     "get_hallucination_context",
     "BLUNDER_FEST_THRESHOLD", "BRILLIANT_FIND_THRESHOLD", "NAIL_BITER_THRESHOLD",
     "get_lead_changes", "get_game_badges", "get_game_explorer_table", "get_game_detail",
+    "get_career_findings",
 ]

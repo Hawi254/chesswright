@@ -964,6 +964,99 @@ live rather than from a hand-curated file) could be a genuine v2
 feature — but that's a different design than copying this page as-is,
 and isn't needed for Phase A/B/D's pilot goals.
 
+## 6b. Insights page — the deferred v2 feature, built (2026-06-25)
+
+§6a's deferred idea ("here's what stands out in your data so far," computed
+live rather than from a hand-curated file) was scoped, built, and verified
+this session. New page, **Insights** (`dashboard/insights_view.py` +
+`dashboard/data/insights.py`), slotted into the existing "Career" nav
+group. No new data infrastructure: it composes ~10 findings entirely out
+of `get_*` functions `patterns.py`/`tactical.py`/`matchups.py`/
+`game_endings.py` already exposed for their own pages (piece blunder
+hot-spot, sharpness/thinking-time/clock-pressure correlations, castling,
+king back-rank, toughest opponent, giant-killing, tactical highlights
+counts, game-ending breakdown). Each finding independently checks its own
+minimum sample size and is **omitted**, not blanked, when there isn't
+enough data yet — this page is reachable from a 1-game fresh install, so
+"no findings yet" has to be a normal state, not a wall of `--`. Refresh is
+deliberately manual, riding the same sidebar "Refresh data" button every
+other page already uses — no new polling mechanism, per the explicit
+decision not to over-build this.
+
+A "Synthesis" panel mirrors the dropped Findings page's cross-finding
+Claude-API synthesis, now fed live-computed findings instead of a curated
+file: free/instant by default (just the finding cards), an on-demand
+"Generate synthesis" button calls `claude_narrative.generate_insights_synthesis()`
+or reads the persisted result, gated behind `api_key_available()` like
+every other Claude touchpoint.
+
+**A real bug, caught only by actually calling the live API, not by any
+prior review or AppTest pass**: the first real "Generate synthesis" click
+raised `sqlite3.IntegrityError: CHECK constraint failed` — `save_narrative()`
+tried to write `subject_type="career_insights"`, a value invented for this
+feature that was never in `claude_narratives`' CHECK constraint
+(`'game', 'opening', 'opponent', 'findings', 'coaching'`, migrations
+0015-0017). Fixed by reusing the existing `'findings'` slot — a leftover
+from the dropped page's own synthesis feature, the exact right semantic
+fit — rather than a new migration. No prior AppTest or synthetic-data check
+had caught this, since none of them actually persisted a real API result;
+exactly the class of gap this project's "verify live, not just reviewed"
+discipline exists for.
+
+**Verification escalated through every layer this project has built, not
+stopped at the first one that passed**: `AppTest` against an empty database
+and a hand-built synthetic SQLite fixture (10 fabricated games engineered to
+trigger every finding branch) → a full PyInstaller rebuild of the real
+frozen executable, re-verified live via the Xvfb+mss method (§ Phase C/
+pre-pilot validation) → real synthetic mouse-driven interaction inside that
+frozen executable's actual GTK window, not just hitting its HTTP server
+directly. The last of these needed a new tool, not previously used in this
+project: `python-xlib`'s XTest extension (`pip install python-xlib`, no
+sudo, works against the existing isolated Xvfb display) sends real
+`XTestFakeButtonEvent`/`MotionNotify`/scroll events — confirmed driving
+actual sidebar navigation, a dataframe row click (drill-down into Game
+Detail and back), a badge-filter toggle, and a real end-to-end Claude-API
+button click, all via synthetic mouse input rather than URL navigation or
+calling functions directly. Deliberately not pointed at the real desktop
+session (`:0`) — this project already has one documented near-miss of a
+test accidentally launching against the live desktop (§ Phase C
+verification method) — the isolated Xvfb display is the safe equivalent.
+
+**A full app-wide click-through (all 10 pages, every nav link, several
+drill-downs and button clicks) was also run against an isolated, real copy
+of the actual personal `imported_chess_2.db` (32,295 games, player
+L3-37)** — explicitly requested, not assumed safe by default. The copy used
+`db_import.py`'s own `sqlite3 backup()`-API mechanism (§ Phase D pre-pilot
+fixes), the same safe-copy discipline already built for end users importing
+a database, applied here to copy the developer's own real data into an
+isolated scratch `HOME` for testing. The real `~/.chesswright/` directory
+was never opened for writing, confirmed by checking file mtimes before,
+during, and after; the scratch copy was deleted immediately once the test
+finished. Every page rendered cleanly against the real ~32k-game dataset.
+One genuine finding, not a bug: the Insights page took ~10-12s to load
+against the real data (vs. ~3-4s for any other single page), since it
+composed 4 independent full scans of the `moves` table (piece, sharpness,
+thinking-time, clock-pressure correlations) where patterns.py's own pages
+each only ever ran one such scan per page load.
+
+**Fixed as a follow-up, same day**: those 4 scans shared the exact same
+base filter (`is_player_move=1 AND cpl IS NOT NULL`) and differed only in
+which extra column they bucketed by — collapsed into one combined query
+(`insights.py`'s `_fetch_move_correlates`) feeding all four findings from a
+single fetched DataFrame. The per-bucket aggregation loop itself (shared by
+the sharpness/thinking-time/clock-pressure correlations) was pulled out
+into one function (`data/_shared.py`'s `bucket_acpl_blunder_rate`) reused
+by both `patterns.py`'s original per-page queries and the new combined
+fetch, specifically so the two call sites can't quietly drift apart.
+Confirmed behavior-preserving, not just "should be equivalent": re-ran
+against the same synthetic fixture before and after the refactor and
+diffed the output — character-for-character identical. Re-confirmed
+`patterns_view.py` (the other caller of the refactored `patterns.py`
+functions) still behaves identically by `git stash`-ing the change and
+reproducing the same pre-existing, unrelated `StreamlitDuplicateElementId`
+error on both sides — a real bug in that page's chart-key handling on this
+particular fixture, not something this refactor touched or introduced.
+
 ## 7. Naming
 
 Working name used throughout this document: **Chesswright** (a "wright"
