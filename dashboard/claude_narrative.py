@@ -250,3 +250,38 @@ def generate_opponent_commentary(opponent_row, baseline_win_pct, analyzed_games,
     return contextualize(prompt)
 
 
+def _build_insights_prompt(findings, win_pct, analyzed_games, total_games):
+    finding_lines = "\n".join(
+        f"  - {f['title']}: {f['headline']}. {f['detail']}" for f in findings)
+
+    return f"""You are writing a short "what stands out" summary of a chess player's
+analyzed game history, presented to the player as their own results. The reader is the
+player, addressed as "you".
+
+{PERSONA_AND_STYLE}
+
+STRICT FACTUAL RULES, do not violate these:
+- Only use the findings explicitly listed below. Do not invent games, moves, ratings, or
+  any statistic not given here.
+- Do not invent comparisons to other players or rating levels -- nothing like that is
+  given here, so do not write anything like that.
+
+{_completeness_note(analyzed_games, total_games)}
+
+Player's overall win rate across all games: {win_pct:.1f}%
+
+Findings (each independently computed from however much data is currently analyzed --
+some may be missing if there isn't enough data yet for that one):
+{finding_lines}
+
+Write 2-3 short paragraphs picking out what genuinely stands out across these findings --
+not a recap of every line, a real synthesis of what they add up to. If two findings point
+the same direction, say so. If one is based on a small sample, note that briefly rather
+than overstating it."""
+
+
+def generate_insights_synthesis(findings, win_pct, analyzed_games, total_games):
+    prompt = _build_insights_prompt(findings, win_pct, analyzed_games, total_games)
+    return contextualize(prompt)
+
+
