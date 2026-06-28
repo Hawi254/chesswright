@@ -9,6 +9,19 @@ import data
 import theme
 from _common import get_connections
 
+_END_TYPE_LABELS = {
+    "resignation":           "Resignation",
+    "time_forfeit":          "Time forfeit",
+    "checkmate":             "Checkmate",
+    "draw_repetition":       "Repetition draw",
+    "abandoned":             "Abandoned",
+    "insufficient_material": "Insufficient material",
+    "draw_agreement":        "Draw by agreement",
+    "stalemate":             "Stalemate",
+    "draw_50_move_rule":     "50-move rule",
+    "unknown":               "Unknown",
+}
+
 
 @st.cache_data
 def cached_game_end_type_breakdown(_duck_conn):
@@ -31,6 +44,9 @@ def render():
         if overall_df is None or overall_df.empty:
             st.info(theme.thin_data_message(0, 1))
         else:
+            overall_df = overall_df.copy()
+            overall_df["game_end_type"] = overall_df["game_end_type"].map(
+                lambda x: _END_TYPE_LABELS.get(x, x))
             st.plotly_chart(charts.bar_chart(overall_df, "game_end_type", "n", theme.ACCENT_GOLD),
                              theme=None)
 
@@ -39,5 +55,6 @@ def render():
         if by_tc_df is None or by_tc_df.empty:
             st.info(theme.thin_data_message(0, 1))
         else:
+            by_tc_df = by_tc_df.rename(columns=lambda c: _END_TYPE_LABELS.get(c, c))
             st.plotly_chart(charts.heatmap(by_tc_df, theme.SEQUENTIAL_GOLD_COLORSCALE, value_suffix="%"),
                              theme=None)

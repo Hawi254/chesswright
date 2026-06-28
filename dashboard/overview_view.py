@@ -39,6 +39,10 @@ def render(self_page, detail_page):
     sqlite_conn, duck_conn = get_connections()
     st.title("Overview")
 
+    if st.session_state.pop("just_completed_onboarding", False):
+        st.info("Your starter batch is analyzed and ready. Use the sidebar to explore — "
+                "each section looks at your games from a different angle.")
+
     stats = cached_headline_stats(duck_conn, sqlite_conn)
     rating_df = cached_rating_trajectory(duck_conn)
     explorer_df = cached_game_explorer_table(duck_conn)
@@ -52,7 +56,8 @@ def render(self_page, detail_page):
     col1.metric("Total games", f"{stats['total_games']:,}")
     col2.metric("Analyzed games", f"{stats['analyzed_games']:,}")
     col3.metric("Win rate", f"{stats['win_pct']:.1f}%" if stats['win_pct'] is not None else "--")
-    col4.metric("ACPL (analyzed)", f"{stats['acpl']:.1f}" if stats['acpl'] is not None else "--")
+    col4.metric("ACPL", f"{stats['acpl']:.1f}" if stats['acpl'] is not None else "--",
+                help="Average centipawn loss — measures move accuracy across analyzed games. Lower is better.")
 
     if top_game is not None:
         with st.container(border=True):

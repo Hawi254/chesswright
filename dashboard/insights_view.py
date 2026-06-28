@@ -64,7 +64,7 @@ def render():
             response_text, generated_at = cached
             st.caption(f"Generated {generated_at}")
             st.markdown(response_text)
-        button_label = "Regenerate synthesis (Claude API)" if cached else "Generate synthesis (Claude API)"
+        button_label = "Regenerate synthesis" if cached else "Generate synthesis"
 
         if not claude_narrative.api_key_available():
             st.info("Add your own Anthropic API key on the Settings page to enable this.")

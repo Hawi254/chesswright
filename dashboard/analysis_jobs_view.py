@@ -137,7 +137,27 @@ def render():
 
     st.divider()
 
-    # ---------- Settings + start ----------
+    # ---------- Start ----------
+    if running:
+        st.caption("A batch is already running -- use the Stop button above to end it first.")
+    else:
+        if st.button("Start analysis batch", type="primary"):
+            cfg = get_config()  # re-read so any just-saved settings are picked up
+            try:
+                job_runner.start(
+                    db_path, cfg["engine"]["depth"], cfg["engine"]["multipv"],
+                    cfg["engine"]["threads"], cfg["engine"]["hash_mb"], cfg["engine"]["pv_max_len"],
+                    cfg["engine"]["path"], cfg["worker"]["max_games"],
+                    parse_duration(cfg["worker"]["max_duration"]),
+                    cfg["worker"]["consecutive_failure_limit"], cfg["worker"]["commit_every_n_moves"])
+            except (RuntimeError, joblock.LockHeldError) as e:
+                st.error(str(e))
+            else:
+                st.rerun()
+
+    st.divider()
+
+    # ---------- Settings ----------
     st.subheader("Engine and batch settings")
     with st.form("analysis_job_settings"):
         col1, col2 = st.columns(2)
@@ -157,29 +177,16 @@ def render():
             hash_mb = acol2.number_input("Engine hash table (MB)", min_value=16, max_value=8192,
                                           value=cfg["engine"]["hash_mb"])
 
-        save_and_start = st.form_submit_button("Save settings and start batch", type="primary",
-                                                disabled=running)
+        save_clicked = st.form_submit_button("Save settings", disabled=running)
 
-    if save_and_start:
+    if save_clicked:
         config_module.set_engine_setting("depth", int(depth))
         config_module.set_engine_setting("multipv", int(multipv))
         config_module.set_engine_setting("threads", int(threads))
         config_module.set_engine_setting("hash_mb", int(hash_mb))
         config_module.set_worker_setting("max_games", int(max_games) if max_games else None)
         config_module.set_worker_setting("max_duration", max_duration.strip() or None)
-
-        cfg = get_config()  # re-read after the write-back, so the run below uses the saved values
-        try:
-            job_runner.start(
-                db_path, cfg["engine"]["depth"], cfg["engine"]["multipv"],
-                cfg["engine"]["threads"], cfg["engine"]["hash_mb"], cfg["engine"]["pv_max_len"],
-                cfg["engine"]["path"], cfg["worker"]["max_games"],
-                parse_duration(cfg["worker"]["max_duration"]),
-                cfg["worker"]["consecutive_failure_limit"], cfg["worker"]["commit_every_n_moves"])
-        except (RuntimeError, joblock.LockHeldError) as e:
-            st.error(str(e))
-        else:
-            st.rerun()
+        st.success("Settings saved.")
 
     if running:
         st.caption("Settings are read-only while a batch is running -- stop it first to change them.")

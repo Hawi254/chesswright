@@ -62,7 +62,7 @@ def get_connections():
     return get_sqlite_connection(db_path), get_duckdb_connection(db_path)
 
 
-def navigate_on_row_click(df, key, detail_page, self_page, return_label):
+def navigate_on_row_click(df, key, detail_page, self_page, return_label, column_config=None):
     """One shared drill-down mechanism (Phase 6c.4): renders df with
     native st.dataframe row selection, and on a click, stores the
     selected row's game_id + where to return to, then switches to Game
@@ -70,7 +70,9 @@ def navigate_on_row_click(df, key, detail_page, self_page, return_label):
     Highlights/Matchups & Opponents panel that lists individual games --
     avoids re-typing the same on_select/session_state wiring per panel."""
     selection = st.dataframe(df, width='stretch', on_select="rerun",
-                              selection_mode="single-row", key=key)
+                              selection_mode="single-row", key=key,
+                              column_config=column_config)
+    st.caption("Click a row to open that game's full detail.")
     rows = selection.selection.rows if selection and selection.selection else []
     if rows:
         st.session_state["selected_game_id"] = df.iloc[rows[0]].game_id

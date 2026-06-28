@@ -160,7 +160,7 @@ def render():
             response_text, generated_at = cached
             st.caption(f"Generated {generated_at}")
             st.markdown(response_text)
-        button_label = "Regenerate narrative (Claude API)" if cached else "Generate richer narrative (Claude API)"
+        button_label = "Regenerate story" if cached else "Generate richer story"
 
         if not claude_narrative.api_key_available():
             st.info("Add your own Anthropic API key on the Settings page to enable this.")
@@ -182,11 +182,21 @@ def render():
 
     with st.container(border=True):
         st.subheader("Full annotated move list")
-        display_moves = moves.copy()
+        display_moves = moves.drop(
+            columns=["fen_before", "win_prob_before", "win_prob_after"], errors="ignore").copy()
         for flag_col in ("is_player_move", "is_brilliant_candidate", "is_puzzle_trigger"):
             if flag_col in display_moves.columns:
                 display_moves[flag_col] = display_moves[flag_col].map(
                     {1: "✓", 0: ""}).fillna("")
         styled_moves = display_moves.style.map(
             lambda v: theme.CLASSIFICATION_BG.get(v, ""), subset=["classification"])
-        st.dataframe(styled_moves, width='stretch')
+        st.dataframe(styled_moves, width='stretch', column_config={
+            "ply": "Ply",
+            "san": "Move",
+            "is_player_move": "Yours",
+            "classification": "Quality",
+            "cpl": "Centipawn Loss",
+            "sharpness": "Sharpness",
+            "is_brilliant_candidate": "Brilliant",
+            "is_puzzle_trigger": "Puzzle Trigger",
+        })

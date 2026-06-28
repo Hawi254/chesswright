@@ -60,7 +60,18 @@ def render(self_page, detail_page):
     # whatever survived the badge-filter slicing above, not contiguous.
     display_df = filtered[display_cols].head(200).reset_index(drop=True)
     selection = st.dataframe(display_df, width='stretch', on_select="rerun",
-                              selection_mode="single-row", key="explorer_table")
+                              selection_mode="single-row", key="explorer_table",
+                              column_config={
+                                  "game_id": "Game",
+                                  "utc_date": "Date",
+                                  "opponent_name": "Opponent",
+                                  "player_color": "Color",
+                                  "outcome_for_player": "Result",
+                                  "time_control_category": "Time Control",
+                                  "opening_family": "Opening",
+                                  "badge_count": "Badges",
+                                  "drama_score": st.column_config.NumberColumn("Drama Score", format="%d"),
+                              })
     st.caption("Click a row to open that game's full story.")
 
     selected_rows = selection.selection.rows if selection and selection.selection else []

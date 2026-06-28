@@ -48,9 +48,7 @@ def render():
     with st.form("api_key_form", clear_on_submit=True):
         new_key = st.text_input("Anthropic API key", type="password",
                                  placeholder="sk-ant-...")
-        col1, col2 = st.columns(2)
-        save_clicked = col1.form_submit_button("Save key")
-        clear_clicked = col2.form_submit_button("Remove saved key")
+        save_clicked = st.form_submit_button("Save key", type="primary")
 
     if save_clicked:
         if not new_key.strip():
@@ -67,10 +65,11 @@ def render():
                     "above for how to switch to secure storage.")
             st.rerun()
 
-    if clear_clicked:
-        api_key_store.clear_api_key()
-        st.success("Saved key removed.")
-        st.rerun()
+    if current_key:
+        if st.button("Remove saved key"):
+            api_key_store.clear_api_key()
+            st.success("Saved key removed.")
+            st.rerun()
 
     st.divider()
     st.subheader("Import an existing database")

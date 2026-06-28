@@ -58,7 +58,8 @@ def _clickable_game_ids(game_ids, key, detail_page, self_page):
         st.write("None.")
         return
     df = pd.DataFrame({"game_id": game_ids})
-    navigate_on_row_click(df, key, detail_page, self_page, "Matchups & Opponents")
+    navigate_on_row_click(df, key, detail_page, self_page, "Matchups & Opponents",
+                          column_config={"game_id": "Game"})
 
 
 def render(self_page, detail_page):
@@ -73,8 +74,11 @@ def render(self_page, detail_page):
     with st.container(border=True):
         st.subheader("Win rate by color, rating-adjusted")
         st.caption("Confirms White's edge holds at every rating bucket, not just on average.")
-        color_rating_df = cached_color_performance_by_rating(duck_conn)
-        st.dataframe(color_rating_df, width='stretch')
+        color_rating_df = cached_color_performance_by_rating(duck_conn).rename_axis("Rating Bucket")
+        st.dataframe(color_rating_df, width='stretch', column_config={
+            "black": st.column_config.NumberColumn("Black (win %)", format="%.1f"),
+            "white": st.column_config.NumberColumn("White (win %)", format="%.1f"),
+        })
 
     with st.container(border=True):
         st.subheader("Giant-killing and collapses (rating-based)")
@@ -114,22 +118,32 @@ def render(self_page, detail_page):
     with st.container(border=True):
         st.subheader("Nemesis and favorite opponents")
         st.caption("Ranked by score% (win + 0.5*draw, standard tournament scoring) so repeated "
-                   "draws aren't misread as losses. Real finding: 17.1% score over 41 games "
-                   "against a single opponent -- one of the largest single-opponent samples in "
-                   "the whole dataset, not a small-sample fluke.")
+                   "draws aren't misread as losses. Look for opponents you've played many times "
+                   "with a consistently lopsided record.")
         nem_min_games = st.slider("Minimum games against this opponent", 3, 50, 5)
         nem_df = cached_nemesis_opponents(duck_conn, nem_min_games)
 
+        _nem_col_config = {
+            "opponent_name": "Opponent",
+            "n": "Games",
+            "wins": "Wins",
+            "draws": "Draws",
+            "losses": "Losses",
+            "score_pct": st.column_config.NumberColumn("Score %", format="%.1f"),
+        }
         col1, col2 = st.columns(2)
         with col1:
             st.write("Toughest opponents (lowest score%)")
-            st.dataframe(nem_df.sort_values("score_pct").head(10), width='stretch')
+            st.dataframe(nem_df.sort_values("score_pct").head(10), width='stretch',
+                         column_config=_nem_col_config)
         with col2:
             st.write("Favorite opponents (highest score%)")
-            st.dataframe(nem_df.sort_values("score_pct", ascending=False).head(10), width='stretch')
+            st.dataframe(nem_df.sort_values("score_pct", ascending=False).head(10), width='stretch',
+                         column_config=_nem_col_config)
 
         st.write("Most-played opponents overall")
-        st.dataframe(nem_df.sort_values("n", ascending=False).head(10), width='stretch')
+        st.dataframe(nem_df.sort_values("n", ascending=False).head(10), width='stretch',
+                     column_config=_nem_col_config)
 
         if not nem_df.empty:
             opponent_names = nem_df.opponent_name.tolist()
@@ -142,7 +156,7 @@ def render(self_page, detail_page):
                 response_text, generated_at = cached
                 st.caption(f"Generated {generated_at}")
                 st.markdown(response_text)
-            button_label = "Regenerate commentary (Claude API)" if cached else "Generate commentary (Claude API)"
+            button_label = "Regenerate commentary" if cached else "Generate commentary"
 
             if not claude_narrative.api_key_available():
                 st.info("Add your own Anthropic API key on the Settings page to enable this.")

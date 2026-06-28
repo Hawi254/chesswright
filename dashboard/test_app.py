@@ -150,13 +150,13 @@ def test_opening_and_opponent_commentary_buttons_render_correctly():
 
     at_openings = _page_apptest("openings_view")
     at_openings.run(timeout=60)
-    opening_buttons = [b for b in at_openings.button if "commentary (Claude API)" in b.label]
+    opening_buttons = [b for b in at_openings.button if "commentary" in b.label]
     assert opening_buttons, "Opening commentary button not found"
     assert opening_buttons[0].disabled == (not key_present)
 
     at_matchups = _page_apptest("matchups_view", call_with_dummy_pages=True)
     at_matchups.run(timeout=60)
-    opponent_buttons = [b for b in at_matchups.button if "commentary (Claude API)" in b.label]
+    opponent_buttons = [b for b in at_matchups.button if "commentary" in b.label]
     assert opponent_buttons, "Opponent commentary button not found"
     assert opponent_buttons[0].disabled == (not key_present)
 

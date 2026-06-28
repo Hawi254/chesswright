@@ -53,7 +53,7 @@ def render(overview_page):
         step = "status" if _already_onboarded(db_path) else "welcome"
         st.session_state["onboard_step"] = step
 
-    st.title("Welcome to Chesswright")
+    st.title("Sync Games" if step == "status" else "Welcome to Chesswright")
 
     if step == "status":
         _render_status(db_path, overview_page)
@@ -71,6 +71,8 @@ def render(overview_page):
         _render_plan(db_path, overview_page)
     elif step == "running":
         _render_running(db_path)
+    elif step == "fetch_done":
+        _render_fetch_done(overview_page)
     elif step == "done":
         _render_done(overview_page)
 
@@ -80,12 +82,11 @@ def _render_status(db_path, overview_page):
     conn = get_sqlite_connection(db_path)
     total = conn.execute("SELECT COUNT(*) FROM games").fetchone()[0]
     analyzed = conn.execute("SELECT COUNT(*) FROM games WHERE analysis_status='done'").fetchone()[0]
-    st.success(f"Already set up for **{cfg['player']['name']}** -- "
-               f"{analyzed:,} of {total:,} games analyzed so far.")
-    st.caption("This wizard is for first-time setup. You can fetch more games or run another "
-               "analysis batch below, or just head to the dashboard.")
+    st.success(f"Ready -- **{cfg['player']['name']}**, "
+               f"{analyzed:,} of {total:,} games analyzed.")
     col1, col2 = st.columns(2)
-    if col1.button("Fetch more games and analyze another batch"):
+    if col1.button("Fetch new games from lichess"):
+        st.session_state["onboard_returning"] = True
         _set_step("fetch")
     if col2.button("Go to dashboard"):
         st.switch_page(overview_page)
@@ -96,7 +97,7 @@ def _render_welcome():
         "This app analyzes your lichess games with a real chess engine "
         "(Stockfish) to find patterns in how you actually play. Before we "
         "start, there's one thing worth being honest about up front:")
-    st.warning(
+    st.info(
         "**Engine analysis is genuinely slow.** A real chess engine search "
         "takes real time per move -- there's no way around that. We're not "
         "going to hide this or make vague promises. In the next couple of "
@@ -263,7 +264,10 @@ def _render_fetch(db_path):
             return
         st.success(f"{n:,} game(s) ready to analyze.")
         st.session_state["onboard_fetched_count"] = n
-        _set_step("calibrate")
+        if st.session_state.get("onboard_returning"):
+            _set_step("fetch_done")
+        else:
+            _set_step("calibrate")
 
 
 def _render_calibrate(db_path):
@@ -387,10 +391,18 @@ def _render_running(db_path):
     _set_step("done")
 
 
+def _render_fetch_done(overview_page):
+    n = st.session_state.get("onboard_fetched_count", 0)
+    st.success(f"{n:,} new game(s) added to the analysis queue.")
+    st.info("Head to **Analysis Jobs** in the sidebar to start an analysis batch.")
+    if st.button("Go to dashboard", type="primary"):
+        st.switch_page(overview_page)
+
+
 def _render_done(overview_page):
     st.success("Your starter batch is ready -- accuracy numbers are computed and the "
-               "dashboard is up to date. Future batches you run from here do the same "
-               "automatically; if you ever run worker.py by hand from a terminal instead, "
-               "remember to run annotate.py afterward too.")
+               "dashboard is up to date.")
+    st.info("To run more analysis batches in the future, use **Analysis Jobs** in the sidebar.")
     if st.button("Go to dashboard", type="primary"):
+        st.session_state["just_completed_onboarding"] = True
         st.switch_page(overview_page)

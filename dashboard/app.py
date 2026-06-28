@@ -40,7 +40,7 @@ import annotate
 import job_runner
 import joblock
 
-st.set_page_config(page_title="Chesswright", layout="wide")
+st.set_page_config(page_title="Chesswright", layout="wide", page_icon="♟️")
 st.markdown(theme.CSS, unsafe_allow_html=True)
 
 # A truly fresh install has a database file with no tables at all yet --
@@ -82,14 +82,13 @@ def warm_up():
     text gives genuine, truthful progress instead of just "still alive"
     animation."""
     cfg = get_config()
-    with st.status("Building session/structure caches from the full game history "
-                    "(one-time after a restart, ~20s -- subsequent loads are fast)...",
+    with st.status("Getting ready — happens once per session, takes about 20 seconds...",
                     expanded=True) as status:
-        status.write("Scanning material structures (middlegame/endgame signatures)...")
+        status.write("Indexing position types (endgame, middlegame, etc.)...")
         analytics.ensure_structure_ctx(sqlite_conn, cfg)
-        status.write("Scanning session/tilt context (game-by-game sequencing)...")
+        status.write("Indexing game-by-game sequencing (session, tilt patterns)...")
         analytics.ensure_session_ctx(sqlite_conn, cfg["analytics"]["session_gap_minutes"])
-        status.update(label="Caches ready.", state="complete", expanded=False)
+        status.update(label="Ready.", state="complete", expanded=False)
     st.session_state["warmed_up"] = True
     st.session_state["last_refreshed"] = datetime.datetime.now()
 
@@ -112,7 +111,7 @@ if st.sidebar.button("Refresh data"):
     warm_up()  # warm_up() already shows its own st.status steps
     st.rerun()
 if "last_refreshed" in st.session_state:
-    st.sidebar.caption(f"Last refreshed: {st.session_state['last_refreshed']:%Y-%m-%d %H:%M:%S}")
+    st.sidebar.caption(f"Last refreshed: {st.session_state['last_refreshed']:%H:%M}")
 
 
 @st.fragment(run_every="5s")
@@ -145,6 +144,7 @@ def _sidebar_job_status():
 
 if not NEEDS_ONBOARDING:
     with st.sidebar:
+        st.divider()
         _sidebar_job_status()
 
 
@@ -175,14 +175,14 @@ analysis_jobs_page = st.Page(analysis_jobs_view.render, title="Analysis Jobs", u
 # BRIEF.md Phase B: defaults to first when the database has no games yet
 # or player.name is still the placeholder -- a fresh install should never
 # land on Overview with nothing to show before walking through setup.
-onboarding_page = st.Page(lambda: onboarding_view.render(overview_page), title="Setup",
+onboarding_page = st.Page(lambda: onboarding_view.render(overview_page),
+                           title="Setup" if NEEDS_ONBOARDING else "Sync Games",
                            url_path="setup", default=NEEDS_ONBOARDING)
 
 pg = st.navigation({
     "Career": [overview_page, patterns_page, openings_page, matchups_page,
                endings_page, highlights_page, insights_page],
-    "Explore": [explorer_page],
+    "Explore": [explorer_page, detail_page],
     "App": [settings_page, analysis_jobs_page, onboarding_page],
-    " ": [detail_page],
 })
 pg.run()

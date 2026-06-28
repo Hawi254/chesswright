@@ -50,7 +50,15 @@ def render():
                        f"-- no analyzed games have reached them yet, not a data error.")
         display_df = openings_df.copy()
         display_df["acpl"] = display_df["acpl"].apply(lambda v: "--" if pd.isna(v) else f"{v:.1f}")
-        st.dataframe(display_df, width='stretch')
+        st.dataframe(display_df, width='stretch', column_config={
+            "opening_family": "Opening",
+            "player_color": "Color",
+            "n": "Games",
+            "win_pct": st.column_config.NumberColumn("Win %", format="%.1f"),
+            "draw_pct": st.column_config.NumberColumn("Draw %", format="%.1f"),
+            "acpl": "ACPL",
+            "n_analyzed": "Analyzed",
+        })
 
         if not openings_df.empty:
             opening_labels = [f"{r.opening_family} ({r.player_color})"
@@ -65,7 +73,7 @@ def render():
                 response_text, generated_at = cached
                 st.caption(f"Generated {generated_at}")
                 st.markdown(response_text)
-            button_label = "Regenerate commentary (Claude API)" if cached else "Generate commentary (Claude API)"
+            button_label = "Regenerate commentary" if cached else "Generate commentary"
 
             if not claude_narrative.api_key_available():
                 st.info("Add your own Anthropic API key on the Settings page to enable this.")
@@ -91,4 +99,11 @@ def render():
                    "actually working out, win/loss-wise.")
         top_n_positions = st.slider("Show top N", 5, 50, 20, key="positions_top_n")
         positions_df = cached_most_repeated_positions(duck_conn, top_n_positions)
-        st.dataframe(positions_df, width='stretch')
+        st.dataframe(positions_df, width='stretch', column_config={
+            "ply": "At ply",
+            "n_games": "Times reached",
+            "win_pct": st.column_config.NumberColumn("Win %", format="%.1f"),
+            "draw_pct": st.column_config.NumberColumn("Draw %", format="%.1f"),
+            "loss_pct": st.column_config.NumberColumn("Loss %", format="%.1f"),
+            "common_opening": "Most common opening",
+        })

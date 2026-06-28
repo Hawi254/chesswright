@@ -12,7 +12,7 @@ import streamlit as st
 import charts
 import data
 import theme
-from _common import get_connections, navigate_on_row_click
+from _common import get_config, get_connections, navigate_on_row_click
 
 
 @st.cache_data
@@ -70,8 +70,17 @@ def render(self_page, detail_page):
             puzzle_df = puzzle_df.copy()
             puzzle_df["who_converted"] = puzzle_df.is_player_move.map(
                 {0: "you converted", 1: "opponent converted"})
-        navigate_on_row_click(puzzle_df, "puzzle_sequences", detail_page, self_page,
-                              "Tactical Highlights")
+        navigate_on_row_click(
+            puzzle_df.drop(columns=["is_player_move"], errors="ignore"),
+            "puzzle_sequences", detail_page, self_page, "Tactical Highlights",
+            column_config={
+                "game_id": "Game",
+                "ply": "At ply",
+                "san": "Trigger move",
+                "classification": "Quality",
+                "puzzle_sequence_length": "Sequence length",
+                "who_converted": "Outcome",
+            })
 
     with st.container(border=True):
         st.subheader("Brilliant-move candidates")
@@ -82,7 +91,12 @@ def render(self_page, detail_page):
         brilliant_top_n = st.slider("Show top N", 5, 50, 15, key="brilliant_top_n")
         brilliant_df = cached_brilliant_candidates(duck_conn, brilliant_top_n)
         navigate_on_row_click(brilliant_df, "brilliant_candidates", detail_page, self_page,
-                              "Tactical Highlights")
+                              "Tactical Highlights", column_config={
+                                  "game_id": "Game",
+                                  "ply": "At ply",
+                                  "san": "Move",
+                                  "material_delta": "Material won",
+                              })
 
     with st.container(border=True):
         st.subheader("Best-move streaks")
@@ -94,15 +108,24 @@ def render(self_page, detail_page):
                    "one meant something), not just the only sensible move on the board. Later "
                    "moves in the streak can be forced or unforced -- raise the slider below to "
                    "surface streaks where more of the moves were real choices, not just the first.")
-        st.caption("⚠️ This is a sharpness-adjacent signal, and this project's locked engine depth "
-                   "(14, see CLAUDE.md) is documented to lose precision on exactly this kind of "
-                   "close-position judgment. Expect this to read noisier than blunder detection.")
+        _depth = get_config()["engine"]["depth"]
+        st.caption(f"⚠️ This is a sharpness-adjacent signal. At the configured engine depth ({_depth}), "
+                   "close-position judgment is less reliable than clear blunder detection -- "
+                   "expect this to read noisier than the blunder-rate panels.")
         streak_top_n = st.slider("Show top N streaks", 5, 50, 15, key="streak_top_n")
         streak_min_unforced = st.slider("Minimum unforced moves in the streak", 1, 10, 1,
                                          key="streak_min_unforced")
         streak_df = cached_best_move_streaks(duck_conn, streak_top_n, streak_min_unforced)
-        navigate_on_row_click(streak_df, "best_move_streaks", detail_page, self_page,
-                              "Tactical Highlights")
+        navigate_on_row_click(
+            streak_df.drop(columns=["is_player_move"], errors="ignore"),
+            "best_move_streaks", detail_page, self_page, "Tactical Highlights",
+            column_config={
+                "game_id": "Game",
+                "ply": "At ply",
+                "san": "First move",
+                "best_move_streak_length": "Streak length",
+                "best_move_streak_unforced_count": "Unforced moves",
+            })
 
     with st.container(border=True):
         st.subheader("Blown forced mates")
@@ -113,15 +136,25 @@ def render(self_page, detail_page):
         st.metric("Truly blown (mate available, game still lost)",
                   int((blown_df.outcome_for_player == "loss").sum()))
         navigate_on_row_click(blown_df, "blown_mates", detail_page, self_page,
-                              "Tactical Highlights")
+                              "Tactical Highlights", column_config={
+                                  "game_id": "Game",
+                                  "ply": "At ply",
+                                  "san": "Played",
+                                  "best_move_san": "Best move",
+                                  "eval_mate": "Mate in",
+                                  "outcome_for_player": "Result",
+                              })
 
     with st.container(border=True):
         st.subheader("\"A knight on the rim is dim\" -- tested directly")
-        st.caption("Rim = a knight move landing on the a/h file or the 1st/8th rank. The "
-                   "proverb holds in the opening and middlegame, but flips in the endgame -- "
-                   "interior knight moves are riskier there. The rim-in-the-endgame cell is "
-                   "thin (69 moves), treat that one row as suggestive.")
         _, knight_phase_df = cached_knight_rim_performance(sqlite_conn)
+        _rim_endgame_n = int(knight_phase_df.loc[
+            (knight_phase_df.location == "rim") & (knight_phase_df.phase == "endgame"),
+            "n_moves"].sum()) if not knight_phase_df.empty else 0
+        _thin_note = (f" The rim-in-endgame cell covers only {_rim_endgame_n} moves -- "
+                      "treat that bar as suggestive.") if _rim_endgame_n < 150 else ""
+        st.caption("Rim = a knight move landing on the a/h file or the 1st/8th rank."
+                   + _thin_note)
         st.plotly_chart(
             charts.grouped_bar_chart(knight_phase_df, "phase", "location", "blunder_rate",
                                      colors={"rim": theme.NEGATIVE, "interior": theme.POSITIVE}),
@@ -157,6 +190,15 @@ def render(self_page, detail_page):
                        f"remaining -- not concentrated under time pressure either.")
 
         hallucination_top_n = st.slider("Show top N examples", 5, 50, 15, key="hallucination_top_n")
+        _hang_col_config = {
+            "game_id": "Game",
+            "blunder_ply": "At ply",
+            "blunder_san": "Move played",
+            "num_plies": "Game length",
+            "outcome_for_player": "Result",
+            "game_end_type": "Ended by",
+            "plies_remaining": "Plies remaining",
+        }
         st.write("**Quickest hang-and-resign examples**")
         # No hanging-piece blunders found yet means `hangs` has no
         # `resigned_quickly` column at all (get_hallucination_blunders()
@@ -164,11 +206,15 @@ def render(self_page, detail_page):
         # with few analyzed games, not just a theoretical empty case.
         quick_examples = (hangs[hangs.resigned_quickly].sort_values("plies_remaining").head(
             hallucination_top_n) if n_total else hangs)
-        navigate_on_row_click(quick_examples, "hallucination_quick_resign", detail_page, self_page,
-                              "Tactical Highlights")
+        navigate_on_row_click(
+            quick_examples.drop(columns=["resigned_quickly"], errors="ignore"),
+            "hallucination_quick_resign", detail_page, self_page, "Tactical Highlights",
+            column_config=_hang_col_config)
 
         st.write("**Recoveries: hung a piece, didn't lose anyway**")
         recoveries = played_on[played_on.outcome_for_player.isin(["win", "draw"])].sort_values(
             "plies_remaining", ascending=False).head(hallucination_top_n)
-        navigate_on_row_click(recoveries, "hallucination_recoveries", detail_page, self_page,
-                              "Tactical Highlights")
+        navigate_on_row_click(
+            recoveries.drop(columns=["resigned_quickly"], errors="ignore"),
+            "hallucination_recoveries", detail_page, self_page, "Tactical Highlights",
+            column_config=_hang_col_config)
