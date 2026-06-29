@@ -79,41 +79,55 @@ def render():
         "game detail panels. The live engine is always paused when the batch "
         "worker is running — these settings only affect interactive probes.")
     ie_cfg = config.load_config().get("interactive_engine", {})
+    # Seed session_state from config on the very first render so explicit
+    # keys below initialise correctly, but don't overwrite values the user
+    # has already submitted (session_state persists across page navigation).
+    _ie_defaults = {
+        "ie_time_sec":        float(ie_cfg.get("time_sec", 0.5)),
+        "ie_depth":           int(ie_cfg.get("depth", 20)),
+        "ie_threads":         int(ie_cfg.get("threads", 1)),
+        "ie_hash_mb":         int(ie_cfg.get("hash_mb", 32)),
+        "ie_store_threshold": int(ie_cfg.get("store_threshold", 20)),
+    }
+    for k, v in _ie_defaults.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
+
     with st.form("live_engine_form"):
         col1, col2 = st.columns(2)
         time_sec = col1.number_input(
             "Time limit (s)",
             min_value=0.1, max_value=10.0,
-            value=float(ie_cfg.get("time_sec", 0.5)),
             step=0.1, format="%.1f",
+            key="ie_time_sec",
             help="Hard wall-clock cap per position. Always enforced alongside "
                  "the depth limit — whichever is hit first stops the search.")
         depth = col2.number_input(
             "Depth limit",
             min_value=5, max_value=40,
-            value=int(ie_cfg.get("depth", 20)),
             step=1,
+            key="ie_depth",
             help="Maximum search depth. Paired with the time limit — depth "
                  "alone is not a safe limit.")
         threads = col1.number_input(
             "Threads",
             min_value=1, max_value=8,
-            value=int(ie_cfg.get("threads", 1)),
             step=1,
+            key="ie_threads",
             help="Keep at 1 to avoid competing with the batch engine if both "
                  "happen to run on the same machine.")
         hash_mb = col2.number_input(
             "Hash (MB)",
             min_value=16, max_value=1024,
-            value=int(ie_cfg.get("hash_mb", 32)),
             step=16,
+            key="ie_hash_mb",
             help="Stockfish hash table size for interactive probes. Smaller "
                  "than the batch engine's hash to keep the footprint low.")
         store_threshold = col1.number_input(
             "Store threshold (depth)",
             min_value=0, max_value=50,
-            value=int(ie_cfg.get("store_threshold", 20)),
             step=1,
+            key="ie_store_threshold",
             help="Only save the result to position_cache when the actual "
                  "search depth reached this value. Set higher than the depth "
                  "limit above to disable auto-storing entirely.")
@@ -130,11 +144,9 @@ def render():
         try:
             config.save_interactive_engine(new_settings)
             live_engine.get_engine_service.clear()
-            st.success("Settings saved. The live engine will restart with "
-                        "new settings on next use.")
+            st.toast("Live engine settings saved.", icon="✅")
         except Exception as e:
-            st.error(f"Failed to save settings: {e}")
-        st.rerun()
+            st.error(f"Could not save settings: {e}")
 
     st.divider()
     st.subheader("Import an existing database")
