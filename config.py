@@ -129,6 +129,43 @@ def set_worker_setting(key: str, value, path=None):
     _set_section_scalar("worker", key, value, path)
 
 
+def save_interactive_engine(settings: dict, path=None):
+    """Replace the interactive_engine: block with the supplied settings dict.
+
+    Uses a line-scan rather than a full yaml.safe_dump() so every other
+    section's comments (and the rest of interactive_engine:'s own header
+    comment) are preserved -- the same strategy as the rest of this file.
+    Only the interactive_engine: block is rewritten; all other sections are
+    passed through character-for-character.
+
+    settings keys: time_sec (float), depth (int), threads (int),
+    hash_mb (int), store_threshold (int).
+    """
+    cfg_path = pathlib.Path(path) if path else DEFAULT_CONFIG_PATH
+    lines = cfg_path.read_text().splitlines(keepends=True)
+
+    start_idx: int | None = None
+    end_idx: int | None = None
+    for i, line in enumerate(lines):
+        if re.match(r'^interactive_engine:', line):
+            start_idx = i
+        elif start_idx is not None and i > start_idx and re.match(r'^[a-z]', line):
+            end_idx = i
+            break
+
+    if start_idx is None:
+        raise ValueError(f"interactive_engine: section not found in {cfg_path}")
+    if end_idx is None:
+        end_idx = len(lines)
+
+    # yaml.dump produces "interactive_engine:\n  key: val\n  ...\n"
+    new_block = yaml.dump({"interactive_engine": settings}, default_flow_style=False)
+    # Preserve one blank line before the next section (new_block already ends
+    # with \n, so appending "\n" produces exactly one blank line).
+    new_lines = lines[:start_idx] + [new_block + "\n"] + lines[end_idx:]
+    cfg_path.write_text("".join(new_lines))
+
+
 def set_engine_path(engine_path, path=None):
     """Same targeted-substitution approach as set_database_path(), scoped
     to the `engine:` section's `path:` key specifically -- the same reason

@@ -12,6 +12,7 @@ import streamlit as st
 import api_key_store
 import config
 import db_import
+import live_engine
 
 
 def render():
@@ -74,19 +75,66 @@ def render():
     st.divider()
     st.subheader("Live engine settings")
     st.caption(
-        "These settings control the on-demand Stockfish analysis used in the "
-        "position browser and game detail panels. The live engine is always "
-        "paused when the batch worker is running. To change these values, "
-        "edit the `interactive_engine:` section of `config.yaml`.")
+        "Controls the on-demand Stockfish analysis in the position browser and "
+        "game detail panels. The live engine is always paused when the batch "
+        "worker is running — these settings only affect interactive probes.")
     ie_cfg = config.load_config().get("interactive_engine", {})
-    col1, col2 = st.columns(2)
-    col1.metric("Time limit (s)", ie_cfg.get("time_sec", 0.5))
-    col2.metric("Depth limit", ie_cfg.get("depth", 20))
-    col1.metric("Threads", ie_cfg.get("threads", 1))
-    col2.metric("Hash (MB)", ie_cfg.get("hash_mb", 32))
-    col1.metric("Store threshold (depth)", ie_cfg.get("store_threshold", 20))
-    st.caption(
-        f"Config file: `{config.DEFAULT_CONFIG_PATH}`")
+    with st.form("live_engine_form"):
+        col1, col2 = st.columns(2)
+        time_sec = col1.number_input(
+            "Time limit (s)",
+            min_value=0.1, max_value=10.0,
+            value=float(ie_cfg.get("time_sec", 0.5)),
+            step=0.1, format="%.1f",
+            help="Hard wall-clock cap per position. Always enforced alongside "
+                 "the depth limit — whichever is hit first stops the search.")
+        depth = col2.number_input(
+            "Depth limit",
+            min_value=5, max_value=40,
+            value=int(ie_cfg.get("depth", 20)),
+            step=1,
+            help="Maximum search depth. Paired with the time limit — depth "
+                 "alone is not a safe limit.")
+        threads = col1.number_input(
+            "Threads",
+            min_value=1, max_value=8,
+            value=int(ie_cfg.get("threads", 1)),
+            step=1,
+            help="Keep at 1 to avoid competing with the batch engine if both "
+                 "happen to run on the same machine.")
+        hash_mb = col2.number_input(
+            "Hash (MB)",
+            min_value=16, max_value=1024,
+            value=int(ie_cfg.get("hash_mb", 32)),
+            step=16,
+            help="Stockfish hash table size for interactive probes. Smaller "
+                 "than the batch engine's hash to keep the footprint low.")
+        store_threshold = col1.number_input(
+            "Store threshold (depth)",
+            min_value=0, max_value=50,
+            value=int(ie_cfg.get("store_threshold", 20)),
+            step=1,
+            help="Only save the result to position_cache when the actual "
+                 "search depth reached this value. Set higher than the depth "
+                 "limit above to disable auto-storing entirely.")
+        save_btn = st.form_submit_button("Save and restart engine", type="primary")
+
+    if save_btn:
+        new_settings = {
+            "time_sec": round(float(time_sec), 1),
+            "depth": int(depth),
+            "threads": int(threads),
+            "hash_mb": int(hash_mb),
+            "store_threshold": int(store_threshold),
+        }
+        try:
+            config.save_interactive_engine(new_settings)
+            live_engine.get_engine_service.clear()
+            st.success("Settings saved. The live engine will restart with "
+                        "new settings on next use.")
+        except Exception as e:
+            st.error(f"Failed to save settings: {e}")
+        st.rerun()
 
     st.divider()
     st.subheader("Import an existing database")
