@@ -6,6 +6,8 @@ work for you? (Material-structure win-rate, Position Explorer's OTHER
 panel, moved to Patterns & Tendencies instead -- see that module's
 docstring for why.)
 """
+import chess
+import chess.svg
 import pandas as pd
 import streamlit as st
 
@@ -35,6 +37,26 @@ def cached_opening_ply_accuracy(_duck_conn, opening_family, player_color, min_ap
 @st.cache_data
 def cached_repertoire_holes(_duck_conn, min_appearances, top_n):
     return data.get_repertoire_holes(_duck_conn, min_appearances=min_appearances, top_n=top_n)
+
+
+@st.cache_data
+def cached_position_fen(_duck_conn, ply, zobrist_hash):
+    return data.get_position_fen(_duck_conn, ply, zobrist_hash)
+
+
+def _board_svg(fen: str, san: str | None = None, flip: bool = False, size: int = 300) -> str:
+    """Render a position to an SVG string, optionally with a move arrow."""
+    board = chess.Board(fen)
+    arrows = []
+    if san:
+        try:
+            move = board.parse_san(san)
+            arrows = [chess.svg.Arrow(move.from_square, move.to_square,
+                                      color=f"{theme.ACCENT_GOLD}90")]
+        except Exception:
+            pass
+    return chess.svg.board(board, size=size, flipped=flip,
+                            arrows=arrows, colors=theme.BOARD_COLORS)
 
 
 @st.cache_data
@@ -109,17 +131,36 @@ def render():
         st.subheader("Most-repeated positions")
         st.caption("Positions you've reached more than once (matched by exact board state, "
                    "not just opening name) -- shows whether your most-repeated lines are "
-                   "actually working out, win/loss-wise.")
+                   "actually working out, win/loss-wise. Click a row to view the board.")
         top_n_positions = st.slider("Show top N", 5, 50, 20, key="positions_top_n")
         positions_df = cached_most_repeated_positions(duck_conn, top_n_positions)
-        st.dataframe(positions_df, width='stretch', column_config={
-            "ply": "At ply",
-            "n_games": "Times reached",
-            "win_pct": st.column_config.NumberColumn("Win %", format="%.1f"),
-            "draw_pct": st.column_config.NumberColumn("Draw %", format="%.1f"),
-            "loss_pct": st.column_config.NumberColumn("Loss %", format="%.1f"),
-            "common_opening": "Most common opening",
-        })
+        pos_sel = st.dataframe(
+            positions_df.drop(columns=["zobrist_hash"], errors="ignore"),
+            width="stretch", on_select="rerun", selection_mode="single-row",
+            key="most_repeated_sel",
+            column_config={
+                "ply": "At ply",
+                "n_games": "Times reached",
+                "win_pct": st.column_config.NumberColumn("Win %", format="%.1f"),
+                "draw_pct": st.column_config.NumberColumn("Draw %", format="%.1f"),
+                "loss_pct": st.column_config.NumberColumn("Loss %", format="%.1f"),
+                "common_opening": "Most common opening",
+            })
+        sel_rows = pos_sel.selection.rows if pos_sel and pos_sel.selection else []
+        if sel_rows and not positions_df.empty:
+            sel = positions_df.iloc[sel_rows[0]]
+            fen = cached_position_fen(duck_conn, int(sel.ply), int(sel.zobrist_hash))
+            if fen:
+                flip = st.toggle("Flip board", key="most_repeated_flip")
+                col_bd, col_info = st.columns([1, 1])
+                with col_bd:
+                    st.markdown(_board_svg(fen, flip=flip), unsafe_allow_html=True)
+                with col_info:
+                    st.markdown(
+                        f"**Ply {int(sel.ply)}** — reached {int(sel.n_games)} times\n\n"
+                        f"Win {sel.win_pct:.0f}% · Draw {sel.draw_pct:.0f}%"
+                        f" · Loss {sel.loss_pct:.0f}%\n\n"
+                        f"Most common opening: {sel.common_opening or '—'}")
 
     with st.container(border=True):
         st.subheader("Repertoire holes")
@@ -134,26 +175,47 @@ def render():
         if holes_df.empty:
             st.info(theme.thin_data_message(0, rep_min))
         else:
-            display_holes = holes_df.copy()
+            display_holes = holes_df.drop(columns=["fen_before"], errors="ignore").copy()
             display_holes["avg_cpl"] = display_holes["avg_cpl"].apply(
                 lambda v: "--" if v is None or pd.isna(v) else f"{v:.1f}")
             display_holes["hole_score"] = display_holes["hole_score"].apply(
                 lambda v: "--" if v is None or pd.isna(v) else f"{v:.0f}")
-            st.dataframe(display_holes, hide_index=True, column_config={
-                "approx_move_number": "At move",
-                "opening":            "Opening",
-                "most_played_san":    "Usual move",
-                "n_games":            "Times reached",
-                "n_distinct_moves":   "Variations tried",
-                "avg_cpl":            "Avg CPL",
-                "hole_score":         "Hole score",
-            })
+            hole_sel = st.dataframe(
+                display_holes, hide_index=True, on_select="rerun",
+                selection_mode="single-row", key="rep_holes_sel",
+                column_config={
+                    "approx_move_number": "At move",
+                    "opening":            "Opening",
+                    "most_played_san":    "Usual move",
+                    "n_games":            "Times reached",
+                    "n_distinct_moves":   "Variations tried",
+                    "avg_cpl":            "Avg CPL",
+                    "hole_score":         "Hole score",
+                })
             top_hole = holes_df.iloc[0]
             st.caption(
                 f"Biggest hole: move {top_hole.approx_move_number} "
                 f"({top_hole.opening or 'unknown opening'}) — reached "
                 f"{top_hole.n_games}× with {top_hole.n_distinct_moves} different moves "
-                f"and avg {top_hole.avg_cpl:.0f} CPL.")
+                f"and avg {top_hole.avg_cpl:.0f} CPL. Click a row to view the board.")
+            hole_rows = hole_sel.selection.rows if hole_sel and hole_sel.selection else []
+            if hole_rows:
+                sel = holes_df.iloc[hole_rows[0]]
+                if sel.fen_before:
+                    flip = st.toggle("Flip board", key="rep_holes_flip")
+                    col_bd, col_info = st.columns([1, 1])
+                    with col_bd:
+                        st.markdown(
+                            _board_svg(sel.fen_before, san=sel.most_played_san, flip=flip),
+                            unsafe_allow_html=True)
+                    with col_info:
+                        st.markdown(
+                            f"**Around move {int(sel.approx_move_number)}** "
+                            f"({sel.opening or '—'})\n\n"
+                            f"Reached {int(sel.n_games)}× with "
+                            f"**{int(sel.n_distinct_moves)} different moves** tried\n\n"
+                            f"Usual move: **{sel.most_played_san}** (arrow)\n\n"
+                            f"Avg CPL: {sel.avg_cpl:.0f}")
 
     with st.container(border=True):
         st.subheader("Where in an opening does your accuracy drop?")

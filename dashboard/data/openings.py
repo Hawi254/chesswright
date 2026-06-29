@@ -117,6 +117,7 @@ def get_repertoire_holes(duck_conn, min_appearances=5, top_n=20):
             GROUP BY m.fen_before, g.opening_family
         )
         SELECT
+            ps.fen_before,
             ps.n_games,
             ps.n_distinct_moves,
             ROUND(ps.avg_cpl, 1)    AS avg_cpl,
@@ -148,7 +149,7 @@ def get_most_repeated_positions(duck_conn, top_n=20, min_games=5):
         # edge case, unlike the original project's large existing dataset
         # where this never came up). An empty IN (...) below is invalid
         # SQL, not just an empty result -- short-circuit before building it.
-        return pd.DataFrame(columns=["ply", "n_games", "win_pct", "draw_pct", "loss_pct", "common_opening"])
+        return pd.DataFrame(columns=["ply", "zobrist_hash", "n_games", "win_pct", "draw_pct", "loss_pct", "common_opening"])
 
     # One bulk query for all top_n nodes' outcomes, not one point-lookup
     # query per node -- each separate (ply, zobrist_hash) point lookup
@@ -170,5 +171,15 @@ def get_most_repeated_positions(duck_conn, top_n=20, min_games=5):
         draw = 100.0 * (games.outcome_for_player == "draw").sum() / n
         loss = 100.0 * (games.outcome_for_player == "loss").sum() / n
         common_opening = games.opening_family.mode().iat[0] if not games.opening_family.mode().empty else None
-        rows.append((row.ply, n, win, draw, loss, common_opening))
-    return pd.DataFrame(rows, columns=["ply", "n_games", "win_pct", "draw_pct", "loss_pct", "common_opening"])
+        rows.append((row.ply, row.zobrist_hash, n, win, draw, loss, common_opening))
+    return pd.DataFrame(rows, columns=["ply", "zobrist_hash", "n_games", "win_pct", "draw_pct", "loss_pct", "common_opening"])
+
+
+def get_position_fen(duck_conn, ply: int, zobrist_hash: int):
+    """Return any stored fen_before for the given (ply, zobrist_hash) position."""
+    row = duck_conn.execute("""
+        SELECT fen_before FROM db.moves
+        WHERE zobrist_hash = ? AND ply = ? AND fen_before IS NOT NULL
+        LIMIT 1
+    """, [zobrist_hash, ply]).fetchone()
+    return row[0] if row else None
