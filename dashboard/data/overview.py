@@ -24,6 +24,43 @@ def get_acpl_trajectory(duck_conn):
     """).fetchdf()
 
 
+def get_progress_by_month(duck_conn):
+    """Monthly ACPL and win rate — shows improvement over time.
+
+    Only months with ≥3 analyzed games are included to avoid single-game spikes.
+    ACPL population: analyzed games only (engine eval required).
+    Win rate population: all games in months that have ≥3 analyzed ones.
+    """
+    return duck_conn.execute("""
+        WITH monthly_acpl AS (
+            SELECT LEFT(g.utc_date, 7)           AS period,
+                   AVG(m.cpl)                    AS acpl,
+                   COUNT(DISTINCT m.game_id)      AS n_analyzed
+            FROM db.moves m
+            JOIN db.games g ON g.id = m.game_id
+            WHERE m.is_player_move = 1
+              AND m.cpl IS NOT NULL
+              AND g.utc_date IS NOT NULL
+              AND LENGTH(g.utc_date) >= 7
+            GROUP BY period
+            HAVING COUNT(DISTINCT m.game_id) >= 3
+        ),
+        monthly_wins AS (
+            SELECT LEFT(utc_date, 7) AS period,
+                   100.0 * SUM(CASE WHEN outcome_for_player = 'win' THEN 1 ELSE 0 END)
+                       / COUNT(*) AS win_pct
+            FROM db.games
+            WHERE utc_date IS NOT NULL AND LENGTH(utc_date) >= 7
+              AND outcome_for_player IS NOT NULL
+            GROUP BY period
+        )
+        SELECT a.period, a.acpl, w.win_pct, a.n_analyzed
+        FROM monthly_acpl a
+        LEFT JOIN monthly_wins w ON w.period = a.period
+        ORDER BY a.period
+    """).fetchdf()
+
+
 def get_win_rate_by_color(duck_conn):
     return duck_conn.execute("""
         SELECT player_color,

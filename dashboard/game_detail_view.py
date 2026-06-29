@@ -136,7 +136,7 @@ def _render_annotation_panel(sqlite_conn, variation_id: str, step: int,
                 st.caption(f"Generated {existing.generated_at}")
 
 
-def _render_saved_variations(sqlite_conn, gid: str, ply_key: str) -> None:
+def _render_saved_variations(sqlite_conn, gid: str) -> None:
     """List saved variations for the current game with Load/Delete actions."""
     variations = data.list_variations(sqlite_conn, gid)
     if not variations:
@@ -144,7 +144,7 @@ def _render_saved_variations(sqlite_conn, gid: str, ply_key: str) -> None:
     with st.container(border=True):
         st.subheader("Saved variations")
         for var in variations:
-            c1, c2, c3 = st.columns([6, 1, 1])
+            c1, c2, c3, c4 = st.columns([5, 1, 1, 1])
             branch_move_no = (var.branch_ply + 1) // 2
             title = var.title or f"From move {branch_move_no}"
             n = len(var.moves)
@@ -156,9 +156,17 @@ def _render_saved_variations(sqlite_conn, gid: str, ply_key: str) -> None:
                 st.session_state[f"var_moves__{gid}"]      = var.moves
                 st.session_state[f"var_step__{gid}"]       = len(var.moves)
                 st.session_state[f"var_id__{gid}"]         = var.id
-                st.session_state[ply_key]                   = var.branch_ply
+                st.session_state[f"var_load_ply__{gid}"]   = var.branch_ply
                 st.rerun()
-            if c3.button("Delete", key=f"var_delete__{var.id}"):
+            annotations = data.get_variation_annotations(sqlite_conn, var.id)
+            pgn_bytes = chess_display.variation_to_pgn(
+                var.branch_fen, var.moves, annotations, title=var.title,
+            ).encode()
+            safe_title = (var.title or f"var_{var.id[:8]}").replace(" ", "_")
+            c3.download_button("PGN ↓", data=pgn_bytes,
+                               file_name=f"{safe_title}.pgn", mime="application/x-chess-pgn",
+                               key=f"var_pgn__{var.id}")
+            if c4.button("Delete", key=f"var_delete__{var.id}"):
                 data.delete_variation(sqlite_conn, var.id)
                 if st.session_state.get(f"var_id__{gid}") == var.id:
                     for k in [f"var_mode__{gid}", f"var_branch_ply__{gid}",
@@ -205,6 +213,11 @@ def render():
         ply_key = f"browse_ply__{selected_game_id}"
         if ply_key not in st.session_state:
             st.session_state[ply_key] = critical_moments[0].ply if critical_moments else 1
+        # Must apply the pending load-variation ply BEFORE the slider renders;
+        # setting a widget-bound key after render raises a Streamlit error.
+        _load_ply_key = f"var_load_ply__{selected_game_id}"
+        if _load_ply_key in st.session_state:
+            st.session_state[ply_key] = st.session_state.pop(_load_ply_key)
 
         _eval_graph(moves, st.session_state[ply_key], ply_key)
         st.caption("Your win probability across the game, from the engine's evaluation at "
@@ -298,6 +311,14 @@ def render():
                         else:
                             data.update_variation_moves(sqlite_conn, var_id, new_moves)
                         st.rerun()
+
+            # Eval bar — shown only when a result is already available so
+            # the bar doesn't appear empty before the user clicks Analyse.
+            if live_var:
+                st.markdown(
+                    chess_display.eval_bar_html(live_var.eval_cp, live_var.eval_mate, current_fen),
+                    unsafe_allow_html=True,
+                )
 
             # SAN sequence display + prev/next navigation
             pv_col, nav_col = st.columns([6, 2])
@@ -433,7 +454,7 @@ def render():
                             data.store_position_analysis(sqlite_conn, game_fen_after, result)
                         st.rerun()
 
-    _render_saved_variations(sqlite_conn, selected_game_id, ply_key)
+    _render_saved_variations(sqlite_conn, selected_game_id)
 
     with st.container(border=True):
         st.subheader("Tell me the story of this game")

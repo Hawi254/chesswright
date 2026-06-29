@@ -35,6 +35,11 @@ def cached_win_rate_by_color(_duck_conn):
     return data.get_win_rate_by_color(_duck_conn)
 
 
+@st.cache_data
+def cached_progress_by_month(_duck_conn):
+    return data.get_progress_by_month(_duck_conn)
+
+
 def render(self_page, detail_page):
     sqlite_conn, duck_conn = get_connections()
     st.title("Overview")
@@ -89,3 +94,21 @@ def render(self_page, detail_page):
         color_df = cached_win_rate_by_color(duck_conn)
         st.plotly_chart(charts.bar_chart(color_df, "player_color", "win_pct", theme.POSITIVE),
                          theme=None)
+
+    progress_df = cached_progress_by_month(duck_conn)
+    if len(progress_df) >= 2:
+        with st.container(border=True):
+            st.subheader("Progress over time")
+            st.caption("Monthly averages across analyzed games — months with fewer than 3 analyzed "
+                       "games are excluded to avoid single-game noise.")
+            acpl_col, win_col = st.columns(2)
+            with acpl_col:
+                st.caption("ACPL by month (lower = more accurate)")
+                st.plotly_chart(
+                    charts.line_chart(progress_df, "period", "acpl", theme.NEGATIVE, height=240),
+                    theme=None, use_container_width=True)
+            with win_col:
+                st.caption("Win rate % by month")
+                st.plotly_chart(
+                    charts.line_chart(progress_df, "period", "win_pct", theme.POSITIVE, height=240),
+                    theme=None, use_container_width=True)

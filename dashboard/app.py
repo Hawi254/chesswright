@@ -18,7 +18,10 @@ import datetime
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
+import requests
 import streamlit as st
+
+from version import __version__
 
 import analytics
 import theme
@@ -112,6 +115,41 @@ if st.sidebar.button("Refresh data"):
     st.rerun()
 if "last_refreshed" in st.session_state:
     st.sidebar.caption(f"Last refreshed: {st.session_state['last_refreshed']:%H:%M}")
+
+
+@st.cache_data(ttl=3600)
+def _fetch_latest_version() -> str | None:
+    """Check GitHub Releases for the latest tag. Returns tag string or None on failure."""
+    try:
+        r = requests.get(
+            "https://api.github.com/repos/Hawi254/chesswright/releases/latest",
+            timeout=5,
+            headers={"Accept": "application/vnd.github+json"},
+        )
+        r.raise_for_status()
+        return r.json().get("tag_name")
+    except Exception:
+        return None
+
+
+def _parse_ver(v: str) -> tuple:
+    v = v.lstrip("v")
+    try:
+        parts = [int(x) for x in v.split(".")]
+        while len(parts) < 3:
+            parts.append(0)
+        return tuple(parts)
+    except Exception:
+        return (0, 0, 0)
+
+
+if not NEEDS_ONBOARDING:
+    latest_tag = _fetch_latest_version()
+    if latest_tag and _parse_ver(latest_tag) > _parse_ver(__version__):
+        st.sidebar.info(
+            f"Chesswright {latest_tag} is available — "
+            f"[download it](https://github.com/Hawi254/chesswright/releases/latest)"
+        )
 
 
 @st.fragment(run_every="5s")

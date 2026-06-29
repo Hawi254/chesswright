@@ -36,6 +36,7 @@ from ._shared import (
 )
 from .overview import (
     get_rating_trajectory, get_acpl_trajectory, get_win_rate_by_color,
+    get_progress_by_month,
 )
 from .openings import (
     get_openings_table, get_most_repeated_positions, get_opening_ply_accuracy,
@@ -83,6 +84,7 @@ __all__ = [
     "COMEBACK_WP_THRESHOLD", "COLLAPSE_WP_THRESHOLD",
     "get_cached_narrative", "save_narrative", "get_headline_stats",
     "get_rating_trajectory", "get_acpl_trajectory", "get_win_rate_by_color",
+    "get_progress_by_month",
     "get_openings_table", "get_most_repeated_positions", "get_opening_ply_accuracy",
     "get_repertoire_holes", "get_position_fen", "get_position_analysis",
     "store_position_analysis",
