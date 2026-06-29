@@ -2,6 +2,33 @@
 import pandas as pd
 
 
+def get_opening_ply_accuracy(duck_conn, opening_family, player_color, min_appearances=3):
+    """Per-move-number avg CPL for one (opening_family, player_color) pair.
+
+    Groups the player's own analyzed moves by move_number within games
+    that belong to the given opening.  min_appearances drops move numbers
+    reached in fewer than that many games, guarding against noise from
+    lines the player rarely survives into.
+    """
+    return duck_conn.execute("""
+        SELECT
+            m.move_number,
+            COUNT(DISTINCT m.game_id)                                           AS n_games,
+            AVG(m.cpl)                                                          AS avg_cpl,
+            100.0 * AVG(CASE WHEN m.classification IN ('mistake','blunder')
+                             THEN 1.0 ELSE 0.0 END)                            AS blunder_rate
+        FROM db.moves m
+        JOIN db.games g ON g.id = m.game_id
+        WHERE g.opening_family = ?
+          AND g.player_color   = ?
+          AND m.is_player_move = 1
+          AND m.cpl IS NOT NULL
+        GROUP BY m.move_number
+        HAVING COUNT(DISTINCT m.game_id) >= ?
+        ORDER BY m.move_number
+    """, [opening_family, player_color, min_appearances]).fetchdf()
+
+
 def get_openings_table(duck_conn, sqlite_conn, min_games=5):
     """Single bulk GROUP BY for the ACPL side, not one acpl_and_blunder_rate
     call per (opening, color) row -- measured cost of the per-row version:
@@ -34,6 +61,75 @@ def get_openings_table(duck_conn, sqlite_conn, min_games=5):
     counts["acpl"] = acpls
     counts["n_analyzed"] = n_analyzed_list
     return counts.sort_values("n", ascending=False).reset_index(drop=True)
+
+
+def get_repertoire_holes(duck_conn, min_appearances=5, top_n=20):
+    """Positions reached many times with inconsistent move choices and high avg CPL.
+
+    A 'hole' requires both inconsistency (≥2 distinct moves played) and poor
+    quality (avg CPL > 0).  hole_score = n_distinct_moves × avg_cpl compounds
+    both axes so positions that are both deeply uncertain and costly rank first.
+
+    Only analyzed games are included (fen_before populated during annotation).
+    """
+    return duck_conn.execute("""
+        WITH pos_stats AS (
+            SELECT
+                m.fen_before,
+                COUNT(DISTINCT m.game_id)                           AS n_games,
+                COUNT(DISTINCT m.san)                               AS n_distinct_moves,
+                AVG(m.cpl)                                          AS avg_cpl,
+                CAST(ROUND(AVG(m.move_number)) AS INTEGER)          AS approx_move_number,
+                COUNT(DISTINCT m.san) * AVG(m.cpl)                 AS hole_score
+            FROM db.moves m
+            WHERE m.is_player_move = 1
+              AND m.cpl            IS NOT NULL
+              AND m.fen_before     IS NOT NULL
+            GROUP BY m.fen_before
+            HAVING COUNT(DISTINCT m.game_id) >= ?
+               AND COUNT(DISTINCT m.san)     >= 2
+        ),
+        move_counts AS (
+            SELECT
+                fen_before,
+                san,
+                ROW_NUMBER() OVER (
+                    PARTITION BY fen_before
+                    ORDER BY COUNT(*) DESC
+                )                                                    AS rn
+            FROM db.moves
+            WHERE is_player_move = 1 AND fen_before IS NOT NULL
+            GROUP BY fen_before, san
+        ),
+        top_openings AS (
+            SELECT
+                m.fen_before,
+                g.opening_family,
+                ROW_NUMBER() OVER (
+                    PARTITION BY m.fen_before
+                    ORDER BY COUNT(*) DESC
+                )                                                    AS rn
+            FROM db.moves m
+            JOIN db.games g ON g.id = m.game_id
+            WHERE m.is_player_move = 1
+              AND m.fen_before     IS NOT NULL
+              AND g.opening_family IS NOT NULL
+            GROUP BY m.fen_before, g.opening_family
+        )
+        SELECT
+            ps.n_games,
+            ps.n_distinct_moves,
+            ROUND(ps.avg_cpl, 1)    AS avg_cpl,
+            ps.approx_move_number,
+            ROUND(ps.hole_score, 1) AS hole_score,
+            mc.san                   AS most_played_san,
+            tof.opening_family       AS opening
+        FROM pos_stats ps
+        LEFT JOIN move_counts  mc  ON mc.fen_before  = ps.fen_before AND mc.rn  = 1
+        LEFT JOIN top_openings tof ON tof.fen_before = ps.fen_before AND tof.rn = 1
+        ORDER BY ps.hole_score DESC
+        LIMIT ?
+    """, [min_appearances, top_n]).fetchdf()
 
 
 def get_most_repeated_positions(duck_conn, top_n=20, min_games=5):

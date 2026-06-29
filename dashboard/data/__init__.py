@@ -38,7 +38,8 @@ from .overview import (
     get_rating_trajectory, get_acpl_trajectory, get_win_rate_by_color,
 )
 from .openings import (
-    get_openings_table, get_most_repeated_positions,
+    get_openings_table, get_most_repeated_positions, get_opening_ply_accuracy,
+    get_repertoire_holes,
 )
 from .patterns import (
     SHARPNESS_BUCKETS, PIECE_ORDER, PIECE_NAME,
@@ -49,19 +50,19 @@ from .patterns import (
     get_piece_blunder_by_phase, get_piece_blunder_by_sharpness,
     get_bishop_square_color_performance, get_rook_king_backrank_performance,
     get_castling_performance, get_sharpness_blunder_correlation,
-    get_thinking_time_blunder_correlation,
+    get_thinking_time_blunder_correlation, get_decisive_moments,
 )
 from .matchups import (
     get_win_rate_by_rating_diff, get_comeback_collapse_counts,
     get_color_performance_by_rating, get_giant_killing_counts,
     get_nemesis_opponents,
 )
-from .game_endings import get_game_end_type_breakdown
+from .game_endings import get_game_end_type_breakdown, get_endgame_type_performance
 from .tactical import (
     RIM_SQL,
     get_puzzle_sequences, get_brilliant_candidates, get_best_move_streaks,
     get_blown_mates, get_knight_rim_performance, get_hallucination_blunders,
-    get_hallucination_context,
+    get_hallucination_context, get_motif_breakdown,
 )
 from .game_explorer import (
     BLUNDER_FEST_THRESHOLD, BRILLIANT_FIND_THRESHOLD, NAIL_BITER_THRESHOLD,
@@ -75,7 +76,8 @@ __all__ = [
     "COMEBACK_WP_THRESHOLD", "COLLAPSE_WP_THRESHOLD",
     "get_cached_narrative", "save_narrative", "get_headline_stats",
     "get_rating_trajectory", "get_acpl_trajectory", "get_win_rate_by_color",
-    "get_openings_table", "get_most_repeated_positions",
+    "get_openings_table", "get_most_repeated_positions", "get_opening_ply_accuracy",
+    "get_repertoire_holes",
     "SHARPNESS_BUCKETS", "PIECE_ORDER", "PIECE_NAME",
     "get_blunder_rate_by_time_pressure", "get_acpl_by_time_control",
     "get_phase_accuracy", "get_prior_outcome_performance",
@@ -84,15 +86,15 @@ __all__ = [
     "get_piece_blunder_by_phase", "get_piece_blunder_by_sharpness",
     "get_bishop_square_color_performance", "get_rook_king_backrank_performance",
     "get_castling_performance", "get_sharpness_blunder_correlation",
-    "get_thinking_time_blunder_correlation",
+    "get_thinking_time_blunder_correlation", "get_decisive_moments",
     "get_win_rate_by_rating_diff", "get_comeback_collapse_counts",
     "get_color_performance_by_rating", "get_giant_killing_counts",
     "get_nemesis_opponents",
-    "get_game_end_type_breakdown",
+    "get_game_end_type_breakdown", "get_endgame_type_performance",
     "RIM_SQL",
     "get_puzzle_sequences", "get_brilliant_candidates", "get_best_move_streaks",
     "get_blown_mates", "get_knight_rim_performance", "get_hallucination_blunders",
-    "get_hallucination_context",
+    "get_hallucination_context", "get_motif_breakdown",
     "BLUNDER_FEST_THRESHOLD", "BRILLIANT_FIND_THRESHOLD", "NAIL_BITER_THRESHOLD",
     "get_lead_changes", "get_game_badges", "get_game_explorer_table", "get_game_detail",
     "get_career_findings",

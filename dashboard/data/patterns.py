@@ -343,3 +343,45 @@ def get_thinking_time_blunder_correlation(duck_conn):
           AND time_spent_seconds IS NOT NULL AND time_spent_seconds >= 0
     """).fetchdf()
     return bucket_acpl_blunder_rate(df, "time_spent_seconds", THINKING_TIME_BUCKETS)
+
+
+def get_decisive_moments(duck_conn):
+    """For each loss, the single move in a contested position with the largest
+    win-probability drop.
+
+    'Contested' = win_prob_before between 0.30 and 0.70 -- the game was still
+    genuinely in balance.  One row per qualifying loss; losses where no player
+    move in a contested position exists are excluded.  clock_fraction is NULL
+    when the game has no clock data.
+    """
+    return duck_conn.execute("""
+        WITH contested AS (
+            SELECT
+                m.game_id,
+                m.move_number,
+                m.win_prob_before - m.win_prob_after                        AS wp_drop,
+                CASE
+                    WHEN g.base_seconds IS NOT NULL AND g.base_seconds > 0
+                         AND m.clock_seconds IS NOT NULL
+                    THEN CAST(m.clock_seconds AS DOUBLE) / g.base_seconds
+                    ELSE NULL
+                END                                                          AS clock_fraction,
+                CASE WHEN m.move_number <= 12 THEN 'opening'
+                     WHEN m.move_number <= 30 THEN 'middlegame'
+                     ELSE 'endgame' END                                      AS phase,
+                ROW_NUMBER() OVER (
+                    PARTITION BY m.game_id
+                    ORDER BY m.win_prob_before - m.win_prob_after DESC
+                )                                                            AS rn
+            FROM db.moves m
+            JOIN db.games g ON g.id = m.game_id
+            WHERE g.outcome_for_player = 'loss'
+              AND m.is_player_move    = 1
+              AND m.win_prob_before   IS NOT NULL
+              AND m.win_prob_after    IS NOT NULL
+              AND m.win_prob_before   BETWEEN 0.30 AND 0.70
+              AND m.win_prob_before   > m.win_prob_after
+        )
+        SELECT game_id, move_number, phase, wp_drop, clock_fraction
+        FROM contested WHERE rn = 1
+    """).fetchdf()

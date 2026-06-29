@@ -92,6 +92,11 @@ def cached_castling_performance(_duck_conn):
     return data.get_castling_performance(_duck_conn)
 
 
+@st.cache_data
+def cached_decisive_moments(_duck_conn):
+    return data.get_decisive_moments(_duck_conn)
+
+
 def render():
     sqlite_conn, duck_conn = get_connections()
     st.title("Patterns & Tendencies")
@@ -99,8 +104,8 @@ def render():
                "Every panel below asks the same question under a different condition: when "
                "do you actually play worse, and when do you play better?")
 
-    tab_clock, tab_rhythm, tab_position, tab_pieces = st.tabs(
-        ["Clock & Time", "Game Context", "Positions", "Piece Handling"])
+    tab_clock, tab_rhythm, tab_position, tab_pieces, tab_turning = st.tabs(
+        ["Clock & Time", "Game Context", "Positions", "Piece Handling", "Turning Points"])
 
     with tab_clock:
         with st.container(border=True):
@@ -254,3 +259,69 @@ def render():
                 f"ACPL: {', '.join(f'{r.status}={r.acpl:.1f} ({r.n_games} games)' for r in castle_acpl_df.itertuples())} "
                 f"-- the \"did not castle\" side ({n_no_castle_analyzed} games) is a thin sample, "
                 f"treat as suggestive.")
+
+    with tab_turning:
+        with st.container(border=True):
+            st.subheader("When do your losses get decided?")
+            st.caption("For each loss, this finds the single move in a contested position "
+                       "(win probability between 30–70%) where the most win probability was "
+                       "dropped in one move. Aggregating across losses reveals whether your "
+                       "games slip away in the opening, middlegame, or endgame — and whether "
+                       "it happens when the clock is full or when you're under pressure.")
+            dm_df = cached_decisive_moments(duck_conn)
+            if dm_df.empty:
+                st.info(theme.thin_data_message(0, 1))
+            else:
+                dm_df = dm_df.copy()
+                n_losses = len(dm_df)
+                median_move = int(dm_df.move_number.median())
+                most_common_phase = dm_df.phase.mode().iloc[0] if not dm_df.phase.mode().empty else "—"
+                st.metric(
+                    f"Decisive moment profile ({n_losses} losses with a contested position)",
+                    f"Typically move {median_move} ({most_common_phase})")
+
+                col_mn, col_ph = st.columns(2)
+                with col_mn:
+                    st.write("**By move number**")
+                    bins = [0, 6, 11, 16, 21, 26, 31, 41, 60, 9999]
+                    labels = ["1–5", "6–10", "11–15", "16–20", "21–25",
+                              "26–30", "31–40", "41–60", "60+"]
+                    dm_df["move_bucket"] = pd.cut(
+                        dm_df.move_number, bins=bins, labels=labels, right=False)
+                    mn_df = (dm_df.groupby("move_bucket", observed=True)
+                             .size().reset_index(name="n_losses"))
+                    st.plotly_chart(
+                        charts.bar_chart(mn_df, "move_bucket", "n_losses",
+                                         theme.NEGATIVE, height=240),
+                        theme=None)
+
+                with col_ph:
+                    st.write("**By game phase**")
+                    phase_order = ["opening", "middlegame", "endgame"]
+                    ph_df = (dm_df.groupby("phase").size().reset_index(name="n_losses")
+                             .set_index("phase").reindex(phase_order).dropna()
+                             .reset_index())
+                    st.plotly_chart(
+                        charts.bar_chart(ph_df, "phase", "n_losses",
+                                         theme.NEGATIVE, height=240),
+                        theme=None)
+
+                clock_df = dm_df.dropna(subset=["clock_fraction"])
+                if not clock_df.empty:
+                    st.write("**By clock remaining at the decisive moment**")
+                    clock_rows = []
+                    for label, lo, hi in data.TIME_PRESSURE_BUCKETS:
+                        n = int(((clock_df.clock_fraction >= lo) &
+                                 (clock_df.clock_fraction < hi)).sum())
+                        if n:
+                            clock_rows.append({"bucket": label, "n_losses": n})
+                    if clock_rows:
+                        st.plotly_chart(
+                            charts.bar_chart(
+                                pd.DataFrame(clock_rows), "bucket", "n_losses",
+                                theme.NEGATIVE, height=220),
+                            theme=None)
+                    n_no_clock = n_losses - len(clock_df)
+                    if n_no_clock:
+                        st.caption(f"{n_no_clock} of {n_losses} losses excluded from clock "
+                                   "chart — no clock data for those games.")

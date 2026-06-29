@@ -2,6 +2,7 @@
 relocated to its own page and restyled. This section was already a
 clean, distinct question ("how do my games actually end") with no
 overlap to merge away."""
+import pandas as pd
 import streamlit as st
 
 import charts
@@ -28,8 +29,13 @@ def cached_game_end_type_breakdown(_duck_conn):
     return data.get_game_end_type_breakdown(_duck_conn)
 
 
+@st.cache_data
+def cached_endgame_type_performance(_sqlite_conn):
+    return data.get_endgame_type_performance(_sqlite_conn)
+
+
 def render():
-    _sqlite_conn, duck_conn = get_connections()
+    sqlite_conn, duck_conn = get_connections()
     st.title("Game Endings")
 
     with st.container(border=True):
@@ -58,3 +64,36 @@ def render():
             by_tc_df = by_tc_df.rename(columns=lambda c: _END_TYPE_LABELS.get(c, c))
             st.plotly_chart(charts.heatmap(by_tc_df, theme.SEQUENTIAL_GOLD_COLORSCALE, value_suffix="%"),
                              theme=None)
+
+    with st.container(border=True):
+        st.subheader("Performance by endgame type")
+        st.caption("Classified at the first ply where the total non-pawn piece count "
+                   "drops to the endgame threshold. Queen: at least one queen remains. "
+                   "Rook: no queens, at least one rook. Minor piece: bishops or knights "
+                   "only. King & pawn: bare kings plus pawns.")
+        eg_df = cached_endgame_type_performance(sqlite_conn)
+        if eg_df.empty:
+            st.info(theme.thin_data_message(0, 1))
+        else:
+            melted = eg_df[["endgame_type", "win_pct", "draw_pct", "loss_pct"]].melt(
+                id_vars="endgame_type", var_name="outcome", value_name="pct")
+            melted["outcome"] = melted["outcome"].str.replace("_pct", "", regex=False)
+            st.plotly_chart(
+                charts.grouped_bar_chart(
+                    melted, "endgame_type", "outcome", "pct",
+                    colors={"win": theme.POSITIVE, "draw": theme.ACCENT_GOLD,
+                            "loss": theme.NEGATIVE},
+                    height=300),
+                theme=None)
+
+            stats = eg_df[["endgame_type", "n_games", "acpl", "blunder_rate"]].copy()
+            stats["acpl"] = stats["acpl"].apply(
+                lambda v: "--" if v is None or pd.isna(v) else f"{v:.1f}")
+            stats["blunder_rate"] = stats["blunder_rate"].apply(
+                lambda v: "--" if v is None or pd.isna(v) else f"{v:.1f}%")
+            st.dataframe(stats, hide_index=True, column_config={
+                "endgame_type": "Type",
+                "n_games":      "Games",
+                "acpl":         "Endgame ACPL",
+                "blunder_rate": "Blunder rate",
+            })

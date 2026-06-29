@@ -13,6 +13,12 @@ import charts
 import data
 import theme
 from _common import get_config, get_connections, navigate_on_row_click
+from motif import MOTIF_LABELS
+
+
+@st.cache_data
+def cached_motif_breakdown(_duck_conn):
+    return data.get_motif_breakdown(_duck_conn)
 
 
 @st.cache_data
@@ -56,6 +62,41 @@ def render(self_page, detail_page):
     st.write("A curated reel of the moments most worth remembering: sequences where a "
              "blunder got punished cleanly, real sacrifices that worked, and forced mates "
              "that slipped away. Click any row to open that game's full story.")
+
+    with st.container(border=True):
+        st.subheader("Missed tactical motifs")
+        st.caption("Which types of tactic keep catching you out? For each mistake or blunder "
+                   "where the engine's best move was available, python-chess identifies the "
+                   "pattern behind it: a fork, pin, skewer, discovered attack, back-rank mate, "
+                   "or a plain hanging piece. Motifs are filled in the next time an analysis "
+                   "batch runs -- the chart below is blank until at least one batch has finished.")
+        motif_df = cached_motif_breakdown(duck_conn)
+        if motif_df.empty:
+            st.info(theme.thin_data_message(0, 1))
+        else:
+            motif_df = motif_df.copy()
+            motif_df["motif"] = motif_df["motif"].map(
+                lambda m: MOTIF_LABELS.get(m, m))
+            col1, col2 = st.columns([2, 1])
+            with col1:
+                st.plotly_chart(
+                    charts.bar_chart(motif_df, "motif", "n_missed", theme.NEGATIVE,
+                                     height=260),
+                    theme=None)
+            with col2:
+                display = motif_df[["motif", "n_missed", "n_games", "avg_cpl",
+                                    "blunder_pct"]].copy()
+                display["avg_cpl"] = display["avg_cpl"].apply(
+                    lambda v: "--" if v is None else f"{v:.0f}")
+                display["blunder_pct"] = display["blunder_pct"].apply(
+                    lambda v: "--" if v is None else f"{v:.0f}%")
+                st.dataframe(display, hide_index=True, column_config={
+                    "motif":       "Motif",
+                    "n_missed":    "Times missed",
+                    "n_games":     "Games",
+                    "avg_cpl":     "Avg CPL",
+                    "blunder_pct": "Blunder %",
+                })
 
     with st.container(border=True):
         st.subheader("Puzzle-candidate sequences")

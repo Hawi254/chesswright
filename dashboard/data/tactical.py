@@ -104,6 +104,30 @@ def get_knight_rim_performance(sqlite_conn, config_path=None):
     return overall_df, phase_df
 
 
+def get_motif_breakdown(duck_conn):
+    """Frequency and avg CPL for each tactical motif the player missed.
+
+    Only covers is_player_move=1 moves classified mistake/blunder where
+    annotate.py's Pass 4 was able to identify a motif. Returns an empty
+    DataFrame (not None) when no motifs have been classified yet.
+    """
+    return duck_conn.execute("""
+        SELECT
+            motif,
+            COUNT(*)                                                                  AS n_missed,
+            COUNT(DISTINCT game_id)                                                   AS n_games,
+            AVG(cpl)                                                                  AS avg_cpl,
+            100.0 * SUM(CASE WHEN classification='blunder' THEN 1 ELSE 0 END)
+                  / COUNT(*)                                                           AS blunder_pct
+        FROM db.moves
+        WHERE is_player_move = 1
+          AND motif IS NOT NULL
+          AND classification IN ('mistake', 'blunder')
+        GROUP BY motif
+        ORDER BY n_missed DESC
+    """).fetchdf()
+
+
 def get_hallucination_blunders(duck_conn, config_path=None):
     """Mirrors analysis/hallucination_blunders.py -- detects hanging a
     real piece (player move classified 'blunder', opponent's IMMEDIATE

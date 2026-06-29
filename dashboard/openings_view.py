@@ -9,8 +9,10 @@ docstring for why.)
 import pandas as pd
 import streamlit as st
 
+import charts
 import claude_narrative
 import data
+import theme
 from _common import get_connections
 
 
@@ -22,6 +24,17 @@ def cached_openings_table(_duck_conn, _sqlite_conn, min_games):
 @st.cache_data
 def cached_most_repeated_positions(_duck_conn, top_n):
     return data.get_most_repeated_positions(_duck_conn, top_n=top_n)
+
+
+@st.cache_data
+def cached_opening_ply_accuracy(_duck_conn, opening_family, player_color, min_appearances):
+    return data.get_opening_ply_accuracy(
+        _duck_conn, opening_family, player_color, min_appearances=min_appearances)
+
+
+@st.cache_data
+def cached_repertoire_holes(_duck_conn, min_appearances, top_n):
+    return data.get_repertoire_holes(_duck_conn, min_appearances=min_appearances, top_n=top_n)
 
 
 @st.cache_data
@@ -107,3 +120,69 @@ def render():
             "loss_pct": st.column_config.NumberColumn("Loss %", format="%.1f"),
             "common_opening": "Most common opening",
         })
+
+    with st.container(border=True):
+        st.subheader("Repertoire holes")
+        st.caption("A 'hole' is a position you've reached multiple times but keep playing "
+                   "differently — a sign of genuine uncertainty about the right move. "
+                   "Ranked by inconsistency × average CPL, so positions that are both "
+                   "uncertain and costly appear first. Only analyzed games are included.")
+        col_rep1, col_rep2 = st.columns(2)
+        rep_min = col_rep1.slider("Min times reached", 3, 20, 5, key="rep_min_appearances")
+        rep_top_n = col_rep2.slider("Show top N", 5, 50, 20, key="rep_top_n")
+        holes_df = cached_repertoire_holes(duck_conn, rep_min, rep_top_n)
+        if holes_df.empty:
+            st.info(theme.thin_data_message(0, rep_min))
+        else:
+            display_holes = holes_df.copy()
+            display_holes["avg_cpl"] = display_holes["avg_cpl"].apply(
+                lambda v: "--" if v is None or pd.isna(v) else f"{v:.1f}")
+            display_holes["hole_score"] = display_holes["hole_score"].apply(
+                lambda v: "--" if v is None or pd.isna(v) else f"{v:.0f}")
+            st.dataframe(display_holes, hide_index=True, column_config={
+                "approx_move_number": "At move",
+                "opening":            "Opening",
+                "most_played_san":    "Usual move",
+                "n_games":            "Times reached",
+                "n_distinct_moves":   "Variations tried",
+                "avg_cpl":            "Avg CPL",
+                "hole_score":         "Hole score",
+            })
+            top_hole = holes_df.iloc[0]
+            st.caption(
+                f"Biggest hole: move {top_hole.approx_move_number} "
+                f"({top_hole.opening or 'unknown opening'}) — reached "
+                f"{top_hole.n_games}× with {top_hole.n_distinct_moves} different moves "
+                f"and avg {top_hole.avg_cpl:.0f} CPL.")
+
+    with st.container(border=True):
+        st.subheader("Where in an opening does your accuracy drop?")
+        st.caption("Average centipawn loss by move number within a specific opening. "
+                   "A spike at move 8 means your choices at that move are costing you "
+                   "more than at other points in the line -- not just a general feel, "
+                   "but the exact move number where preparation runs out.")
+        if openings_df.empty:
+            st.info(theme.thin_data_message(0, 1))
+        else:
+            drill_labels = [f"{r.opening_family} ({r.player_color})"
+                            for r in openings_df.itertuples()]
+            drill_label = st.selectbox("Select opening", drill_labels,
+                                       key="opening_ply_select")
+            drill_row = openings_df.iloc[drill_labels.index(drill_label)]
+            min_app = st.slider("Min games reaching each move", 1, 10, 3,
+                                key="opening_ply_min_app")
+            ply_df = cached_opening_ply_accuracy(
+                duck_conn, drill_row.opening_family, drill_row.player_color, min_app)
+            if ply_df.empty:
+                st.info(theme.thin_data_message(0, min_app))
+            else:
+                st.plotly_chart(
+                    charts.bar_chart(ply_df, "move_number", "avg_cpl", theme.NEGATIVE,
+                                     height=280),
+                    theme=None)
+                worst = ply_df.nlargest(3, "avg_cpl")
+                worst_nums = ", ".join(f"move {int(r.move_number)} "
+                                       f"(avg {r.avg_cpl:.0f} CPL, "
+                                       f"{r.blunder_rate:.0f}% blunder)"
+                                       for r in worst.itertuples())
+                st.caption(f"Highest-CPL move numbers: {worst_nums}")

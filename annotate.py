@@ -26,6 +26,7 @@ import sys
 from migrate import migrate
 from db import get_connection
 from config import load_config, pick
+from motif import classify_motif
 
 
 def cp_equivalent(eval_cp, eval_mate, mate_cap):
@@ -185,7 +186,7 @@ def annotate_game(conn, game_id, mate_cap, thresholds, brilliant_threshold, puzz
     re-analysis."""
     rows = conn.execute("""
         SELECT id, ply, san, eval_cp, eval_mate, best_move_san, material_delta,
-               to_square, is_capture, is_player_move
+               to_square, is_capture, is_player_move, fen_before
         FROM moves WHERE game_id=? ORDER BY ply
     """, (game_id,)).fetchall()
 
@@ -307,6 +308,29 @@ def annotate_game(conn, game_id, mate_cap, thresholds, brilliant_threshold, puzz
             best_move_streak_unforced_count=?
         WHERE id=?
     """, streak_updates)
+
+    # Pass 4: tactical motif classification.
+    # For each mistake/blunder where the player missed the best move and we
+    # have the position (fen_before) to analyse, classify which tactical
+    # idea the best move exploited. Uses python-chess only -- no engine
+    # re-run. Safe to re-run idempotently (overwrites previous value).
+    motif_updates = []
+    for idx, cls in computed_classification.items():
+        if cls not in ("mistake", "blunder"):
+            continue
+        move_id = rows[idx][0]
+        san = rows[idx][2]
+        best_move_san = rows[idx][5]
+        fen_before = rows[idx][10]
+        if not fen_before or not best_move_san or san == best_move_san:
+            continue
+        is_player_move = rows[idx][9]
+        if not is_player_move:
+            continue
+        motif = classify_motif(fen_before, best_move_san)
+        motif_updates.append((motif, move_id))
+    if motif_updates:
+        conn.executemany("UPDATE moves SET motif=? WHERE id=?", motif_updates)
 
     conn.commit()
     return len(updates)
