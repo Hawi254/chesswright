@@ -21,9 +21,9 @@ node_modules/
 # into this public repo is not.
 sample.pgn
 
-# local-only generated artifacts
-dist/
-build/
+# local-only generated artifacts (anchored to repo root -- PyInstaller output)
+/dist/
+/build/
 # NOT *.spec -- chesswright.spec is a real, deliberate, version-controlled
 # build config (Phase C), not a PyInstaller-auto-generated throwaway. A
 # blanket *.spec rule here would silently exclude it from every commit.

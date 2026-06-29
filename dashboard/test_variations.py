@@ -41,6 +41,14 @@ def test_compute_variation_fen():
     print("PASS test_compute_variation_fen")
 
 
+def test_compute_variation_fen_invalid_uci():
+    """Invalid UCI in the middle of a sequence returns current board state, not crash."""
+    result = v.compute_variation_fen(STARTING_FEN, ["e2e4", "INVALID", "e7e5"], 3)
+    # Should return the FEN after e4 (the last good move before INVALID), not crash.
+    assert "4P3" in result, f"Expected pawn on e4 after recovering from invalid UCI: {result}"
+    print("PASS test_compute_variation_fen_invalid_uci")
+
+
 def test_save_and_list_variations():
     conn = _make_db()
     vid = v.save_variation(conn, "game1", 2, STARTING_FEN, ["e2e4", "e7e5"])
@@ -125,6 +133,7 @@ def test_multi_step_annotations():
 
 if __name__ == "__main__":
     test_compute_variation_fen()
+    test_compute_variation_fen_invalid_uci()
     test_save_and_list_variations()
     test_update_variation_moves()
     test_delete_variation()

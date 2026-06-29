@@ -253,26 +253,51 @@ def render():
                     st.session_state.pop(k, None)
                 st.rerun()
 
+            # Look up engine result BEFORE rendering board so arrows can be passed in.
+            live_var_key = f"live_result__{current_fen}"
+            live_var     = st.session_state.get(live_var_key)
+            var_engine_arrows = []
+            if live_var and live_var.best_move_san:
+                try:
+                    _var_board = chess.Board(current_fen)
+                    _em = _var_board.parse_san(live_var.best_move_san)
+                    var_engine_arrows = [{"from": chess.square_name(_em.from_square),
+                                          "to":   chess.square_name(_em.to_square),
+                                          "color": f"{theme.POSITIVE}90"}]
+                except Exception:
+                    pass
+
             board_result = chessboard_component.render(
                 fen=current_fen, orientation=orientation, interactive=True,
+                arrows=var_engine_arrows,
                 key=f"var_board__{selected_game_id}__{var_step}",
             )
             if board_result and board_result.get("fen") != current_fen:
                 last_processed = st.session_state.get(f"var_last_fen__{selected_game_id}")
                 if board_result["fen"] != last_processed:
-                    new_moves = var_moves[:var_step] + [board_result["uci"]]
-                    new_step  = var_step + 1
-                    st.session_state[f"var_moves__{selected_game_id}"]    = new_moves
-                    st.session_state[f"var_step__{selected_game_id}"]     = new_step
-                    st.session_state[f"var_last_fen__{selected_game_id}"] = board_result["fen"]
-                    var_id = st.session_state.get(f"var_id__{selected_game_id}")
-                    if var_id is None:
-                        var_id = data.save_variation(
-                            sqlite_conn, selected_game_id, branch_ply_val, branch_fen, new_moves)
-                        st.session_state[f"var_id__{selected_game_id}"] = var_id
-                    else:
-                        data.update_variation_moves(sqlite_conn, var_id, new_moves)
-                    st.rerun()
+                    uci = board_result["uci"]
+                    # Validate UCI against the actual current position before storing.
+                    # A stale component result (from Bug 1) could carry a UCI that is
+                    # illegal on current_fen and would crash compute_variation_fen.
+                    try:
+                        _chk = chess.Board(current_fen)
+                        _chk.push_uci(uci)
+                    except Exception:
+                        uci = None  # silently discard stale / invalid move
+                    if uci:
+                        new_moves = var_moves[:var_step] + [uci]
+                        new_step  = var_step + 1
+                        st.session_state[f"var_moves__{selected_game_id}"]    = new_moves
+                        st.session_state[f"var_step__{selected_game_id}"]     = new_step
+                        st.session_state[f"var_last_fen__{selected_game_id}"] = board_result["fen"]
+                        var_id = st.session_state.get(f"var_id__{selected_game_id}")
+                        if var_id is None:
+                            var_id = data.save_variation(
+                                sqlite_conn, selected_game_id, branch_ply_val, branch_fen, new_moves)
+                            st.session_state[f"var_id__{selected_game_id}"] = var_id
+                        else:
+                            data.update_variation_moves(sqlite_conn, var_id, new_moves)
+                        st.rerun()
 
             # SAN sequence display + prev/next navigation
             pv_col, nav_col = st.columns([6, 2])
@@ -304,9 +329,7 @@ def render():
                     st.session_state[f"var_step__{selected_game_id}"] = var_step + 1
                     st.rerun()
 
-            # Live engine on the current variation position
-            live_var_key = f"live_result__{current_fen}"
-            live_var     = st.session_state.get(live_var_key)
+            # Engine eval display / analyse button
             if live_var:
                 eval_label = chess_display.eval_str(live_var.eval_cp, live_var.eval_mate)
                 pv         = chess_display.pv_str(current_fen, live_var.pv_json)
@@ -366,16 +389,24 @@ def render():
             )
             if board_result and board_result.get("fen") != game_fen_after:
                 uci = board_result["uci"]
-                st.session_state[f"var_mode__{selected_game_id}"]       = True
-                st.session_state[f"var_branch_ply__{selected_game_id}"] = ply
-                st.session_state[f"var_branch_fen__{selected_game_id}"] = game_fen_after
-                st.session_state[f"var_moves__{selected_game_id}"]      = [uci]
-                st.session_state[f"var_step__{selected_game_id}"]       = 1
-                st.session_state[f"var_last_fen__{selected_game_id}"]   = board_result["fen"]
-                var_id = data.save_variation(sqlite_conn, selected_game_id, ply,
-                                             game_fen_after, [uci])
-                st.session_state[f"var_id__{selected_game_id}"] = var_id
-                st.rerun()
+                # Validate before entering variation mode -- a stale component
+                # result could carry a UCI legal on a previous ply but illegal here.
+                try:
+                    _chk = chess.Board(game_fen_after)
+                    _chk.push_uci(uci)
+                except Exception:
+                    uci = None
+                if uci:
+                    st.session_state[f"var_mode__{selected_game_id}"]       = True
+                    st.session_state[f"var_branch_ply__{selected_game_id}"] = ply
+                    st.session_state[f"var_branch_fen__{selected_game_id}"] = game_fen_after
+                    st.session_state[f"var_moves__{selected_game_id}"]      = [uci]
+                    st.session_state[f"var_step__{selected_game_id}"]       = 1
+                    st.session_state[f"var_last_fen__{selected_game_id}"]   = board_result["fen"]
+                    var_id = data.save_variation(sqlite_conn, selected_game_id, ply,
+                                                 game_fen_after, [uci])
+                    st.session_state[f"var_id__{selected_game_id}"] = var_id
+                    st.rerun()
 
             move_no = (ply + 1) // 2
             who   = "White" if ply % 2 == 1 else "Black"

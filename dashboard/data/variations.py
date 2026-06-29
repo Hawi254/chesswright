@@ -31,10 +31,17 @@ class Annotation:
 
 
 def compute_variation_fen(branch_fen: str, moves_uci: list, step: int) -> str:
-    """Replay UCI moves onto branch_fen up to `step` and return the resulting FEN."""
+    """Replay UCI moves onto branch_fen up to `step` and return the resulting FEN.
+
+    Returns branch_fen unchanged if any move in the sequence is illegal — this
+    prevents a hard crash if a stale or invalid UCI somehow ends up in the list.
+    """
     board = chess.Board(branch_fen)
     for uci in moves_uci[:step]:
-        board.push_uci(uci)
+        try:
+            board.push_uci(uci)
+        except Exception:
+            return board.fen()
     return board.fen()
 
 

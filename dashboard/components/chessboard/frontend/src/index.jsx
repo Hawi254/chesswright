@@ -20,6 +20,19 @@ function ChessboardInner({ args, disabled }) {
   const [selectedSquare, setSelectedSquare] = useState(null)
   const [optionSquares, setOptionSquares] = useState({})
 
+  // When Python changes propFen (ply navigation, variation step change),
+  // reset the local board to match. Without this, useState only initialises
+  // on mount, so piece positions stay stale while highlights update from props.
+  useEffect(() => {
+    try {
+      setGame(new Chess(propFen))
+      setSelectedSquare(null)
+      setOptionSquares({})
+    } catch {
+      // Invalid FEN -- keep current state rather than crashing.
+    }
+  }, [propFen])
+
   // Report height after every render so Streamlit sizes the iframe correctly.
   useEffect(() => { Streamlit.setFrameHeight() })
 
