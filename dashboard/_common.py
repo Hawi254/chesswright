@@ -17,6 +17,7 @@ import streamlit as st
 
 from config import load_config, pick
 from db import get_connection as _get_sqlite_connection
+import migrate
 
 
 def get_duckdb_connection(db_path):
@@ -59,6 +60,7 @@ def get_connections():
     reopening the connection and re-triggering the ~94s structure_ctx
     rebuild cost this caching exists to avoid in the first place."""
     db_path = resolve_db_path()
+    migrate.migrate(db_path)
     return get_sqlite_connection(db_path), get_duckdb_connection(db_path)
 
 

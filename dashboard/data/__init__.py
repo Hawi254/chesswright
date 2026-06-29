@@ -70,6 +70,12 @@ from .game_explorer import (
     get_lead_changes, get_game_badges, get_game_explorer_table, get_game_detail,
 )
 from .insights import get_career_findings
+from .variations import (
+    Variation, Annotation,
+    compute_variation_fen,
+    save_variation, update_variation_moves, delete_variation,
+    list_variations, get_variation_annotations, upsert_annotation,
+)
 
 __all__ = [
     "TIME_PRESSURE_BUCKETS", "THINKING_TIME_BUCKETS",
@@ -100,4 +106,8 @@ __all__ = [
     "BLUNDER_FEST_THRESHOLD", "BRILLIANT_FIND_THRESHOLD", "NAIL_BITER_THRESHOLD",
     "get_lead_changes", "get_game_badges", "get_game_explorer_table", "get_game_detail",
     "get_career_findings",
+    "Variation", "Annotation",
+    "compute_variation_fen",
+    "save_variation", "update_variation_moves", "delete_variation",
+    "list_variations", "get_variation_annotations", "upsert_annotation",
 ]

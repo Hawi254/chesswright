@@ -285,3 +285,30 @@ def generate_insights_synthesis(findings, win_pct, analyzed_games, total_games):
     return contextualize(prompt)
 
 
+def annotate_position(fen: str, eval_cp: int | None = None,
+                      engine_best_san: str | None = None,
+                      user_comment: str | None = None) -> str:
+    """Write 1-3 sentences of concrete chess commentary for a single position.
+
+    eval_cp is from the side-to-move's perspective (positive = current player
+    is better), matching the convention used throughout the rest of the app.
+    Called from the variation annotation panel -- always on-demand, one click
+    per position, never batch-run.
+    """
+    eval_str = f"{eval_cp / 100:+.2f}" if eval_cp is not None else "unknown"
+    lines = [f"Position (FEN): {fen}"]
+    if eval_cp is not None:
+        lines.append(f"Engine evaluation (centipawns, side-to-move perspective): {eval_str}")
+    if engine_best_san:
+        lines.append(f"Engine's top move from here: {engine_best_san}")
+    if user_comment:
+        lines.append(f"Player's own note: \"{user_comment}\"")
+
+    prompt = f"""Write exactly 1-3 sentences annotating this chess position. Be specific and concrete — name the strategic theme, tactical motif, or pawn-structure implication. Do not repeat the player's note verbatim; you may extend or contextualise it. No filler phrases.
+
+{chr(10).join(lines)}
+
+Annotation:"""
+    return contextualize(prompt, max_tokens=150)
+
+
