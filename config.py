@@ -153,13 +153,16 @@ def save_interactive_engine(settings: dict, path=None):
             end_idx = i
             break
 
+    new_block = yaml.dump({"interactive_engine": settings}, default_flow_style=False)
+
     if start_idx is None:
-        raise ValueError(f"interactive_engine: section not found in {cfg_path}")
+        # Section absent -- pre-v0.1.10 config that was copied before the
+        # interactive_engine: key existed.  Append it cleanly.
+        cfg_path.write_text("".join(lines).rstrip("\n") + "\n\n" + new_block)
+        return
     if end_idx is None:
         end_idx = len(lines)
 
-    # yaml.dump produces "interactive_engine:\n  key: val\n  ...\n"
-    new_block = yaml.dump({"interactive_engine": settings}, default_flow_style=False)
     # Preserve one blank line before the next section (new_block already ends
     # with \n, so appending "\n" produces exactly one blank line).
     new_lines = lines[:start_idx] + [new_block + "\n"] + lines[end_idx:]
