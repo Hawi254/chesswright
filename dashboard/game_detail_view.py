@@ -11,8 +11,10 @@ import streamlit as st
 import chess
 import chess.svg
 
+import chess_display
 import claude_narrative
 import data
+import live_engine
 import narrative
 import theme
 from _common import get_connections
@@ -142,7 +144,22 @@ def render():
         move = board_before.parse_san(row.san)
         fen_after = narrative.position_after_ply(moves, ply)
         board_after = chess.Board(fen_after)
+
+        live_detail_key = f"live_detail__{selected_game_id}__{ply}"
+        live_result = st.session_state.get(live_detail_key)
+
+        engine_arrows = []
+        if live_result and live_result.best_move_san:
+            try:
+                engine_move = board_after.parse_san(live_result.best_move_san)
+                engine_arrows = [chess.svg.Arrow(
+                    engine_move.from_square, engine_move.to_square,
+                    color=f"{theme.POSITIVE}90")]
+            except Exception:
+                pass
+
         svg = chess.svg.board(board_after, size=420, lastmove=move,
+                               arrows=engine_arrows,
                                flipped=(header.player_color == "black"),
                                colors=theme.BOARD_COLORS)
         st.markdown(svg, unsafe_allow_html=True)
@@ -152,6 +169,24 @@ def render():
         mover = "You" if row.is_player_move else header.opponent_name
         detail = f" -- {row.classification}, cpl={int(row.cpl)}" if pd.notna(row.cpl) else ""
         st.caption(f"Move {move_no} ({who}, {mover}): {row.san}{detail}")
+
+        if live_result:
+            eval_label = chess_display.eval_str(live_result.eval_cp, live_result.eval_mate)
+            pv = chess_display.pv_str(fen_after, live_result.pv_json)
+            st.caption("Engine: " + eval_label + (f" — {pv}" if pv else ""))
+        elif fen_after:
+            engine_svc = live_engine.get_engine_service()
+            if engine_svc is not None:
+                if live_engine.batch_running():
+                    st.caption("Batch analysis running — live engine paused.")
+                elif st.button("Analyse position",
+                               key=f"analyse_btn__{selected_game_id}__{ply}"):
+                    with st.spinner("Analysing..."):
+                        result = engine_svc.analyse(fen_after)
+                    if result:
+                        st.session_state[live_detail_key] = result
+                        data.store_position_analysis(sqlite_conn, fen_after, result)
+                    st.rerun()
 
     with st.container(border=True):
         st.subheader("Tell me the story of this game")

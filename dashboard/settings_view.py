@@ -72,6 +72,23 @@ def render():
             st.rerun()
 
     st.divider()
+    st.subheader("Live engine settings")
+    st.caption(
+        "These settings control the on-demand Stockfish analysis used in the "
+        "position browser and game detail panels. The live engine is always "
+        "paused when the batch worker is running. To change these values, "
+        "edit the `interactive_engine:` section of `config.yaml`.")
+    ie_cfg = config.load_config().get("interactive_engine", {})
+    col1, col2 = st.columns(2)
+    col1.metric("Time limit (s)", ie_cfg.get("time_sec", 0.5))
+    col2.metric("Depth limit", ie_cfg.get("depth", 20))
+    col1.metric("Threads", ie_cfg.get("threads", 1))
+    col2.metric("Hash (MB)", ie_cfg.get("hash_mb", 32))
+    col1.metric("Store threshold (depth)", ie_cfg.get("store_threshold", 20))
+    st.caption(
+        f"Config file: `{config.DEFAULT_CONFIG_PATH}`")
+
+    st.divider()
     st.subheader("Import an existing database")
     st.caption(
         "For returning users: point at a chesswright-compatible database "

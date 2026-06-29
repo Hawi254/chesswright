@@ -163,6 +163,19 @@ analytics:
   structure_min_games_per_group: 5        # min games reaching a structure to include it at all.
   structure_top_n: 15                       # cap each structure report to the N most-frequent.
 
+interactive_engine:                  # settings for the on-demand engine used in the
+                                       # position browser and game detail panels.
+                                       # Deliberately conservative -- runs alongside normal
+                                       # dashboard use; the batch engine (engine: above) is
+                                       # paused during any interactive probe (hard block).
+  threads: 1                           # keep to 1 to avoid competing with the OS/browser
+  hash_mb: 32                          # small hash vs. batch engine's 256 MB
+  time_sec: 0.5                        # hard wall-clock cap per position -- ALWAYS enforced
+                                         # alongside depth (depth alone is never a safe limit)
+  depth: 20                            # search depth cap (whichever of time/depth hits first)
+  store_threshold: 20                  # only write to position_cache when actual depth
+                                         # reached >= this value; set > depth to disable storing
+
 sync:                                # incremental fetch of new games via lichess's public
                                        # games-export API. No separate username field --
                                        # deliberately reuses player.name above so the two

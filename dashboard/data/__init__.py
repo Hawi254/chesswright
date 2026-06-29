@@ -40,6 +40,7 @@ from .overview import (
 from .openings import (
     get_openings_table, get_most_repeated_positions, get_opening_ply_accuracy,
     get_repertoire_holes, get_position_fen, get_position_analysis,
+    store_position_analysis,
 )
 from .patterns import (
     SHARPNESS_BUCKETS, PIECE_ORDER, PIECE_NAME,
@@ -78,6 +79,7 @@ __all__ = [
     "get_rating_trajectory", "get_acpl_trajectory", "get_win_rate_by_color",
     "get_openings_table", "get_most_repeated_positions", "get_opening_ply_accuracy",
     "get_repertoire_holes", "get_position_fen", "get_position_analysis",
+    "store_position_analysis",
     "SHARPNESS_BUCKETS", "PIECE_ORDER", "PIECE_NAME",
     "get_blunder_rate_by_time_pressure", "get_acpl_by_time_control",
     "get_phase_accuracy", "get_prior_outcome_performance",
