@@ -183,3 +183,24 @@ def get_position_fen(duck_conn, ply: int, zobrist_hash: int):
         LIMIT 1
     """, [zobrist_hash, ply]).fetchone()
     return row[0] if row else None
+
+
+def get_position_analysis(duck_conn, fen_before: str):
+    """Return stored Stockfish analysis for a position, or None if unanalyzed.
+
+    Returns a dict with eval_cp, eval_mate, best_move_san, pv_json, or None
+    when no analyzed move exists for this fen_before.  eval_cp is centipawns
+    from white's perspective (positive = white better); eval_mate is the
+    forced-mate distance (positive = white mates).
+    """
+    row = duck_conn.execute("""
+        SELECT eval_cp, eval_mate, best_move_san, pv_json
+        FROM db.moves
+        WHERE fen_before = ?
+          AND best_move_san IS NOT NULL
+        LIMIT 1
+    """, [fen_before]).fetchone()
+    if row is None:
+        return None
+    return {"eval_cp": row[0], "eval_mate": row[1],
+            "best_move_san": row[2], "pv_json": row[3]}

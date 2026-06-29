@@ -8,6 +8,7 @@ docstring for why.)
 """
 import chess
 import chess.svg
+import json
 import pandas as pd
 import streamlit as st
 
@@ -44,19 +45,63 @@ def cached_position_fen(_duck_conn, ply, zobrist_hash):
     return data.get_position_fen(_duck_conn, ply, zobrist_hash)
 
 
-def _board_svg(fen: str, san: str | None = None, flip: bool = False, size: int = 300) -> str:
-    """Render a position to an SVG string, optionally with a move arrow."""
+@st.cache_data
+def cached_position_analysis(_duck_conn, fen_before):
+    return data.get_position_analysis(_duck_conn, fen_before)
+
+
+def _board_svg(fen: str, player_san: str | None = None, engine_san: str | None = None,
+               flip: bool = False, size: int = 300) -> str:
+    """Render a position SVG. Gold arrow = player's usual move; green = engine best."""
     board = chess.Board(fen)
     arrows = []
-    if san:
+    if player_san:
         try:
-            move = board.parse_san(san)
-            arrows = [chess.svg.Arrow(move.from_square, move.to_square,
-                                      color=f"{theme.ACCENT_GOLD}90")]
+            m = board.parse_san(player_san)
+            arrows.append(chess.svg.Arrow(m.from_square, m.to_square,
+                                          color=f"{theme.ACCENT_GOLD}90"))
+        except Exception:
+            pass
+    if engine_san and engine_san != player_san:
+        try:
+            m = board.parse_san(engine_san)
+            arrows.append(chess.svg.Arrow(m.from_square, m.to_square,
+                                          color=f"{theme.POSITIVE}90"))
         except Exception:
             pass
     return chess.svg.board(board, size=size, flipped=flip,
                             arrows=arrows, colors=theme.BOARD_COLORS)
+
+
+def _eval_str(eval_cp, eval_mate) -> str:
+    if eval_mate is not None:
+        return f"M{eval_mate}" if eval_mate > 0 else f"−M{abs(eval_mate)}"
+    if eval_cp is not None:
+        return f"+{eval_cp / 100:.2f}" if eval_cp >= 0 else f"{eval_cp / 100:.2f}"
+    return "—"
+
+
+def _pv_str(fen: str, pv_json_str, max_moves: int = 6) -> str | None:
+    if not pv_json_str:
+        return None
+    try:
+        pv = json.loads(pv_json_str)
+    except Exception:
+        return None
+    board = chess.Board(fen)
+    parts = []
+    for san in pv[:max_moves]:
+        try:
+            if board.turn == chess.WHITE:
+                parts.append(f"{board.fullmove_number}. {san}")
+            elif not parts:
+                parts.append(f"{board.fullmove_number}… {san}")
+            else:
+                parts.append(san)
+            board.push_san(san)
+        except Exception:
+            break
+    return " ".join(parts) or None
 
 
 @st.cache_data
@@ -151,16 +196,30 @@ def render():
             sel = positions_df.iloc[sel_rows[0]]
             fen = cached_position_fen(duck_conn, int(sel.ply), int(sel.zobrist_hash))
             if fen:
+                analysis = cached_position_analysis(duck_conn, fen)
+                engine_san = analysis["best_move_san"] if analysis else None
                 flip = st.toggle("Flip board", key="most_repeated_flip")
                 col_bd, col_info = st.columns([1, 1])
                 with col_bd:
-                    st.markdown(_board_svg(fen, flip=flip), unsafe_allow_html=True)
+                    st.markdown(_board_svg(fen, engine_san=engine_san, flip=flip),
+                                unsafe_allow_html=True)
                 with col_info:
                     st.markdown(
                         f"**Ply {int(sel.ply)}** — reached {int(sel.n_games)} times\n\n"
                         f"Win {sel.win_pct:.0f}% · Draw {sel.draw_pct:.0f}%"
                         f" · Loss {sel.loss_pct:.0f}%\n\n"
                         f"Most common opening: {sel.common_opening or '—'}")
+                    st.divider()
+                    if analysis:
+                        st.markdown(f"**Eval:** {_eval_str(analysis['eval_cp'], analysis['eval_mate'])}")
+                        if engine_san:
+                            st.markdown(f"**Best move:** {engine_san}")
+                        pv = _pv_str(fen, analysis["pv_json"])
+                        if pv:
+                            st.caption(f"Line: {pv}")
+                    else:
+                        st.caption("No engine analysis stored for this position yet — "
+                                   "run a batch to see the eval here.")
 
     with st.container(border=True):
         st.subheader("Repertoire holes")
@@ -202,20 +261,36 @@ def render():
             if hole_rows:
                 sel = holes_df.iloc[hole_rows[0]]
                 if sel.fen_before:
+                    analysis = cached_position_analysis(duck_conn, sel.fen_before)
+                    engine_san = analysis["best_move_san"] if analysis else None
                     flip = st.toggle("Flip board", key="rep_holes_flip")
                     col_bd, col_info = st.columns([1, 1])
                     with col_bd:
                         st.markdown(
-                            _board_svg(sel.fen_before, san=sel.most_played_san, flip=flip),
+                            _board_svg(sel.fen_before, player_san=sel.most_played_san,
+                                       engine_san=engine_san, flip=flip),
                             unsafe_allow_html=True)
                     with col_info:
+                        same_move = engine_san and engine_san == sel.most_played_san
                         st.markdown(
                             f"**Around move {int(sel.approx_move_number)}** "
                             f"({sel.opening or '—'})\n\n"
                             f"Reached {int(sel.n_games)}× with "
                             f"**{int(sel.n_distinct_moves)} different moves** tried\n\n"
-                            f"Usual move: **{sel.most_played_san}** (arrow)\n\n"
+                            f"Your usual move: **{sel.most_played_san}**"
+                            + (" ✓ engine agrees" if same_move else " (gold arrow)") + "\n\n"
                             f"Avg CPL: {sel.avg_cpl:.0f}")
+                        st.divider()
+                        if analysis:
+                            st.markdown(f"**Eval:** {_eval_str(analysis['eval_cp'], analysis['eval_mate'])}")
+                            if engine_san and not same_move:
+                                st.markdown(f"**Engine best:** {engine_san} (green arrow)")
+                            pv = _pv_str(sel.fen_before, analysis["pv_json"])
+                            if pv:
+                                st.caption(f"Line: {pv}")
+                        else:
+                            st.caption("No engine analysis stored for this position yet — "
+                                       "run a batch to see the eval here.")
 
     with st.container(border=True):
         st.subheader("Where in an opening does your accuracy drop?")
