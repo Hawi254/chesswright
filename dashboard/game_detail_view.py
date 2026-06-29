@@ -173,7 +173,8 @@ def render():
         if live_result:
             eval_label = chess_display.eval_str(live_result.eval_cp, live_result.eval_mate)
             pv = chess_display.pv_str(fen_after, live_result.pv_json)
-            st.caption("Engine: " + eval_label + (f" — {pv}" if pv else ""))
+            depth_str = f" (depth {live_result.depth})" if live_result.depth else ""
+            st.caption("Engine: " + eval_label + (f" — {pv}" if pv else "") + depth_str)
         elif fen_after:
             engine_svc = live_engine.get_engine_service()
             if engine_svc is not None:

@@ -192,6 +192,7 @@ def render():
                             "eval_mate": live_result.eval_mate,
                             "best_move_san": live_result.best_move_san,
                             "pv_json": live_result.pv_json,
+                            "depth": live_result.depth,
                             "source": "live",
                         }
 
@@ -213,8 +214,12 @@ def render():
                         if engine_san:
                             st.markdown(f"**Best move:** {engine_san}")
                         pv = chess_display.pv_str(fen, analysis["pv_json"])
+                        depth = analysis.get("depth")
+                        depth_str = f" (depth {depth})" if depth else ""
                         if pv:
-                            st.caption(f"Line: {pv}")
+                            st.caption(f"Line: {pv}{depth_str}")
+                        elif depth:
+                            st.caption(f"depth {depth}")
                         if analysis.get("source") == "live":
                             st.caption("Live engine result (not from batch).")
                     else:
@@ -287,6 +292,7 @@ def render():
                                 "eval_mate": live_result.eval_mate,
                                 "best_move_san": live_result.best_move_san,
                                 "pv_json": live_result.pv_json,
+                                "depth": live_result.depth,
                                 "source": "live",
                             }
 
@@ -314,8 +320,12 @@ def render():
                             if engine_san and not same_move:
                                 st.markdown(f"**Engine best:** {engine_san} (green arrow)")
                             pv = chess_display.pv_str(sel.fen_before, analysis["pv_json"])
+                            depth = analysis.get("depth")
+                            depth_str = f" (depth {depth})" if depth else ""
                             if pv:
-                                st.caption(f"Line: {pv}")
+                                st.caption(f"Line: {pv}{depth_str}")
+                            elif depth:
+                                st.caption(f"depth {depth}")
                             if analysis.get("source") == "live":
                                 st.caption("Live engine result (not from batch).")
                         else:

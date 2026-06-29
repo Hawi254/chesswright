@@ -207,17 +207,19 @@ def get_position_analysis(duck_conn, fen_before: str):
     """, [fen_before]).fetchone()
     if row:
         return {"eval_cp": row[0], "eval_mate": row[1],
-                "best_move_san": row[2], "pv_json": row[3], "source": "stored"}
+                "best_move_san": row[2], "pv_json": row[3],
+                "depth": None, "source": "stored"}
 
     row = duck_conn.execute("""
-        SELECT eval_cp, eval_mate, best_move_san, pv_json
+        SELECT eval_cp, eval_mate, best_move_san, pv_json, engine_depth
         FROM db.position_cache
         WHERE fen_before = ? AND best_move_san IS NOT NULL
         LIMIT 1
     """, [fen_before]).fetchone()
     if row:
         return {"eval_cp": row[0], "eval_mate": row[1],
-                "best_move_san": row[2], "pv_json": row[3], "source": "cached"}
+                "best_move_san": row[2], "pv_json": row[3],
+                "depth": row[4], "source": "cached"}
 
     return None
 
