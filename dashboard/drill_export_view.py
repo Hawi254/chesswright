@@ -126,7 +126,7 @@ def render():
                 ]
                 if c in df.columns
             ]
-            st.dataframe(df[preview_cols], use_container_width=True)
+            st.dataframe(df[preview_cols], width='stretch')
 
     # ---------- Export buttons ----------
     st.subheader("Export")
@@ -139,7 +139,7 @@ def render():
             data=pgn_str,
             file_name="chesswright_drills.pgn",
             mime="text/plain",
-            use_container_width=True,
+            width='stretch',
             disabled=not pgn_str,
         )
         st.caption(
@@ -154,7 +154,7 @@ def render():
             data=csv_str,
             file_name="chesswright_drills.txt",
             mime="text/plain",
-            use_container_width=True,
+            width='stretch',
             disabled=not csv_str,
         )
         st.caption(

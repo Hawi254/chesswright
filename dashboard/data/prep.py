@@ -31,7 +31,7 @@ def get_recent_form(duck_conn, top_n: int = 20) -> pd.DataFrame:
     """
     return duck_conn.execute("""
         SELECT
-            g.color,
+            g.player_color                                             AS color,
             g.opening_family                                           AS opening,
             COUNT(*)                                                   AS n_games,
             ROUND(AVG(CASE WHEN g.outcome_for_player = 'win'  THEN 1.0
@@ -42,7 +42,7 @@ def get_recent_form(duck_conn, top_n: int = 20) -> pd.DataFrame:
         LEFT JOIN db.moves m ON m.game_id = g.id AND m.is_player_move = 1
         WHERE g.analysis_status = 'done'
           AND g.opening_family  IS NOT NULL
-        GROUP BY g.color, g.opening_family
+        GROUP BY g.player_color, g.opening_family
         HAVING COUNT(*) >= 3
         ORDER BY n_games DESC
         LIMIT ?
@@ -57,7 +57,7 @@ def get_opening_tendencies(duck_conn, top_n: int = 20) -> pd.DataFrame:
     return duck_conn.execute("""
         SELECT
             g.opening_family                                           AS opening,
-            g.color,
+            g.player_color                                             AS color,
             COUNT(DISTINCT g.id)                                       AS n_games,
             ROUND(AVG(m.cpl), 1)                                       AS avg_cpl,
             ROUND(
@@ -70,7 +70,7 @@ def get_opening_tendencies(duck_conn, top_n: int = 20) -> pd.DataFrame:
         WHERE g.analysis_status = 'done'
           AND m.cpl             IS NOT NULL
           AND g.opening_family  IS NOT NULL
-        GROUP BY g.opening_family, g.color
+        GROUP BY g.opening_family, g.player_color
         HAVING COUNT(DISTINCT g.id) >= 3
         ORDER BY blunder_pct DESC
         LIMIT ?

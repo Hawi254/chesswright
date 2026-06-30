@@ -77,7 +77,15 @@ def _stop() -> None:
 
 @st.fragment(run_every="2s")
 def _status_fragment() -> None:
-    """Polls thread state every 2s; fires one full rerun when analysis completes."""
+    """Polls thread state every 2s and renders all terminal states here.
+
+    Terminal states (error, done, idle) are rendered inside the fragment
+    rather than triggering st.rerun() to notify the main body. Calling
+    st.rerun() (full-app) from within a run_every fragment causes a
+    "fragment does not exist anymore" error: the full rerun replaces the
+    fragment with a new ID, then the old run_every callback fires against
+    the now-gone ID. Keeping all rendering in the fragment avoids this.
+    """
     with _lock:
         state = dict(_state)
     status = state.get("status", "idle")
@@ -87,15 +95,19 @@ def _status_fragment() -> None:
         label = _STEP_LABELS.get(step, step)
         username = state.get("username", "")
         st.info(f"Analysing **{username}**: {label}")
-        if status not in ("stopping",):
+        if status != "stopping":
             if st.button("Stop analysis"):
                 _stop()
-                st.rerun()
+                st.rerun(scope="fragment")
         return
 
-    if status == "done" and not st.session_state.get("_prep_done_acked"):
-        st.session_state["_prep_done_acked"] = True
-        st.rerun()
+    if status == "error":
+        st.error(f"Analysis failed: {state.get('error', 'Unknown error')}")
+        st.caption("Check that the username is spelled correctly and Stockfish is installed.")
+    elif status == "done":
+        _render_scout_report(state.get("username", ""))
+    elif status == "idle":
+        _render_prev_opponents()
 
 
 def _render_scout_report(username: str) -> None:
@@ -128,13 +140,13 @@ def _render_scout_report(username: str) -> None:
                 w = form_df[form_df.color == "white"].drop(columns=["color"])
                 if not w.empty:
                     st.markdown("**As White**")
-                    st.dataframe(w.rename(columns=col_map), use_container_width=True,
+                    st.dataframe(w.rename(columns=col_map), width='stretch',
                                  hide_index=True)
             with col2:
                 b = form_df[form_df.color == "black"].drop(columns=["color"])
                 if not b.empty:
                     st.markdown("**As Black**")
-                    st.dataframe(b.rename(columns=col_map), use_container_width=True,
+                    st.dataframe(b.rename(columns=col_map), width='stretch',
                                  hide_index=True)
 
         if not tendencies_df.empty:
@@ -145,7 +157,7 @@ def _render_scout_report(username: str) -> None:
                     "opening": "Opening", "color": "Color", "n_games": "Games",
                     "avg_cpl": "ACPL", "blunder_pct": "Blunder %",
                 }),
-                use_container_width=True,
+                width='stretch',
                 hide_index=True,
             )
 
@@ -179,7 +191,7 @@ def _render_prev_opponents() -> None:
         if st.button(name, key=f"prev_{name}"):
             with _lock:
                 _state.update({"status": "done", "username": name})
-            st.rerun()
+            st.rerun(scope="fragment")
 
 
 def render() -> None:
@@ -219,22 +231,8 @@ def render() -> None:
                     "Stop it before starting opponent prep."
                 )
             else:
-                st.session_state.pop("_prep_done_acked", None)
                 _start(username, n_games)
                 st.rerun()
 
-    # ---------- Live status (polls every 2s while running) ----------
+    # ---------- Live status + results (fragment handles all states) ----------
     _status_fragment()
-
-    # ---------- Post-analysis results ----------
-    with _lock:
-        state = dict(_state)
-    status = state.get("status", "idle")
-
-    if status == "error":
-        st.error(f"Analysis failed: {state.get('error', 'Unknown error')}")
-        st.caption("Check that the username is spelled correctly and Stockfish is installed.")
-    elif status == "done":
-        _render_scout_report(state.get("username", ""))
-    elif status == "idle":
-        _render_prev_opponents()

@@ -11,11 +11,13 @@ import pathlib
 import sqlite3
 import sys
 
+import db
+
 MIGRATIONS_DIR = pathlib.Path(__file__).parent / "migrations"
 
 
 def migrate(db_path: str):
-    conn = sqlite3.connect(db_path)
+    conn = db.get_connection(db_path)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS schema_migrations (
             version TEXT PRIMARY KEY,

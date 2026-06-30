@@ -200,7 +200,7 @@ def annotate_game(conn, game_id, mate_cap, thresholds, brilliant_threshold, puzz
     # ply's sharpness too, not just the ones pass 1 ends up updating.
     sharpness_by_idx = {}
     for idx, row in enumerate(rows):
-        move_id, _ply, _san, eval_cp, eval_mate, _best, _mat_delta, _to_sq, _is_cap, _ipm = row
+        move_id, _ply, _san, eval_cp, eval_mate, _best, _mat_delta, _to_sq, _is_cap, _ipm, _fen_before = row
         if eval_cp is None and eval_mate is None:
             continue  # not analyzed -- no move_lines exist either
         rank1, rank2 = rank_lines.get(move_id, (None, None))
@@ -218,7 +218,7 @@ def annotate_game(conn, game_id, mate_cap, thresholds, brilliant_threshold, puzz
     computed_classification = {}
     for idx in range(len(rows) - 1):  # last ply has no "after" row -- left NULL
         (move_id, _ply, san, eval_cp, eval_mate, best_move_san, material_delta,
-         to_square, _is_capture, _is_player_move) = rows[idx]
+         to_square, _is_capture, _is_player_move, _fen_before) = rows[idx]
         next_material_delta = rows[idx + 1][6]
         next_eval_cp, next_eval_mate = rows[idx + 1][3], rows[idx + 1][4]
         next_to_square, next_is_capture = rows[idx + 1][7], rows[idx + 1][8]

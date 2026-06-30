@@ -165,9 +165,9 @@ def render(self_page, detail_page, *, patterns_page=None, matchups_page=None,
                 st.caption("ACPL by month (lower = more accurate)")
                 st.plotly_chart(
                     charts.line_chart(progress_df, "period", "acpl", theme.NEGATIVE, height=240),
-                    theme=None, use_container_width=True)
+                    theme=None, width='stretch')
             with win_col:
                 st.caption("Win rate % by month")
                 st.plotly_chart(
                     charts.line_chart(progress_df, "period", "win_pct", theme.POSITIVE, height=240),
-                    theme=None, use_container_width=True)
+                    theme=None, width='stretch')
