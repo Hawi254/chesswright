@@ -1,0 +1,80 @@
+[Event "Blitz tournament"]
+[Site "https://lichess.org/aaa00001"]
+[Date "2025.01.15"]
+[Round "-"]
+[White "TestPlayerWhite"]
+[Black "TestOpponentA"]
+[Result "1-0"]
+[WhiteElo "1500"]
+[BlackElo "1480"]
+[WhiteRatingDiff "+5"]
+[BlackRatingDiff "-5"]
+[Variant "Standard"]
+[TimeControl "180+0"]
+[ECO "C20"]
+[Opening "King's Pawn Game"]
+[Termination "Normal"]
+[UTCDate "2025.01.15"]
+[UTCTime "10:00:00"]
+
+1. e4 { [%clk 0:03:00] } e5 { [%clk 0:03:00] } 2. Qh5 { [%clk 0:02:58] } Nc6 { [%clk 0:02:58] }
+3. Bc4 { [%clk 0:02:56] } Nf6?? { [%clk 0:02:56] } 4. Qxf7# { [%clk 0:02:54] } 1-0
+
+[Event "Blitz tournament"]
+[Site "https://lichess.org/aaa00002"]
+[Date "2025.01.15"]
+[Round "-"]
+[White "TestOpponentB"]
+[Black "TestPlayerWhite"]
+[Result "0-1"]
+[WhiteElo "1520"]
+[BlackElo "1505"]
+[WhiteRatingDiff "-5"]
+[BlackRatingDiff "+5"]
+[Variant "Standard"]
+[TimeControl "180+0"]
+[ECO "D00"]
+[Opening "Queen's Pawn Game"]
+[Termination "Normal"]
+[UTCDate "2025.01.15"]
+[UTCTime "11:00:00"]
+
+1. d4 { [%clk 0:03:00] } d5 { [%clk 0:03:00] } 2. Bf4 { [%clk 0:02:55] } Nf6 { [%clk 0:02:58] }
+3. e3 { [%clk 0:02:52] } e6 { [%clk 0:02:55] } 4. Nd2 { [%clk 0:02:50] } Bd6 { [%clk 0:02:53] }
+5. Bxd6 { [%clk 0:02:48] } Qxd6 { [%clk 0:02:51] } 6. Ngf3 { [%clk 0:02:46] } 0-0 { [%clk 0:02:49] }
+7. Bd3 { [%clk 0:02:44] } b6 { [%clk 0:02:47] } 8. 0-0 { [%clk 0:02:42] } Bb7 { [%clk 0:02:45] }
+9. c3 { [%clk 0:02:40] } Nbd7 { [%clk 0:02:43] } 10. Qe2 { [%clk 0:02:38] } c5 { [%clk 0:02:41] }
+11. dxc5 { [%clk 0:02:36] } bxc5 { [%clk 0:02:39] } 12. e4 { [%clk 0:02:34] } dxe4 { [%clk 0:02:37] }
+13. Nxe4 { [%clk 0:02:32] } Nxe4 { [%clk 0:02:35] } 14. Bxe4 { [%clk 0:02:30] } Bxe4 { [%clk 0:02:33] }
+15. Qxe4 { [%clk 0:02:28] } Nf6 { [%clk 0:02:31] } 16. Qe2 { [%clk 0:02:26] } Rfd8 { [%clk 0:02:29] }
+17. Rfd1 { [%clk 0:02:24] } Rxd1+ { [%clk 0:02:27] } 18. Rxd1 { [%clk 0:02:22] } Rd8 { [%clk 0:02:25] }
+19. Rxd8+ { [%clk 0:02:20] } Qxd8 { [%clk 0:02:23] } 20. Ne5 { [%clk 0:02:18] } Qd2 { [%clk 0:02:21] }
+21. Qxd2 { [%clk 0:02:16] } cxd4 { [%clk 0:02:24] }
+{ TestPlayerWhite wins on time } 0-1
+
+[Event "Rapid game"]
+[Site "https://lichess.org/aaa00003"]
+[Date "2025.01.16"]
+[Round "-"]
+[White "TestPlayerWhite"]
+[Black "TestOpponentC"]
+[Result "1/2-1/2"]
+[WhiteElo "1510"]
+[BlackElo "1510"]
+[WhiteRatingDiff "0"]
+[BlackRatingDiff "0"]
+[Variant "Standard"]
+[TimeControl "600+0"]
+[ECO "C50"]
+[Opening "Italian Game"]
+[Termination "Draw by repetition"]
+[UTCDate "2025.01.16"]
+[UTCTime "14:00:00"]
+
+1. e4 { [%clk 0:10:00] } e5 { [%clk 0:10:00] } 2. Nf3 { [%clk 0:09:55] } Nc6 { [%clk 0:09:55] }
+3. Bc4 { [%clk 0:09:50] } Bc5 { [%clk 0:09:50] } 4. Nc3 { [%clk 0:09:45] } Nf6 { [%clk 0:09:45] }
+5. d3 { [%clk 0:09:40] } d6 { [%clk 0:09:40] } 6. Be3 { [%clk 0:09:35] } Bxe3 { [%clk 0:09:35] }
+7. fxe3 { [%clk 0:09:30] } 0-0 { [%clk 0:09:30] } 8. 0-0 { [%clk 0:09:25] } h6 { [%clk 0:09:25] }
+9. Ng5 { [%clk 0:09:20] } d5 { [%clk 0:09:20] } 10. Nxd5 { [%clk 0:09:15] } Nxd5 { [%clk 0:09:15] }
+11. Nxf7 { [%clk 0:09:10] } Rxf7 { [%clk 0:09:10] } 12. Rxf7 { [%clk 0:09:05] } Kxf7 { [%clk 0:09:05] }
+1/2-1/2

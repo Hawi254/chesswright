@@ -5,10 +5,10 @@
 # don't have to repeat flags on every invocation.
 
 database:
-  path: chess.db
+  path: /home/jasper/Desktop/wider_release/chess_app/chess.db
 
 player:
-  name: "CHANGE_ME"          # your lichess username, exactly as it appears
+  name: "L3-37"          # your lichess username, exactly as it appears
                                # in your profile URL (lichess.org/@/CHANGE_ME).
                                # Every script reads this -- nothing else in
                                # the pipeline is hardcoded to a specific player.

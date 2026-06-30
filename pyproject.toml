@@ -1,0 +1,19 @@
+[tool.pytest.ini_options]
+testpaths = ["tests", "dashboard"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+markers = [
+    "unit: pure-function tests, no DB or network",
+    "integration: tests that touch SQLite (in-memory) or the filesystem",
+    "ui: Streamlit AppTest-based page render tests",
+    "perf: pytest-benchmark performance tests (slow by default)",
+    "slow: tests that are slow by design (real network/engine)",
+]
+# Performance tests are excluded from the default run — invoke explicitly:
+#   pytest -m perf
+filterwarnings = [
+    "ignore::DeprecationWarning:streamlit",
+    "ignore::DeprecationWarning:pandas",
+    "ignore::RuntimeWarning",
+]
