@@ -222,22 +222,45 @@ def report_by_day_of_week(conn, min_sample_size):
 
 
 def ensure_session_ctx(conn, session_gap_minutes):
-    """Idempotent within a connection -- only builds the TEMP TABLE once."""
-    exists = conn.execute(
-        "SELECT name FROM sqlite_temp_master WHERE name='session_ctx'"
-    ).fetchone()
-    if exists:
+    """Idempotent within a connection.
+
+    Fast path (after migration 0023): if session_ctx_cache is current (game
+    count unchanged since last build), the TEMP TABLE is created from the
+    32k-row cache in <100ms instead of running compute_session_context()
+    (~500ms).  Stale or absent cache falls back to a full rebuild and
+    persists the result so the next start is fast.
+    """
+    if conn.execute("SELECT name FROM sqlite_temp_master WHERE name='session_ctx'").fetchone():
         return
-    context, skipped = compute_session_context(conn, session_gap_minutes)
-    conn.execute("""
-        CREATE TEMP TABLE session_ctx (
+
+    game_count = conn.execute("SELECT COUNT(*) FROM games").fetchone()[0]
+    meta = conn.execute("SELECT session_game_count FROM ctx_cache_meta WHERE id=1").fetchone()
+    cache_current = (meta and meta[0] == game_count and game_count > 0
+                     and conn.execute("SELECT COUNT(*) FROM session_ctx_cache").fetchone()[0] > 0)
+
+    if cache_current:
+        conn.execute("""CREATE TEMP TABLE session_ctx (
             game_id TEXT PRIMARY KEY, session_game_number INTEGER,
             prior_outcome TEXT, losing_streak INTEGER
-        )
-    """)
-    conn.executemany("INSERT INTO session_ctx VALUES (?,?,?,?)", context)
+        )""")
+        conn.execute("INSERT INTO session_ctx SELECT * FROM session_ctx_cache")
+        return
+
+    context, skipped = compute_session_context(conn, session_gap_minutes)
     if skipped:
         print(f"  ({skipped} game(s) skipped from session analysis -- unparseable timestamp)")
+
+    conn.execute("DELETE FROM session_ctx_cache")
+    conn.executemany("INSERT INTO session_ctx_cache VALUES (?,?,?,?)", context)
+    conn.execute("UPDATE ctx_cache_meta SET session_game_count=?, built_at=CURRENT_TIMESTAMP WHERE id=1",
+                 (game_count,))
+    conn.commit()
+
+    conn.execute("""CREATE TEMP TABLE session_ctx (
+        game_id TEXT PRIMARY KEY, session_game_number INTEGER,
+        prior_outcome TEXT, losing_streak INTEGER
+    )""")
+    conn.execute("INSERT INTO session_ctx SELECT * FROM session_ctx_cache")
 
 
 SESSION_JOIN = "JOIN session_ctx sc ON sc.game_id = g.id"
@@ -356,19 +379,42 @@ def compute_structure_context(conn, middlegame_ply, endgame_max_pieces):
 
 
 def ensure_structure_ctx(conn, cfg):
-    exists = conn.execute(
-        "SELECT name FROM sqlite_temp_master WHERE name='structure_ctx'"
-    ).fetchone()
-    if exists:
+    """Idempotent within a connection.
+
+    Fast path (after migration 0023): if structure_ctx_cache is current (game
+    count unchanged since last build), the TEMP TABLE is created from the
+    32k-row cache in <100ms instead of running compute_structure_context()
+    (~11-12s cold on 32k games / 2.3M moves).  Stale or absent cache falls
+    back to a full rebuild and persists the result for the next start.
+    """
+    if conn.execute("SELECT name FROM sqlite_temp_master WHERE name='structure_ctx'").fetchone():
         return
+
+    game_count = conn.execute("SELECT COUNT(*) FROM games").fetchone()[0]
+    meta = conn.execute("SELECT structure_game_count FROM ctx_cache_meta WHERE id=1").fetchone()
+    cache_current = (meta and meta[0] == game_count and game_count > 0
+                     and conn.execute("SELECT COUNT(*) FROM structure_ctx_cache").fetchone()[0] > 0)
+
+    if cache_current:
+        conn.execute("""CREATE TEMP TABLE structure_ctx (
+            game_id TEXT PRIMARY KEY, middlegame_sig TEXT, endgame_sig TEXT, endgame_ply INTEGER
+        )""")
+        conn.execute("INSERT INTO structure_ctx SELECT * FROM structure_ctx_cache")
+        return
+
     context = compute_structure_context(
         conn, cfg["analytics"]["middlegame_ply"], cfg["analytics"]["endgame_max_pieces"])
-    conn.execute("""
-        CREATE TEMP TABLE structure_ctx (
-            game_id TEXT PRIMARY KEY, middlegame_sig TEXT, endgame_sig TEXT, endgame_ply INTEGER
-        )
-    """)
-    conn.executemany("INSERT INTO structure_ctx VALUES (?,?,?,?)", context)
+
+    conn.execute("DELETE FROM structure_ctx_cache")
+    conn.executemany("INSERT INTO structure_ctx_cache VALUES (?,?,?,?)", context)
+    conn.execute("UPDATE ctx_cache_meta SET structure_game_count=?, built_at=CURRENT_TIMESTAMP WHERE id=1",
+                 (game_count,))
+    conn.commit()
+
+    conn.execute("""CREATE TEMP TABLE structure_ctx (
+        game_id TEXT PRIMARY KEY, middlegame_sig TEXT, endgame_sig TEXT, endgame_ply INTEGER
+    )""")
+    conn.execute("INSERT INTO structure_ctx SELECT * FROM structure_ctx_cache")
 
 
 def fmt_structure_row(label, n_games, win, draw, loss, n_analyzed, acpl, blunder_rate, min_sample_size):

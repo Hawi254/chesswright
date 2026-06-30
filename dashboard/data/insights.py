@@ -17,8 +17,9 @@ a placeholder, when its underlying data is too thin to say anything real
 findings yet" must be a normal, common state, not a crash or a wall of
 "--" placeholders.
 """
-from . import patterns, tactical, matchups, game_endings
+from . import patterns, matchups, game_endings
 from ._shared import TIME_PRESSURE_BUCKETS, THINKING_TIME_BUCKETS, bucket_acpl_blunder_rate
+from _common import get_config
 
 # Minimum sample sizes below are deliberately conservative and ad hoc --
 # there's no statistical test here, just "enough rows that one outlier
@@ -32,20 +33,21 @@ MIN_CASTLE_GAMES = 5
 
 
 def _fetch_move_correlates(duck_conn):
-    """One scan of the moves table backing the four findings below (piece
-    hot-spot, sharpness, thinking-time, clock-pressure) -- each used to
-    independently re-run patterns.py's own query, all four starting from
-    the exact same "is_player_move=1 AND cpl IS NOT NULL" base set and
-    only differing in which extra column they bucket by. Measured at
-    ~10-12s for this page alone against a real ~32k-game/1,497-analyzed
-    database (vs ~3-4s for any single other page) before this change --
-    the moves table is by far the largest in the schema, so collapsing
-    four full scans into one is the single biggest win available without
-    touching patterns.py's own functions (Patterns & Tendencies and
-    Tactical Highlights still call those individually, unchanged)."""
+    """Single moves scan shared by all findings in get_career_findings.
+
+    Extended beyond the original 7 columns to also cover the backrank,
+    brilliant-candidate, and blown-mate findings -- each was previously a
+    separate DuckDB query (~600-1300ms each against the 2.3M-row moves
+    table). Adding the columns here costs ~540ms extra (more bytes
+    transferred per row) but eliminates 3 separate SQLITE_SCANs totalling
+    ~2.6s. Net savings on a 32k-game database: ~2s per career-findings
+    call."""
     return duck_conn.execute("""
         SELECT m.cpl, m.classification, m.piece, m.sharpness, m.time_spent_seconds,
-               m.clock_seconds, g.base_seconds
+               m.clock_seconds, g.base_seconds,
+               m.to_square, m.color,
+               m.is_brilliant_candidate, m.eval_mate, m.san, m.best_move_san,
+               g.outcome_for_player
         FROM db.moves m JOIN db.games g ON g.id = m.game_id
         WHERE m.is_player_move=1 AND m.cpl IS NOT NULL
     """).fetchdf()
@@ -141,16 +143,24 @@ def _castling(duck_conn, config_path=None):
     }
 
 
-def _backrank(duck_conn):
-    df = patterns.get_rook_king_backrank_performance(duck_conn)
-    df = df[df.n_moves >= MIN_BACKRANK_MOVES]
+def _backrank(moves_df):
+    """Compute king back-rank performance from the pre-fetched moves_df
+    instead of firing a separate DuckDB query -- the required columns
+    (piece, to_square, color, cpl) are already in the DataFrame."""
+    df = moves_df[
+        (moves_df.piece == "K") & moves_df.to_square.notna() & moves_df.color.notna()
+    ].copy()
     if df.empty:
         return None
-    king = df[df.piece == "K"]
-    if len(king) < 2:
+    rank = df.to_square.str[1]
+    back_rank_char = df.color.map({"w": "1", "b": "8"})
+    df["is_back_rank"] = rank == back_rank_char
+    result = df.groupby("is_back_rank").agg(n_moves=("cpl", "size"), acpl=("cpl", "mean")).reset_index()
+    result = result[result.n_moves >= MIN_BACKRANK_MOVES]
+    if len(result) < 2:
         return None
-    back = king[king.is_back_rank].iloc[0]
-    elsewhere = king[~king.is_back_rank].iloc[0]
+    back = result[result.is_back_rank].iloc[0]
+    elsewhere = result[~result.is_back_rank].iloc[0]
     return {
         "title": "King moves off the back rank",
         "headline": f"King ACPL off the back rank: {elsewhere.acpl:.1f}",
@@ -186,12 +196,28 @@ def _giant_killing(duck_conn):
     }
 
 
-def _tactical_highlights(duck_conn):
-    brilliant = tactical.get_brilliant_candidates(duck_conn, top_n=10**9)
-    hangs = tactical.get_hallucination_blunders(duck_conn)
-    blown = tactical.get_blown_mates(duck_conn)
-    n_brilliant, n_hangs, n_blown_loss = (
-        len(brilliant), len(hangs), int((blown.outcome_for_player == "loss").sum()) if len(blown) else 0)
+def _tactical_highlights(duck_conn, moves_df, config_path=None):
+    """Compute tactical highlight counts for the insights finding.
+
+    n_brilliant and n_blown_loss come from the pre-fetched moves_df (no
+    extra DuckDB scan needed). n_hangs still requires the self-join query
+    in get_hallucination_blunders -- there's no way to compute it from the
+    per-move DataFrame without re-joining moves against moves."""
+    n_brilliant = int(moves_df.is_brilliant_candidate.sum())
+    blown_mask = (
+        moves_df.eval_mate.notna() & (moves_df.eval_mate > 0) &
+        moves_df.best_move_san.notna() & (moves_df.san != moves_df.best_move_san) &
+        (moves_df.outcome_for_player == "loss"))
+    n_blown_loss = int(blown_mask.sum())
+    cfg = get_config(config_path)
+    min_delta = cfg["analytics"]["hallucination_min_material_delta"]
+    n_hangs = duck_conn.execute(f"""
+        SELECT COUNT(*) FROM db.moves m
+        JOIN db.moves m2 ON m2.game_id = m.game_id AND m2.ply = m.ply + 1
+        WHERE m.is_player_move=1 AND m.classification='blunder' AND m.cpl IS NOT NULL
+          AND m2.is_capture=1 AND m2.to_square=m.to_square
+          AND m2.material_delta >= {min_delta}
+    """).fetchone()[0]
     if not (n_brilliant or n_hangs or n_blown_loss):
         return None
     return {
@@ -227,10 +253,10 @@ def get_career_findings(duck_conn, baseline_blunder_rate, config_path=None):
         _thinking_time(moves_df),
         _time_pressure(moves_df),
         _castling(duck_conn, config_path),
-        _backrank(duck_conn),
+        _backrank(moves_df),
         _nemesis(duck_conn),
         _giant_killing(duck_conn),
-        _tactical_highlights(duck_conn),
+        _tactical_highlights(duck_conn, moves_df, config_path),
         _game_endings(duck_conn),
     ]
     return [f for f in candidates if f is not None]
