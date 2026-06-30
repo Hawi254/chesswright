@@ -457,6 +457,7 @@ def run(db_path, depth, multipv, threads, hash_mb, pv_max_len, engine_path,
 
     print(f"Session summary: {games_done} games, {total_plies} plies, "
           f"{time.monotonic()-start_time:.1f}s elapsed.")
+    return run_id
 
 
 if __name__ == "__main__":

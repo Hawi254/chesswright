@@ -37,6 +37,124 @@ from worker import parse_duration
 from _common import get_config, get_sqlite_connection, resolve_db_path
 
 
+def _get_batch_delta(conn, run_id: int) -> dict | None:
+    """Compute before/after accuracy metrics for a completed analysis run.
+
+    Uses moves.analysis_run_id to split the move history into "before this
+    run" (all prior runs) and "this run", then compares. Returns None only
+    if the run row no longer exists. Handles first-ever batch gracefully:
+    before_acpl/before_blunder_rate are None when there was no prior history.
+    """
+    run = conn.execute(
+        "SELECT games_analyzed, plies_analyzed, ended_at FROM analysis_runs WHERE id=?",
+        (run_id,)).fetchone()
+    if not run:
+        return None
+    games_analyzed, plies_analyzed, ended_at = run
+
+    # Moves from all runs EXCEPT this one (i.e. "before" state)
+    before = conn.execute("""
+        SELECT AVG(cpl),
+               100.0 * SUM(CASE WHEN classification='blunder' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0)
+        FROM moves
+        WHERE is_player_move=1 AND cpl IS NOT NULL
+          AND (analysis_run_id IS NULL OR analysis_run_id != ?)
+    """, (run_id,)).fetchone()
+
+    # All player moves (after state)
+    after = conn.execute("""
+        SELECT AVG(cpl),
+               100.0 * SUM(CASE WHEN classification='blunder' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0)
+        FROM moves
+        WHERE is_player_move=1 AND cpl IS NOT NULL
+    """).fetchone()
+
+    # Stats specific to THIS run
+    this_run = conn.execute("""
+        SELECT
+            COUNT(CASE WHEN classification='blunder' THEN 1 END),
+            COUNT(CASE WHEN is_brilliant_candidate=1 THEN 1 END)
+        FROM moves
+        WHERE is_player_move=1 AND analysis_run_id=?
+    """, (run_id,)).fetchone()
+
+    # Most common missed tactical motif this run
+    motif_row = conn.execute("""
+        SELECT motif, COUNT(*) AS n
+        FROM moves
+        WHERE is_player_move=1 AND classification='blunder'
+          AND motif IS NOT NULL AND motif != ''
+          AND analysis_run_id=?
+        GROUP BY motif ORDER BY n DESC LIMIT 1
+    """, (run_id,)).fetchone()
+
+    return {
+        "run_id":              run_id,
+        "games_analyzed":      games_analyzed or 0,
+        "plies_analyzed":      plies_analyzed or 0,
+        "ended_at":            ended_at,
+        "before_acpl":         before[0],
+        "before_blunder_rate": before[1],
+        "after_acpl":          after[0],
+        "after_blunder_rate":  after[1],
+        "new_blunders":        this_run[0] or 0,
+        "new_brilliant":       this_run[1] or 0,
+        "top_motif":           motif_row[0] if motif_row else None,
+        "top_motif_count":     motif_row[1] if motif_row else 0,
+    }
+
+
+def _render_batch_summary(summary: dict) -> None:
+    """Persistent "what changed in this batch" card shown after a run completes."""
+    with st.container(border=True):
+        n = summary["games_analyzed"]
+        st.subheader(f"Last batch — {n} game{'s' if n != 1 else ''} analyzed")
+
+        has_history = summary["before_acpl"] is not None
+        col1, col2, col3 = st.columns(3)
+
+        if has_history:
+            acpl_delta = (summary["after_acpl"] or 0) - summary["before_acpl"]
+            col1.metric(
+                "ACPL",
+                f"{summary['after_acpl']:.1f}" if summary["after_acpl"] else "—",
+                delta=f"{acpl_delta:+.1f}" if summary["after_acpl"] else None,
+                delta_color="inverse",  # lower ACPL is better, so negative delta = green
+                help="Average centipawn loss — lower is more accurate play",
+            )
+            br_delta = (summary["after_blunder_rate"] or 0) - summary["before_blunder_rate"]
+            col2.metric(
+                "Blunder rate",
+                f"{summary['after_blunder_rate']:.1f}%" if summary["after_blunder_rate"] else "—",
+                delta=f"{br_delta:+.1f}%" if summary["after_blunder_rate"] else None,
+                delta_color="inverse",
+            )
+        else:
+            col1.metric(
+                "ACPL (first batch)",
+                f"{summary['after_acpl']:.1f}" if summary["after_acpl"] else "—",
+                help="Average centipawn loss — lower is more accurate play",
+            )
+            col2.metric(
+                "Blunder rate",
+                f"{summary['after_blunder_rate']:.1f}%" if summary["after_blunder_rate"] else "—",
+            )
+
+        col3.metric(
+            "Blunders / Brilliancies",
+            f"{summary['new_blunders']} / {summary['new_brilliant']}",
+            help="New blunders and brilliant-move candidates found in this batch",
+        )
+
+        if summary["top_motif"]:
+            n_m = summary["top_motif_count"]
+            st.caption(
+                f"Most common missed tactic this batch: **{summary['top_motif']}** "
+                f"({n_m} instance{'s' if n_m != 1 else ''}) — "
+                f"see Tactical Highlights for the full breakdown."
+            )
+
+
 def _queue_counts(conn):
     row = conn.execute("""
         SELECT
@@ -107,6 +225,16 @@ def _render_status(db_path, cfg):
         if st.session_state.get("analysis_jobs_acked_run_seq") != state.get("run_seq"):
             st.toast("Analysis batch finished.")
             st.session_state["analysis_jobs_acked_run_seq"] = state.get("run_seq")
+            # Compute batch delta once, immediately -- run_id is now available
+            # from job_runner._state["completed_run_id"] via get_state(). Store
+            # in session_state so the summary persists while the user navigates
+            # this page (cleared again when a new batch starts via the Start button).
+            run_id = state.get("completed_run_id")
+            if run_id is not None:
+                fresh_conn = get_sqlite_connection(db_path)
+                delta = _get_batch_delta(fresh_conn, run_id)
+                if delta and delta["games_analyzed"] > 0:
+                    st.session_state["last_batch_summary"] = delta
 
     if lock_info is not None and not running:
         _render_lock_warning(lock_info)
@@ -135,6 +263,10 @@ def render():
 
     running = _render_status(db_path, cfg)
 
+    summary = st.session_state.get("last_batch_summary")
+    if summary and not running:
+        _render_batch_summary(summary)
+
     st.divider()
 
     # ---------- Start ----------
@@ -142,6 +274,7 @@ def render():
         st.caption("A batch is already running -- use the Stop button above to end it first.")
     else:
         if st.button("Start analysis batch", type="primary"):
+            st.session_state.pop("last_batch_summary", None)  # clear stale summary on new run
             cfg = get_config()  # re-read so any just-saved settings are picked up
             try:
                 job_runner.start(

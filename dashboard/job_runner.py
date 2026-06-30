@@ -70,11 +70,11 @@ def start(db_path, depth, multipv, threads, hash_mb, pv_max_len, engine_path,
 
     def target():
         try:
-            worker.run(db_path, depth, multipv, threads, hash_mb, pv_max_len, engine_path,
-                       max_games, max_duration_s, consecutive_failure_limit, commit_every_n_moves,
-                       on_game_done=on_game_done, stop_event=stop_event)
+            run_id = worker.run(db_path, depth, multipv, threads, hash_mb, pv_max_len, engine_path,
+                                max_games, max_duration_s, consecutive_failure_limit, commit_every_n_moves,
+                                on_game_done=on_game_done, stop_event=stop_event)
             with _lock:
-                _state["status"] = "done"
+                _state.update(status="done", completed_run_id=run_id)
         except Exception as e:
             with _lock:
                 _state.update(status="error", error=str(e))

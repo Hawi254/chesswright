@@ -285,6 +285,91 @@ def generate_insights_synthesis(findings, win_pct, analyzed_games, total_games):
     return contextualize(prompt)
 
 
+def explain_engine_move(fen: str, eval_cp: int | None, eval_mate: int | None,
+                        best_san: str) -> str:
+    """2-3 sentences explaining WHY the engine's top move is the right choice.
+
+    Distinct from annotate_position(): that writes a position label for
+    the user's own variation notes; this explains an engine suggestion in
+    the context of game review -- the question being answered is always
+    'why is X the best move here?', not 'what is this position about?'
+    """
+    if eval_mate is not None:
+        side = "current side" if eval_mate > 0 else "opponent"
+        eval_str = f"forced mate in {abs(eval_mate)} for the {side}"
+    elif eval_cp is not None:
+        eval_str = f"{eval_cp / 100:+.2f} (positive = current player is better)"
+    else:
+        eval_str = "not available"
+
+    prompt = f"""You are explaining a chess move to a serious club-level player reviewing their game.
+
+Position (FEN): {fen}
+Engine evaluation (side-to-move perspective): {eval_str}
+Engine's recommended move: {best_san}
+
+In exactly 2-3 sentences, explain the chess IDEA behind {best_san}: what specific threat it creates, what structural element it improves, or what weakness it exploits. Name the concrete squares, pieces, or pawn features involved. Do NOT describe the physical move — explain WHY it works. Do NOT use filler phrases like "this is a great move."
+
+Explanation:"""
+    return contextualize(prompt, max_tokens=180)
+
+
+def _build_coaching_prompt(findings, win_pct, analyzed_games, total_games):
+    finding_lines = "\n".join(
+        f"  {i + 1}. {f['title']}: {f['headline']}. {f['detail']}"
+        for i, f in enumerate(findings))
+
+    return f"""You are a chess coach giving specific, actionable improvement advice.
+
+{PERSONA_AND_STYLE}
+
+STRICT RULES — do not violate these:
+- Base ALL recommendations only on the findings explicitly listed below. Do not invent statistics or findings.
+- Each recommendation must be concrete and specific — not vague advice like "study tactics" but a named pattern, position type, or drill format.
+- 2-3 numbered recommendations only, each 2-3 sentences. No bullet sub-points.
+- Address the player as "you" throughout.
+
+{_completeness_note(analyzed_games, total_games)}
+
+Player's overall win rate: {win_pct:.1f}%
+
+Findings (from their analyzed game history):
+{finding_lines}
+
+What should this player actually DO to address their biggest weaknesses? Give 2-3 concrete, specific practice recommendations, each grounded in one of the findings above."""
+
+
+def generate_coaching_recommendations(findings, win_pct, analyzed_games, total_games):
+    prompt = _build_coaching_prompt(findings, win_pct, analyzed_games, total_games)
+    return contextualize(prompt, max_tokens=450)
+
+
+def _build_ask_prompt(question: str, data_brief: str) -> str:
+    return f"""You are a chess analysis assistant helping a player understand their personal game history.
+
+{PERSONA_AND_STYLE}
+
+STRICT RULES — do not violate these:
+- Answer using ONLY the data provided in the section below. Do not invent statistics, trends, or comparisons not present in the data.
+- If the question asks about something not covered (a specific game, a specific date, individual move sequences), say so explicitly and name the relevant app page (Game Detail for individual games, Tactical Highlights for specific moves, Patterns & Tendencies for time/phase breakdowns).
+- Cite actual numbers from the data. Be specific.
+- 2-4 sentences. No headers. Bullet points only if comparing 3+ items makes the answer genuinely clearer as a list.
+- Address the player as "you".
+
+--- DATA ---
+{data_brief}
+--- END DATA ---
+
+Question: {question}
+
+Answer:"""
+
+
+def answer_question(question: str, data_brief: str) -> str:
+    """Answer a free-text career question grounded in a pre-assembled data brief."""
+    return contextualize(_build_ask_prompt(question, data_brief), max_tokens=300)
+
+
 def annotate_position(fen: str, eval_cp: int | None = None,
                       engine_best_san: str | None = None,
                       user_comment: str | None = None) -> str:

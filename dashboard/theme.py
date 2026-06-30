@@ -284,6 +284,50 @@ h3 {{
     padding: {SPACE["md"]};
     margin-bottom: {SPACE["md"]};
 }}
+
+/* Focus-for-next-session card on Overview -- gold-tinted, visually distinct
+   from .narrative-quote (which also uses a gold border) via the background
+   tint and the eyebrow label treatment. */
+.focus-card {{
+    background-color: {ACCENT_GOLD}0D;
+    border-left: 3px solid {ACCENT_GOLD};
+    border-radius: 4px;
+    padding: 1rem 1.4rem;
+    margin: 0 0 1rem 0;
+}}
+.focus-card-eyebrow {{
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: {ACCENT_GOLD};
+    margin-bottom: 0.4rem;
+}}
+.focus-card-headline {{
+    font-size: 1.05rem;
+    font-weight: 600;
+    color: {TEXT};
+    margin-bottom: 0.25rem;
+}}
+.focus-card-detail {{
+    font-size: 0.85rem;
+    color: {TEXT_MUTED};
+}}
+
+/* Engine-move explanation block in Game Detail -- italic lightbulb style,
+   same gold family as the focus card, shorter padding since it's inline
+   with the move caption area. */
+.explain-block {{
+    background-color: {ACCENT_GOLD}0D;
+    border-left: 3px solid {ACCENT_GOLD};
+    border-radius: 4px;
+    padding: 0.55rem 1rem;
+    margin: 0.3rem 0 0.5rem 0;
+    font-size: 0.95rem;
+    line-height: 1.6;
+    font-style: italic;
+    color: {TEXT};
+}}
 </style>
 """
 

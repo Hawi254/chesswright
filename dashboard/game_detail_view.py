@@ -27,6 +27,40 @@ def cached_game_detail(_duck_conn, game_id):
     return data.get_game_detail(_duck_conn, game_id)
 
 
+def _render_move_explanation(game_id: str, ply: int, fen: str, live_result) -> None:
+    """Show a cached Claude explanation for the engine's best move, plus a
+    button to generate or refresh it. Separated from the live_result caption
+    block so variation mode can reuse it in future without duplicating the
+    session-state / error-handling logic."""
+    explain_key = f"explain__{game_id}__{ply}"
+    explanation = st.session_state.get(explain_key)
+
+    if explanation:
+        st.markdown(
+            f'<div class="explain-block">💡 {html.escape(explanation)}</div>',
+            unsafe_allow_html=True,
+        )
+
+    if live_result.best_move_san and claude_narrative.api_key_available():
+        btn_label = "Re-explain" if explanation else "Explain this move"
+        if st.button(btn_label, key=f"explain_btn__{game_id}__{ply}",
+                     help="Ask Claude to explain the chess idea behind the engine's suggestion"):
+            with st.spinner("Explaining..."):
+                try:
+                    text = claude_narrative.explain_engine_move(
+                        fen=fen,
+                        eval_cp=live_result.eval_cp,
+                        eval_mate=live_result.eval_mate,
+                        best_san=live_result.best_move_san,
+                    )
+                    st.session_state[explain_key] = text
+                    st.rerun()
+                except claude_narrative.MissingApiKeyError as e:
+                    st.error(str(e))
+                except Exception as e:
+                    st.error(f"Claude API call failed: {e}")
+
+
 def _eval_graph(moves, ply, on_point_click_ply_key):
     wp = narrative.player_win_prob_series(moves)
     if len(wp) < 2:
@@ -444,6 +478,7 @@ def render():
                 pv         = chess_display.pv_str(game_fen_after, live_result.pv_json)
                 depth_str  = f" (depth {live_result.depth})" if live_result.depth else ""
                 st.caption("Engine: " + eval_label + (f" — {pv}" if pv else "") + depth_str)
+                _render_move_explanation(selected_game_id, ply, game_fen_after, live_result)
             elif game_fen_after:
                 engine_svc = live_engine.get_engine_service()
                 if engine_svc is not None:

@@ -80,3 +80,33 @@ def render():
                     st.error(str(e))
                 except Exception as e:
                     st.error(f"Claude API call failed: {e}")
+
+    with st.container(border=True):
+        st.subheader("What to practice")
+        st.caption("Concrete, specific practice recommendations grounded in the findings above — "
+                   "not just what's wrong, but what to actually do about it.")
+        # subject_type='coaching' was added in migration 0017 specifically
+        # for this kind of actionable-recommendation output, distinct from
+        # the 'findings' synthesis stored under subject_key='summary'.
+        cached_coaching = data.get_cached_narrative(sqlite_conn, "coaching", "recommendations")
+        if cached_coaching:
+            coaching_text, coaching_at = cached_coaching
+            st.caption(f"Generated {coaching_at}")
+            st.markdown(coaching_text)
+        coaching_btn_label = "Regenerate recommendations" if cached_coaching else "Generate coaching recommendations"
+
+        if not claude_narrative.api_key_available():
+            st.info("Add your own Anthropic API key on the Settings page to enable this.")
+        if st.button(coaching_btn_label, disabled=not claude_narrative.api_key_available(),
+                     key="coaching_btn"):
+            with st.spinner("Asking Claude..."):
+                try:
+                    coaching_text = claude_narrative.generate_coaching_recommendations(
+                        findings, stats["win_pct"], stats["analyzed_games"], stats["total_games"])
+                    data.save_narrative(sqlite_conn, "coaching", "recommendations",
+                                         coaching_text, claude_narrative.MODEL)
+                    st.rerun()
+                except claude_narrative.MissingApiKeyError as e:
+                    st.error(str(e))
+                except Exception as e:
+                    st.error(f"Claude API call failed: {e}")

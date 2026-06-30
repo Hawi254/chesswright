@@ -22,6 +22,53 @@ def cached_headline_stats(_duck_conn, _sqlite_conn):
 
 
 @st.cache_data
+def cached_career_findings(_duck_conn, baseline_blunder_rate):
+    return data.get_career_findings(_duck_conn, baseline_blunder_rate)
+
+
+# Maps each finding title -> (page_ref_key, human-readable page name, optional tab hint).
+# page_ref_key matches the kwarg name passed to render() from app.py.
+_FINDING_DEST = {
+    "Piece blunder hot-spot":           ("patterns_page", "Patterns & Tendencies", "Piece Handling"),
+    "Sharp positions and blunder rate": ("patterns_page", "Patterns & Tendencies", "Clock & Time"),
+    "Thinking time vs. blunder rate":   ("patterns_page", "Patterns & Tendencies", "Clock & Time"),
+    "Clock pressure and blunder rate":  ("patterns_page", "Patterns & Tendencies", "Clock & Time"),
+    "Castling and win rate":            ("patterns_page", "Patterns & Tendencies", "Game Context"),
+    "King moves off the back rank":     ("patterns_page", "Patterns & Tendencies", "Piece Handling"),
+    "Toughest opponent":                ("matchups_page", "Matchups & Opponents", None),
+    "Giant-killing and collapses":      ("matchups_page", "Matchups & Opponents", None),
+    "Tactical highlights so far":       ("highlights_page", "Tactical Highlights", None),
+    "How your games end":               ("endings_page", "Game Endings", None),
+}
+
+
+def _render_focus_card(findings, page_refs: dict) -> None:
+    """Gold-accented card surfacing the top finding with a direct navigation link.
+    Placed between the career narrative and the headline metrics so it's the
+    first actionable element a returning user sees."""
+    if not findings:
+        return
+    top = findings[0]
+    ref_key, dest_name, dest_tab = _FINDING_DEST.get(top["title"], (None, top["title"], None))
+    dest_page = page_refs.get(ref_key) if ref_key else None
+    tab_note = f" ({dest_tab})" if dest_tab else ""
+
+    st.markdown(
+        f'<div class="focus-card">'
+        f'<div class="focus-card-eyebrow">🎯 Focus for your next session</div>'
+        f'<div class="focus-card-headline">{top["headline"]}</div>'
+        f'<div class="focus-card-detail">{top["detail"]}</div>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+    if dest_page is not None:
+        col, _ = st.columns([3, 5])
+        with col:
+            if st.button(f"Explore in {dest_name}{tab_note} →", key="focus_card_goto"):
+                st.switch_page(dest_page)
+
+
+@st.cache_data
 def cached_rating_trajectory(_duck_conn):
     return data.get_rating_trajectory(_duck_conn)
 
@@ -41,7 +88,8 @@ def cached_progress_by_month(_duck_conn):
     return data.get_progress_by_month(_duck_conn)
 
 
-def render(self_page, detail_page):
+def render(self_page, detail_page, *, patterns_page=None, matchups_page=None,
+           endings_page=None, highlights_page=None):
     sqlite_conn, duck_conn = get_connections()
     st.title("Overview")
 
@@ -58,6 +106,15 @@ def render(self_page, detail_page):
         f'<div class="narrative-quote">'
         f'{html.escape(narrative.generate_career_narrative(stats, rating_df, top_game))}</div>',
         unsafe_allow_html=True)
+
+    if stats.get("analyzed_games", 0) > 0:
+        findings = cached_career_findings(duck_conn, stats.get("blunder_rate"))
+        _render_focus_card(findings, {
+            "patterns_page": patterns_page,
+            "matchups_page": matchups_page,
+            "endings_page":  endings_page,
+            "highlights_page": highlights_page,
+        })
 
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Total games", f"{stats['total_games']:,}")
