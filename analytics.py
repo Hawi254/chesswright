@@ -27,7 +27,13 @@ def acpl_and_blunder_rate(conn, where_extra="", params=(), extra_join=""):
     """Returns (n_moves, n_games, acpl, blunder_rate_pct) over player's
     analyzed moves, optionally further filtered by where_extra (a SQL
     fragment ANDed onto the base filter) and/or extra_join (a SQL fragment
-    inserted between FROM and WHERE, e.g. to join the session_ctx temp table)."""
+    inserted between FROM and WHERE, e.g. to join the session_ctx temp table).
+
+    SECURITY: where_extra and extra_join are interpolated directly into the
+    SQL query without escaping. They MUST be hardcoded string literals —
+    never pass user-supplied or externally-sourced strings here. All values
+    that vary at runtime must go through the params tuple instead.
+    """
     where = BASE_FILTER if not where_extra else f"{BASE_FILTER} AND {where_extra}"
     row = conn.execute(f"""
         SELECT COUNT(*), COUNT(DISTINCT m.game_id), AVG(m.cpl),
@@ -92,6 +98,7 @@ def compute_session_context(conn, session_gap_minutes):
 
 
 def classification_breakdown(conn, where_extra="", params=()):
+    # SECURITY: where_extra must be a hardcoded SQL literal — see acpl_and_blunder_rate's docstring.
     where = BASE_FILTER if not where_extra else f"{BASE_FILTER} AND {where_extra}"
     return conn.execute(f"""
         SELECT m.classification, COUNT(*) FROM moves m JOIN games g ON g.id = m.game_id

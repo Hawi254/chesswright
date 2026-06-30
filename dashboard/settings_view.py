@@ -26,6 +26,13 @@ def render():
         "unlocks the Claude-API extras. You pay for your own usage "
         "directly through your own Anthropic account; this app never "
         "sends your key anywhere except Anthropic's API.")
+    st.caption(
+        "**Shared computers:** if this machine has multiple user accounts, "
+        "be aware that without an OS keychain (see the warning below if "
+        "one appears after saving) the key is stored in a plain text file "
+        "that any other user on this system could read. If this is a "
+        "shared machine, consider not configuring a key here, or use a "
+        "machine you control exclusively.")
 
     current_key = api_key_store.get_api_key()
     secure_backend = api_key_store.using_secure_backend()

@@ -5,6 +5,7 @@ validation case for the broader Phase 6c redesign. Reached only via
 navigation (Game Explorer, Tactical Highlights, etc. -- see 6c.4), never
 shown in the sidebar nav itself (st.Page(..., visibility="hidden")).
 """
+import html
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -199,11 +200,14 @@ def render():
     chips_html = theme.chip_row_html(badge_row.iloc[0]) if not badge_row.empty else ""
 
     st.title(f"{header.opponent_name} ({header.utc_date})")
-    st.markdown(f'<p class="game-id-caption">Game {selected_game_id}</p>', unsafe_allow_html=True)
+    st.markdown(f'<p class="game-id-caption">Game {html.escape(str(selected_game_id))}</p>',
+                unsafe_allow_html=True)
     if chips_html:
         st.markdown(chips_html, unsafe_allow_html=True)
-    st.markdown(f'<div class="narrative-quote">{narrative.generate_narrative(header, moves)}</div>',
-                unsafe_allow_html=True)
+    st.markdown(
+        f'<div class="narrative-quote">'
+        f'{html.escape(narrative.generate_narrative(header, moves))}</div>',
+        unsafe_allow_html=True)
 
     critical_moments, turning_point, _n_other = narrative.select_critical_moments(moves)
 

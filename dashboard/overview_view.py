@@ -5,6 +5,7 @@ career-level narrative (mirroring the per-game story, applied to the
 whole career) and a "most dramatic game" teaser that links straight into
 Game Detail, instead of a bare stats dump.
 """
+import html
 import streamlit as st
 
 import charts
@@ -53,9 +54,10 @@ def render(self_page, detail_page):
     explorer_df = cached_game_explorer_table(duck_conn)
     top_game = explorer_df.iloc[0] if len(explorer_df) else None
 
-    st.markdown(f'<div class="narrative-quote">'
-                f'{narrative.generate_career_narrative(stats, rating_df, top_game)}</div>',
-                unsafe_allow_html=True)
+    st.markdown(
+        f'<div class="narrative-quote">'
+        f'{html.escape(narrative.generate_career_narrative(stats, rating_df, top_game))}</div>',
+        unsafe_allow_html=True)
 
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Total games", f"{stats['total_games']:,}")

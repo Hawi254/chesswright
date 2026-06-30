@@ -3,16 +3,23 @@
 Cross-process lock for `worker.py` batch runs (BRIEF.md's "Phase D--before"
 deferred gap, closed here): the Analysis Jobs dashboard view's whole job is
 managing run lifecycle, so this is the right moment to actually detect "a
-worker.run() batch is already running somewhere" instead of letting a
-second one start and silently compete for CPU against the first (both are
-safe against the same queue_order-ordered table -- confirmed by reading
+worker.run() batch is already running somewhere" instead of letting a second
+one start and silently compete for CPU against the first (both are safe
+against the same queue_order-ordered table -- confirmed by reading
 worker.fetch_next_game()'s query -- just wasteful, not corrupting).
 
-A single PID file at <config dir>/worker.lock, holding the owning
-process's PID and start time. In-process duplicate prevention (the
-dashboard's own background-thread registry) is a separate, cheaper layer
-that this complements, not replaces -- this one also catches a second
-`python3 worker.py` run launched from a terminal alongside the dashboard.
+The lock is held via an OS-level exclusive file lock (fcntl.flock on POSIX,
+msvcrt.locking on Windows) rather than PID-file content alone. This closes
+the classic TOCTOU race the previous design had between reading the PID file
+and writing a new one: two processes that both see no live lock can now only
+one of them win the OS lock -- the loser gets an immediate OSError, not a
+silent race win. The lock is also released automatically on process crash,
+because the OS closes all open file descriptors when a process exits.
+
+The lock FILE still stores the owning PID and start time so that the UI
+(analysis_jobs_view.py, app.py) can display informative "running since..."
+status -- reading that content is pure status reporting, not the locking
+mechanism itself.
 """
 import ctypes
 import dataclasses
@@ -21,9 +28,18 @@ import os
 import pathlib
 import sys
 
+if sys.platform == "win32":
+    import msvcrt
+else:
+    import fcntl
+
 import config
 
 LOCK_PATH = pathlib.Path(config.DEFAULT_CONFIG_PATH).parent / "worker.lock"
+
+# File descriptor kept open for as long as THIS process holds the OS lock.
+# None means this process has not called acquire() (or has called release()).
+_lock_fd = None
 
 
 @dataclasses.dataclass
@@ -63,6 +79,31 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
+def _os_lock(fd) -> bool:
+    """Try to acquire an exclusive non-blocking OS-level lock on fd.
+    Returns True on success, False if another process already holds it."""
+    try:
+        if sys.platform == "win32":
+            fd.seek(0)
+            msvcrt.locking(fd.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except OSError:
+        return False
+
+
+def _os_unlock(fd) -> None:
+    try:
+        if sys.platform == "win32":
+            fd.seek(0)
+            msvcrt.locking(fd.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            fcntl.flock(fd.fileno(), fcntl.LOCK_UN)
+    except OSError:
+        pass
+
+
 def status() -> LockInfo | None:
     """Returns None if no lock file exists. Otherwise reports whether the
     PID it names is still actually alive -- a lock file surviving a crash
@@ -80,30 +121,53 @@ def status() -> LockInfo | None:
 
 
 def acquire():
-    """Raises LockHeldError if a live process already holds the lock.
-    A lock file left behind by a dead process is treated as stale and
-    silently reclaimed -- its liveness was just actually checked above,
-    not assumed, so this isn't a blind override of someone else's run."""
-    existing = status()
-    if existing is not None and existing.alive:
-        raise LockHeldError(existing)
+    """Acquires the lock, raising LockHeldError if a live process already
+    holds it.
+
+    The OS-level flock/msvcrt lock is acquired atomically before writing
+    the PID to the file, so two concurrent acquire() calls are resolved
+    by the OS rather than by a TOCTOU-prone status()-then-write sequence.
+    The winning process then overwrites the file with its own PID and
+    timestamp for informational display; the losing process reads the
+    winner's info from the file and raises LockHeldError with it.
+    """
+    global _lock_fd
     LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
-    LOCK_PATH.write_text(f"{os.getpid()}\n{datetime.datetime.now(datetime.timezone.utc).isoformat()}\n")
+    LOCK_PATH.touch(exist_ok=True)  # create if absent; no-op if already there
+
+    fd = open(LOCK_PATH, "r+")
+    if not _os_lock(fd):
+        fd.close()
+        info = status()
+        raise LockHeldError(info or LockInfo(pid=-1, started_at="unknown", alive=True))
+
+    # We hold the OS lock -- overwrite the file with our own PID and timestamp.
+    fd.seek(0)
+    fd.truncate()
+    fd.write(f"{os.getpid()}\n{datetime.datetime.now(datetime.timezone.utc).isoformat()}\n")
+    fd.flush()
+    _lock_fd = fd
 
 
 def release():
-    """Only removes the lock file if it still names OUR pid -- guards
-    against a race where this process's lock was already judged stale and
-    reclaimed by a newer run before this (slower) process got to its own
-    cleanup."""
-    info = status()
-    if info is not None and info.pid == os.getpid():
+    """Releases the OS lock, closes the file descriptor, and removes the
+    lock file. Only acts if this process actually holds the lock (_lock_fd
+    is set) -- a spurious release() call with no prior acquire() is a
+    no-op rather than accidentally removing another process's lock file."""
+    global _lock_fd
+    if _lock_fd is not None:
+        _os_unlock(_lock_fd)
+        _lock_fd.close()
+        _lock_fd = None
         LOCK_PATH.unlink(missing_ok=True)
 
 
 def force_release():
     """Explicit UI escape hatch for a diagnosed-stale lock (status().alive
-    is False) -- never call this on a lock that's still alive without the
-    caller having confirmed that itself, the same "diagnosed, not waived"
-    discipline BRIEF.md already applies to its other deferred exceptions."""
+    is False). The OS lock was already released when the dead process
+    exited, so only the lock FILE needs removing here.
+
+    Never call this on a lock that's still alive without the caller having
+    confirmed that itself -- the same "diagnosed, not waived" discipline
+    BRIEF.md already applies to its other deferred exceptions."""
     LOCK_PATH.unlink(missing_ok=True)

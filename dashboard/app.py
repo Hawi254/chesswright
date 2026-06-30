@@ -11,6 +11,7 @@ warm_up, the Refresh button) and the navigation wiring.
 
 Run: streamlit run dashboard/app.py
 """
+import re
 import sys
 import pathlib
 import datetime
@@ -145,7 +146,9 @@ def _parse_ver(v: str) -> tuple:
 
 if not NEEDS_ONBOARDING:
     latest_tag = _fetch_latest_version()
-    if latest_tag and _parse_ver(latest_tag) > _parse_ver(__version__):
+    if (latest_tag
+            and re.match(r'^v\d+\.\d+\.\d+$', latest_tag)
+            and _parse_ver(latest_tag) > _parse_ver(__version__)):
         st.sidebar.info(
             f"Chesswright {latest_tag} is available — "
             f"[download it](https://github.com/Hawi254/chesswright/releases/latest)"

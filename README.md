@@ -45,6 +45,13 @@ below). Install it yourself, before running Chesswright:
 Chesswright auto-detects a normal install. If it can't find one, the
 setup wizard will tell you and let you point it at the file directly.
 
+**Only use engine binaries from official sources.** If the wizard asks
+you to browse for an engine file, use only a binary you downloaded
+directly from [stockfishchess.org/download](https://stockfishchess.org/download/)
+or the official release page of whichever UCI engine you're using.
+Chesswright will execute the file you select — do not use a file from
+an untrusted source.
+
 ## 2. Download Chesswright
 
 Go to the [Releases page](https://github.com/Hawi254/chesswright/releases)
@@ -124,6 +131,12 @@ directly for your own usage; Chesswright never sees or stores your key
 anywhere except your own computer's secure credential store (or, as a
 documented fallback if your system doesn't have one, a local file —
 the Settings page will tell you plainly which one is in use).
+
+**Shared computers:** if this machine has multiple user accounts, note
+that without an OS keychain the fallback stores your key in a plain
+text file (`~/.chesswright/api_key.txt`) that other users on the same
+system could read. If this is a shared machine, either skip the API
+key entirely or make sure an OS keychain is active before saving it.
 
 ## Where your data lives
 

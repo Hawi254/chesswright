@@ -174,6 +174,12 @@ def _render_engine_picker():
     real UCI handshake before being accepted -- rejects the wrong file
     with a clear message instead of failing on the next real analysis
     run."""
+    st.warning(
+        "Only upload a binary you obtained directly from "
+        "[stockfishchess.org/download](https://stockfishchess.org/download/) "
+        "or the official release page of another UCI engine. "
+        "This app will execute the file you select — do not upload a file "
+        "from an untrusted source.")
     uploaded = st.file_uploader(
         "Already have a UCI chess engine installed (Stockfish or another)? "
         "Browse for its executable file:")
@@ -181,7 +187,7 @@ def _render_engine_picker():
         return
     engines_dir = pathlib.Path(config_module.DEFAULT_CONFIG_PATH).parent / "engines"
     engines_dir.mkdir(parents=True, exist_ok=True)
-    dest = engines_dir / uploaded.name
+    dest = engines_dir / pathlib.Path(uploaded.name).name  # .name strips any directory traversal
     dest.write_bytes(uploaded.getvalue())
     dest.chmod(dest.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
@@ -252,8 +258,8 @@ def _render_fetch(db_path):
                     st.error(f"Lichess returned an error ({e.response.status_code if e.response else '?'}) "
                              "-- try again in a moment.")
                 return
-            except requests.exceptions.RequestException as e:
-                st.error(f"Couldn't reach lichess: {e}. Check your internet connection and try again.")
+            except requests.exceptions.RequestException:
+                st.error("Couldn't reach lichess — check your internet connection and try again.")
                 return
         conn = get_sqlite_connection(db_path)
         n = conn.execute("SELECT COUNT(*) FROM games").fetchone()[0]
