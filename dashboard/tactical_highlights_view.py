@@ -56,7 +56,7 @@ def cached_hallucination_context(_duck_conn, hangs):
     return data.get_hallucination_context(_duck_conn, hangs)
 
 
-def render(self_page, detail_page):
+def render(self_page, detail_page, drill_export_page=None):
     sqlite_conn, duck_conn = get_connections()
     st.title("Tactical Highlights")
     st.write("A curated reel of the moments most worth remembering: sequences where a "
@@ -75,6 +75,7 @@ def render(self_page, detail_page):
             st.info(theme.thin_data_message(0, 1))
         else:
             motif_df = motif_df.copy()
+            motif_df["motif_key"] = motif_df["motif"]  # preserve before label mapping
             motif_df["motif"] = motif_df["motif"].map(
                 lambda m: MOTIF_LABELS.get(m, m))
             col1, col2 = st.columns([2, 1])
@@ -97,6 +98,27 @@ def render(self_page, detail_page):
                     "avg_cpl":     "Avg CPL",
                     "blunder_pct": "Blunder %",
                 })
+
+            if drill_export_page:
+                st.divider()
+                motif_pairs = list(zip(motif_df["motif_key"], motif_df["motif"]))
+                worst_pos = int(motif_df["n_missed"].idxmax())
+                chosen_label = st.selectbox(
+                    "Export drill positions for motif",
+                    [label for _, label in motif_pairs],
+                    index=worst_pos,
+                    key="tactical_drill_motif_select",
+                )
+                chosen_key = next(k for k, l in motif_pairs if l == chosen_label)
+                if st.button("→ Export practice positions for this motif",
+                             key="tactical_drill_export"):
+                    st.session_state["_drill_preset"] = {
+                        "include_motifs": True,
+                        "include_moments": False,
+                        "include_holes": False,
+                        "motif_filter": chosen_key,
+                    }
+                    st.switch_page(drill_export_page)
 
     with st.container(border=True):
         st.subheader("Puzzle-candidate sequences")

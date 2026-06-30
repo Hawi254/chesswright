@@ -71,6 +71,8 @@ from .game_explorer import (
     get_lead_changes, get_game_badges, get_game_explorer_table, get_game_detail,
 )
 from .insights import get_career_findings
+from .drills import get_motif_drill_positions, get_decisive_moment_positions
+from .prep import open_opponent_connections, get_recent_form, get_opening_tendencies
 from .variations import (
     Variation, Annotation,
     compute_variation_fen,
@@ -108,6 +110,8 @@ __all__ = [
     "BLUNDER_FEST_THRESHOLD", "BRILLIANT_FIND_THRESHOLD", "NAIL_BITER_THRESHOLD",
     "get_lead_changes", "get_game_badges", "get_game_explorer_table", "get_game_detail",
     "get_career_findings",
+    "get_motif_drill_positions", "get_decisive_moment_positions",
+    "open_opponent_connections", "get_recent_form", "get_opening_tendencies",
     "Variation", "Annotation",
     "compute_variation_fen",
     "save_variation", "update_variation_moves", "delete_variation",

@@ -18,7 +18,7 @@ import data
 import live_engine
 import narrative
 import theme
-from _common import get_connections
+from _common import get_config, get_connections
 from game_explorer_view import cached_game_explorer_table
 
 
@@ -521,6 +521,22 @@ def render():
                     st.error(str(e))
                 except Exception as e:
                     st.error(f"Claude API call failed: {e}")
+
+        st.divider()
+        _pgn_narrative = cached[0] if cached else None
+        pgn_bytes = chess_display.game_to_annotated_pgn(
+            header, moves,
+            narrative_text=_pgn_narrative,
+            player_name=get_config()["player"]["name"],
+        ).encode()
+        safe_opp = (header.opponent_name or "game").replace(" ", "_")
+        st.download_button(
+            "Download annotated PGN" + (" (with story)" if _pgn_narrative else ""),
+            data=pgn_bytes,
+            file_name=f"chesswright_{safe_opp}_{str(header.utc_date)}.pgn",
+            mime="application/x-chess-pgn",
+            key=f"game_pgn__{selected_game_id}",
+        )
 
     with st.container(border=True):
         st.subheader("Full annotated move list")

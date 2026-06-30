@@ -177,6 +177,7 @@ def _nemesis(duck_conn):
         "title": "Toughest opponent",
         "headline": f"{toughest.score_pct:.1f}% score against {toughest.opponent_name}",
         "detail": f"Over {int(toughest.n)} games (win + 0.5 x draw, standard tournament scoring).",
+        "opponent_name": toughest.opponent_name,
     }
 
 

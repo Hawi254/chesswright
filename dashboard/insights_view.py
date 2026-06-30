@@ -9,6 +9,12 @@ Refresh is deliberately manual, the same as every other page: the
 sidebar "Refresh data" button in app.py already clears st.cache_data and
 rebuilds the structure/session caches, which is all this page needs to
 pick up newly analyzed games. No separate polling here.
+
+Action buttons (drill_export_page / prep_page): findings that have a
+natural practice target get a one-click "Export drill positions" or
+"Scout this opponent" button that navigates to the relevant page with
+the appropriate preset pre-selected. Pages are optional so callers that
+don't wire them (e.g. tests) continue to work unchanged.
 """
 import streamlit as st
 
@@ -16,6 +22,30 @@ import claude_narrative
 import data
 import theme
 from _common import get_connections
+
+# Findings whose title maps to a Drill Export preset.
+# Keys match finding["title"] exactly; values are passed as _drill_preset
+# into session_state so drill_export_view can pre-select sources + motif filter.
+_DRILL_PRESETS = {
+    "Piece blunder hot-spot": {
+        "include_motifs": True,
+        "include_moments": False,
+        "include_holes": False,
+        "motif_filter": None,
+    },
+    "Tactical highlights so far": {
+        "include_motifs": True,
+        "include_moments": False,
+        "include_holes": False,
+        "motif_filter": None,
+    },
+    "King moves off the back rank": {
+        "include_motifs": True,
+        "include_moments": False,
+        "include_holes": False,
+        "motif_filter": "back_rank_mate",
+    },
+}
 
 
 @st.cache_data
@@ -28,7 +58,7 @@ def cached_career_findings(_duck_conn, baseline_blunder_rate):
     return data.get_career_findings(_duck_conn, baseline_blunder_rate)
 
 
-def render():
+def render(drill_export_page=None, prep_page=None):
     sqlite_conn, duck_conn = get_connections()
     st.title("Insights")
     st.write("A live digest of what stands out in your analyzed games so far -- "
@@ -54,6 +84,23 @@ def render():
             st.subheader(finding["title"])
             st.write(f"**{finding['headline']}**")
             st.caption(finding["detail"])
+
+            drill_preset = _DRILL_PRESETS.get(finding["title"])
+            if drill_preset and drill_export_page:
+                if st.button("→ Export practice positions",
+                             key=f"drill_{finding['title']}",
+                             help="Open Drill Export with this weakness pre-selected."):
+                    st.session_state["_drill_preset"] = drill_preset
+                    st.switch_page(drill_export_page)
+
+            if (finding["title"] == "Toughest opponent"
+                    and prep_page
+                    and finding.get("opponent_name")):
+                if st.button("→ Scout this opponent",
+                             key="scout_nemesis",
+                             help="Open Opponent Prep with this player's username pre-filled."):
+                    st.session_state["_prep_username"] = finding["opponent_name"]
+                    st.switch_page(prep_page)
 
     with st.container(border=True):
         st.subheader("Synthesis")

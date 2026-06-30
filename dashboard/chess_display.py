@@ -1,4 +1,5 @@
 """Shared position display helpers used by openings_view and game_detail_view."""
+import datetime
 import json
 import math
 
@@ -122,3 +123,185 @@ def variation_to_pgn(branch_fen: str, moves_uci: list, annotations: dict,
 
     exporter = chess.pgn.StringExporter(headers=True, variations=True, comments=True)
     return game.accept(exporter)
+
+
+def _safe_val(val) -> bool:
+    """True if val is a real, non-NaN value."""
+    if val is None:
+        return False
+    try:
+        return not math.isnan(float(val))
+    except (TypeError, ValueError):
+        return bool(val)
+
+
+def _drill_context(row: dict) -> str:
+    """Human-readable context string for a drill position."""
+    parts = []
+    if _safe_val(row.get("opening")):
+        parts.append(f"Opening: {row['opening']}")
+    if _safe_val(row.get("move_number")):
+        parts.append(f"Move {int(row['move_number'])}")
+    if _safe_val(row.get("phase")):
+        parts.append(f"Phase: {row['phase']}")
+    if _safe_val(row.get("motif")):
+        parts.append(f"Missed tactic: {row['motif']}")
+    if _safe_val(row.get("cpl")):
+        parts.append(f"CPL: {int(row['cpl'])}")
+    if _safe_val(row.get("wp_drop")):
+        parts.append(f"Win-prob drop: {float(row['wp_drop']):.0%}")
+    if _safe_val(row.get("hole_score")):
+        parts.append(f"Hole score: {float(row['hole_score']):.1f}")
+    if _safe_val(row.get("n_distinct_moves")):
+        parts.append(f"{int(row['n_distinct_moves'])} distinct responses seen")
+    return " | ".join(parts)
+
+
+def drills_to_pgn_study(drill_groups: dict) -> str:
+    """Convert drill positions to a multi-chapter PGN string for Lichess Study import.
+
+    drill_groups: {chapter_name: DataFrame} -- each DataFrame needs at minimum
+    fen_before and best_move_san columns. Optional: opening, move_number, phase,
+    motif, cpl, wp_drop, hole_score.
+
+    Returns a single PGN string where each drill is one game. Lichess Study
+    interprets multi-game PGN as separate chapters on import.
+    """
+    today = datetime.date.today().strftime("%Y.%m.%d")
+    games = []
+    for source, df in drill_groups.items():
+        for i, row in enumerate(df.itertuples(index=False), 1):
+            row_dict = row._asdict()
+            fen = row_dict.get("fen_before")
+            best_move = row_dict.get("best_move_san") or row_dict.get("most_played_san")
+            if not fen or not best_move or not _safe_val(fen) or not _safe_val(best_move):
+                continue
+
+            game = chess.pgn.Game()
+            game.headers["Event"] = f"{source} — Drill {i}"
+            game.headers["Site"] = "Chesswright"
+            game.headers["Date"] = today
+            game.headers["Result"] = "*"
+            try:
+                game.setup(chess.Board(fen))
+            except Exception:
+                game.headers["FEN"] = fen
+                game.headers["SetUp"] = "1"
+
+            context = _drill_context(row_dict)
+            if context:
+                game.comment = context
+
+            try:
+                board = chess.Board(fen)
+                move = board.parse_san(str(best_move))
+                node = game.add_variation(move)
+                node.comment = "Engine best move"
+            except Exception:
+                pass
+
+            exporter = chess.pgn.StringExporter(headers=True, variations=True, comments=True)
+            games.append(game.accept(exporter))
+
+    return "\n\n".join(games)
+
+
+def game_to_annotated_pgn(header, moves_df, narrative_text: str | None = None,
+                          player_name: str = "You") -> str:
+    """Full-game annotated PGN with move classifications and optional Claude narrative.
+
+    header: namedtuple from data.get_game_detail()
+    moves_df: DataFrame with ply, san, classification, cpl columns
+    narrative_text: embedded as the PGN game comment when present
+    player_name: used as the White or Black player tag (caller's lichess username)
+    """
+    game = chess.pgn.Game()
+
+    color = (getattr(header, "player_color", "") or "").lower()
+    outcome = (getattr(header, "outcome_for_player", "") or "").lower()
+
+    if color == "white":
+        white_name, black_name = player_name, (header.opponent_name or "Opponent")
+        white_elo = getattr(header, "player_rating", None)
+        black_elo = getattr(header, "opponent_rating", None)
+        result = {"win": "1-0", "loss": "0-1"}.get(outcome, "1/2-1/2")
+    else:
+        white_name, black_name = (header.opponent_name or "Opponent"), player_name
+        white_elo = getattr(header, "opponent_rating", None)
+        black_elo = getattr(header, "player_rating", None)
+        result = {"win": "0-1", "loss": "1-0"}.get(outcome, "1/2-1/2")
+
+    try:
+        date_str = str(header.utc_date).replace("-", ".")
+    except Exception:
+        date_str = "????.??.??"
+
+    game.headers["Event"] = f"vs {header.opponent_name or 'Opponent'}"
+    game.headers["Site"] = "Lichess (via Chesswright)"
+    game.headers["Date"] = date_str
+    game.headers["White"] = white_name
+    game.headers["Black"] = black_name
+    for tag, elo in (("WhiteElo", white_elo), ("BlackElo", black_elo)):
+        if elo is not None:
+            try:
+                game.headers[tag] = str(int(elo))
+            except (TypeError, ValueError):
+                pass
+    game.headers["Result"] = result
+    opening = getattr(header, "opening_family", None)
+    if opening:
+        game.headers["Opening"] = str(opening)
+
+    if narrative_text:
+        game.comment = narrative_text
+
+    node = game
+    board = chess.Board()
+    for row in moves_df.sort_values("ply").itertuples(index=False):
+        try:
+            move = board.parse_san(str(row.san))
+        except Exception:
+            break
+        node = node.add_variation(move)
+        parts = []
+        classification = getattr(row, "classification", None)
+        if classification and str(classification) not in ("", "None", "nan"):
+            parts.append(str(classification))
+        cpl = getattr(row, "cpl", None)
+        if cpl is not None:
+            try:
+                cpl_f = float(cpl)
+                if not math.isnan(cpl_f):
+                    parts.append(f"CPL {int(cpl_f)}")
+            except (TypeError, ValueError):
+                pass
+        if parts:
+            node.comment = ", ".join(parts)
+        board.push(move)
+
+    exporter = chess.pgn.StringExporter(headers=True, variations=True, comments=True)
+    return game.accept(exporter)
+
+
+def drills_to_anki_csv(drill_groups: dict) -> str:
+    """Convert drill positions to an Anki-importable tab-separated string.
+
+    One card per position: FEN \\t Side to move \\t Engine best move \\t Source \\t Context.
+    No header row -- Anki expects data-only with tab separator.
+    """
+    rows = []
+    for source, df in drill_groups.items():
+        for row in df.itertuples(index=False):
+            row_dict = row._asdict()
+            fen = row_dict.get("fen_before")
+            best_move = row_dict.get("best_move_san") or row_dict.get("most_played_san")
+            if not fen or not best_move or not _safe_val(fen) or not _safe_val(best_move):
+                continue
+            try:
+                board = chess.Board(fen)
+                side = "White" if board.turn == chess.WHITE else "Black"
+            except Exception:
+                side = "?"
+            context = _drill_context(row_dict)
+            rows.append("\t".join([fen, side, str(best_move), source, context]))
+    return "\n".join(rows)

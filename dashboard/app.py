@@ -41,6 +41,8 @@ import settings_view
 import onboarding_view
 import analysis_jobs_view
 import ask_view
+import drill_export_view
+import prep_view
 import annotate
 import job_runner
 import joblock
@@ -208,17 +210,28 @@ overview_page = st.Page(
     title="Overview", url_path="overview", default=not NEEDS_ONBOARDING)
 patterns_page = st.Page(patterns_view.render, title="Patterns & Tendencies",
                          url_path="patterns")
-openings_page = st.Page(openings_view.render, title="Openings & Repertoire",
-                         url_path="openings")
+openings_page = st.Page(
+    lambda: openings_view.render(drill_export_page=drill_export_page),
+    title="Openings & Repertoire", url_path="openings",
+)
 matchups_page = st.Page(lambda: matchups_view.render(matchups_page, detail_page),
                          title="Matchups & Opponents", url_path="matchups")
 endings_page = st.Page(game_endings_view.render, title="Game Endings",
                         url_path="game-endings")
-highlights_page = st.Page(lambda: tactical_highlights_view.render(highlights_page, detail_page),
-                           title="Tactical Highlights", url_path="tactical-highlights")
-insights_page = st.Page(insights_view.render, title="Insights", url_path="insights")
+highlights_page = st.Page(
+    lambda: tactical_highlights_view.render(
+        highlights_page, detail_page, drill_export_page=drill_export_page),
+    title="Tactical Highlights", url_path="tactical-highlights",
+)
+insights_page = st.Page(
+    lambda: insights_view.render(drill_export_page=drill_export_page, prep_page=prep_page),
+    title="Insights", url_path="insights",
+)
 explorer_page = st.Page(lambda: game_explorer_view.render(explorer_page, detail_page),
                          title="Game Explorer", url_path="game-explorer")
+drill_export_page = st.Page(drill_export_view.render, title="Drill Export",
+                             url_path="drill-export")
+prep_page = st.Page(prep_view.render, title="Opponent Prep", url_path="opponent-prep")
 ask_page = st.Page(ask_view.render, title="Ask", url_path="ask")
 settings_page = st.Page(settings_view.render, title="Settings", url_path="settings")
 analysis_jobs_page = st.Page(analysis_jobs_view.render, title="Analysis Jobs", url_path="analysis-jobs")
@@ -232,7 +245,7 @@ onboarding_page = st.Page(lambda: onboarding_view.render(overview_page),
 pg = st.navigation({
     "Career": [overview_page, patterns_page, openings_page, matchups_page,
                endings_page, highlights_page, insights_page],
-    "Explore": [explorer_page, ask_page, detail_page],
+    "Explore": [explorer_page, drill_export_page, prep_page, ask_page, detail_page],
     "App": [settings_page, analysis_jobs_page, onboarding_page],
 })
 pg.run()

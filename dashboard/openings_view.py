@@ -79,7 +79,7 @@ def cached_headline_stats(_duck_conn, _sqlite_conn):
     return data.get_headline_stats(_duck_conn, _sqlite_conn)
 
 
-def render():
+def render(drill_export_page=None):
     sqlite_conn, duck_conn = get_connections()
     st.title("Openings & Repertoire")
 
@@ -330,6 +330,19 @@ def render():
                                 st.caption("Live engine result (not from batch).")
                         else:
                             st.caption("No analysis available for this position.")
+
+            if drill_export_page:
+                st.divider()
+                if st.button("→ Export these as drill positions",
+                             key="holes_drill_export",
+                             help="Open Drill Export with Repertoire Holes pre-selected."):
+                    st.session_state["_drill_preset"] = {
+                        "include_motifs": False,
+                        "include_moments": False,
+                        "include_holes": True,
+                        "motif_filter": None,
+                    }
+                    st.switch_page(drill_export_page)
 
     with st.container(border=True):
         st.subheader("Where in an opening does your accuracy drop?")
