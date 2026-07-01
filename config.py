@@ -1,6 +1,7 @@
 """Shared config loading. CLI args (when not None) always win over config.yaml."""
 import os
 import re
+import shutil
 import pathlib
 import yaml
 
@@ -167,6 +168,88 @@ def save_interactive_engine(settings: dict, path=None):
     # with \n, so appending "\n" produces exactly one blank line).
     new_lines = lines[:start_idx] + [new_block + "\n"] + lines[end_idx:]
     cfg_path.write_text("".join(new_lines))
+
+
+# ---------------------------------------------------------------------------
+# Pro profile management
+# Each student/alt-account profile lives at:
+#   ~/.chesswright/profiles/{username}/
+#     config.yaml   -- copy of the main config with player.name + database.path set
+#     games.db      -- isolated SQLite database for that profile
+# The active profile is tracked by a plain text file:
+#   ~/.chesswright/active_profile  -- contains the username, or absent for own account
+# ---------------------------------------------------------------------------
+
+CHESSWRIGHT_DIR = pathlib.Path.home() / ".chesswright"
+PROFILES_DIR = CHESSWRIGHT_DIR / "profiles"
+_ACTIVE_PROFILE_FILE = CHESSWRIGHT_DIR / "active_profile"
+
+
+def get_active_profile() -> str | None:
+    """Return the username of the currently active Pro profile, or None for own account."""
+    if _ACTIVE_PROFILE_FILE.exists():
+        username = _ACTIVE_PROFILE_FILE.read_text().strip()
+        return username if username else None
+    return None
+
+
+def set_active_profile(username: str) -> None:
+    CHESSWRIGHT_DIR.mkdir(exist_ok=True)
+    _ACTIVE_PROFILE_FILE.write_text(username)
+
+
+def clear_active_profile() -> None:
+    _ACTIVE_PROFILE_FILE.unlink(missing_ok=True)
+
+
+def get_profile_dir(username: str) -> pathlib.Path:
+    return PROFILES_DIR / username.lower()
+
+
+def get_profile_db_path(username: str) -> pathlib.Path:
+    return get_profile_dir(username) / "games.db"
+
+
+def get_profile_config_path(username: str) -> pathlib.Path:
+    return get_profile_dir(username) / "config.yaml"
+
+
+def initialize_profile(username: str) -> None:
+    """Create a fresh profile directory for a student or alt account.
+
+    Copies the current config.yaml as a template, then rewrites player.name
+    and database.path for this profile. Safe to call if the profile already
+    exists -- directory creation is idempotent and the config is only written
+    on the very first call (so a user's live config changes aren't clobbered
+    by a second call to this function).
+    """
+    profile_dir = get_profile_dir(username)
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    profile_config = get_profile_config_path(username)
+    if not profile_config.exists():
+        shutil.copy(DEFAULT_CONFIG_PATH, profile_config)
+        set_player_name(username, path=profile_config)
+        set_database_path(str(get_profile_db_path(username)), path=profile_config)
+
+
+def list_profiles() -> list[str]:
+    """Return usernames of all initialized profiles, sorted alphabetically."""
+    if not PROFILES_DIR.exists():
+        return []
+    return sorted(
+        d.name for d in PROFILES_DIR.iterdir()
+        if d.is_dir() and (d / "config.yaml").exists()
+    )
+
+
+def remove_profile(username: str) -> None:
+    """Delete a profile directory and all its data. Irreversible."""
+    import shutil as _shutil
+    profile_dir = get_profile_dir(username)
+    if profile_dir.exists():
+        _shutil.rmtree(profile_dir)
+    if get_active_profile() == username.lower():
+        clear_active_profile()
 
 
 def set_engine_path(engine_path, path=None):

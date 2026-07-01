@@ -39,11 +39,25 @@ def get_sqlite_connection(db_path):
 
 
 def resolve_db_path(cli_db_path=None, config_path=None):
+    # Pro profile takes precedence when active, unless a specific path or
+    # config was explicitly requested by the caller (CLI flags, import flow).
+    if not cli_db_path and not config_path:
+        from config import get_active_profile, get_profile_db_path
+        active = get_active_profile()
+        if active:
+            return str(get_profile_db_path(active))
     cfg = load_config(config_path)
     return pick(cli_db_path, cfg["database"]["path"])
 
 
 def get_config(config_path=None):
+    if not config_path:
+        from config import get_active_profile, get_profile_config_path
+        active = get_active_profile()
+        if active:
+            profile_cfg = get_profile_config_path(active)
+            if profile_cfg.exists():
+                return load_config(str(profile_cfg))
     return load_config(config_path)
 
 

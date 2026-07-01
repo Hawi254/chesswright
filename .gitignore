@@ -21,6 +21,10 @@ node_modules/
 # into this public repo is not.
 sample.pgn
 
+# private project docs -- never version-controlled in the open-core repo
+CLAUDE.md
+BRIEF.md
+
 # local-only generated artifacts (anchored to repo root -- PyInstaller output)
 /dist/
 /build/

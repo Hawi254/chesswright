@@ -204,3 +204,50 @@ def render():
             del st.session_state["import_pending_path"]
             st.session_state.pop("import_suggested_username", None)
             st.rerun()
+
+    st.divider()
+    _render_pro_section()
+
+
+def _render_pro_section():
+    st.subheader("Chesswright Pro")
+    try:
+        from chesswright_pro import license as _lic  # type: ignore[import]
+    except ImportError:
+        st.info(
+            "**Coach Mode** is available in Chesswright Pro.\n\n"
+            "Pro adds student profile management — analyse any lichess player's "
+            "games in an isolated database, switch between profiles without "
+            "losing your own analysis, and generate session reports. Coming "
+            "soon: signed installer with auto-updates and a hosted Claude API "
+            "so students don't need their own key.\n\n"
+            "Purchase at [chesswright.gumroad.com](https://chesswright.gumroad.com) "
+            "then install the Pro package and enter your license key here."
+        )
+        return
+
+    # Pro is installed -- show license management UI
+    key = _lic.get_license_key()
+    if key:
+        masked = f"{key[:8]}...{key[-4:]}" if len(key) > 14 else "set"
+        st.success(f"Pro license active ({masked}).")
+        if st.button("Deactivate license"):
+            _lic.deactivate()
+            st.success("License removed. Pro features will be unavailable until re-activated.")
+            st.rerun()
+    else:
+        st.info("Pro is installed but no license key has been activated.")
+        with st.form("pro_license_form", clear_on_submit=True):
+            new_key = st.text_input("License key", type="password",
+                                     placeholder="Paste your Chesswright Pro key…")
+            activate_clicked = st.form_submit_button("Activate", type="primary")
+        if activate_clicked:
+            if not new_key.strip():
+                st.error("Enter a key before activating.")
+            else:
+                ok, msg = _lic.activate(new_key.strip())
+                if ok:
+                    st.success(msg + " Reload the app to unlock Pro pages.")
+                    st.rerun()
+                else:
+                    st.error(msg)

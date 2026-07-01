@@ -186,8 +186,36 @@ def _sidebar_job_status():
         st.caption(f"{awaiting} game(s) awaiting annotation -- see Analysis Jobs.")
 
 
+# Pro extension point -- chesswright_pro is an optional proprietary package
+# that contributes additional nav pages when installed and licensed.
+# get_nav_groups() returns a dict of {group_name: [st.Page, ...]} that is
+# merged into the navigation below. The core never imports Pro code directly;
+# all Pro behaviour is contributed by the package itself through this boundary.
+_pro_nav_groups: dict = {}
+try:
+    import chesswright_pro  # type: ignore[import]
+    if chesswright_pro.is_licensed():
+        _pro_nav_groups = chesswright_pro.get_nav_groups()
+except ImportError:
+    pass
+
+# Active Pro profile indicator -- shown whenever a student/alt-account profile
+# is active, regardless of whether the Pro package is fully loaded (the profile
+# file is written by the Pro package but read here by the core so the indicator
+# appears on every page without the Pro package needing to inject sidebar UI).
+from config import get_active_profile as _get_active_profile, clear_active_profile as _clear_active_profile
+_active_profile = _get_active_profile()
+
 if not NEEDS_ONBOARDING:
     with st.sidebar:
+        if _active_profile:
+            st.info(f"Viewing: **{_active_profile}**")
+            if st.button("← My account", key="_pro_return_own"):
+                _clear_active_profile()
+                for _k in ("warmed_up", "needs_onboarding", "last_refreshed"):
+                    st.session_state.pop(_k, None)
+                st.cache_resource.clear()
+                st.rerun()
         st.divider()
         _sidebar_job_status()
 
@@ -247,5 +275,6 @@ pg = st.navigation({
                endings_page, highlights_page, insights_page],
     "Explore": [explorer_page, drill_export_page, prep_page, ask_page, detail_page],
     "App": [settings_page, analysis_jobs_page, onboarding_page],
+    **_pro_nav_groups,
 })
 pg.run()
