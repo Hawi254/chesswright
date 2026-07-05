@@ -49,6 +49,7 @@ Usage:
                                           launcher itself, not meant to
                                           be run directly
 """
+import json
 import os
 import shutil
 import socket
@@ -56,8 +57,11 @@ import subprocess
 import sys
 import time
 import pathlib
+import webbrowser
 
 USER_DATA_DIR = pathlib.Path.home() / ".chesswright"
+
+RELEASES_URL = "https://github.com/Hawi254/chesswright/releases/latest"
 
 
 def resource_dir():
@@ -136,6 +140,43 @@ def run_server_mode(port, config_path):
     bootstrap.run(app_path, False, [], flag_options)
 
 
+class NativeApi:
+    """Exposed to the Streamlit page's JS via create_window(js_api=...).
+
+    Live-verified (BRIEF.md §6h): window.top.pywebview.api.<method>(),
+    called from JS inside a Streamlit custom-component iframe
+    (dashboard/components/native_file_picker/), reaches these methods
+    even though that page is served by the separate server subprocess,
+    not this launcher process -- js_api is bound to the window, not to
+    whichever process served the page's HTML.
+
+    Each method hardcodes its own dialog type/filter server-side --
+    nothing about which dialog opens or what it filters to is ever
+    chosen from the JS/web-content side, deliberately, since that
+    content originates from a page this app renders (not truly
+    untrusted), but there's no reason to give it more control than it
+    needs. Only ever returns a path string, never file bytes -- the
+    existing copy-into-this-app's-data-dir step at each call site stays
+    responsible for that, unchanged.
+    """
+
+    def pick_engine_file(self):
+        # Local import, not module-level: matches main()'s own deferred
+        # `import webview` (kept out of the --server-mode subprocess,
+        # which has no GUI and no reason to need GTK/webview at all).
+        import webview
+        result = webview.windows[0].create_file_dialog(webview.OPEN_DIALOG)
+        return result[0] if result else None
+
+    def pick_database_file(self):
+        import webview
+        result = webview.windows[0].create_file_dialog(
+            webview.OPEN_DIALOG,
+            file_types=("SQLite database (*.db)", "All files (*.*)"),
+        )
+        return result[0] if result else None
+
+
 def launch_server_subprocess(port, config_path):
     """Re-invokes this same executable with --server-mode. sys.executable
     alone is correct in BOTH modes: a real Python interpreter in a source
@@ -169,8 +210,57 @@ def main():
             sys.exit(1)
 
         import webview
-        webview.create_window("Chesswright", url, width=1280, height=860)
-        webview.start()
+        from webview.menu import Menu, MenuAction, MenuSeparator
+
+        window = webview.create_window(
+            "Chesswright", url, width=1280, height=860,
+            # Matches dashboard/theme.py's BG / .streamlit/config.toml's
+            # backgroundColor -- avoids a plain-white paint showing through
+            # before Streamlit's own CSS loads.
+            background_color="#14181F",
+            # Below this, the sidebar + wide multi-column layout (e.g. the
+            # Overview page's 4-tile metric row) has nowhere to go.
+            min_size=(1000, 650),
+            # Bridges dashboard/components/native_file_picker/ to a real
+            # native OS file dialog -- see NativeApi's docstring.
+            js_api=NativeApi(),
+        )
+
+        def go_to(url_path):
+            """Drives real navigation via the same MPA url_path routing
+            dashboard/app.py's st.switch_page uses internally -- just
+            triggered from the launcher process instead of from a widget
+            inside the page. Known, accepted gap: no guard against firing
+            mid-operation (e.g. a DB import or engine validation in
+            flight) -- not worth new cross-process synchronization for a
+            menu-click edge case without evidence anyone hits it."""
+            window.evaluate_js(f"window.top.location.href = {json.dumps(url + '/' + url_path)}")
+
+        menu = [
+            Menu("File", [
+                MenuAction("Sync Games", lambda: go_to("setup")),
+                MenuAction("Settings", lambda: go_to("settings")),
+                MenuSeparator(),
+                MenuAction("Quit", window.destroy),
+            ]),
+            Menu("Help", [
+                # Always the system browser, never evaluate_js navigation --
+                # the webview itself should never load a non-127.0.0.1 origin.
+                MenuAction("Check for Updates", lambda: webbrowser.open(RELEASES_URL)),
+            ]),
+        ]
+
+        webview.start(
+            # Default (private_mode=True) discards local storage on every
+            # launch -- confirmed via pywebview's own start() docstring --
+            # so any UI state Streamlit's frontend keeps client-side
+            # (e.g. sidebar collapsed/expanded) resets every time the app
+            # opens instead of persisting like an installed app would.
+            # Stored alongside this app's other per-user state.
+            private_mode=False,
+            storage_path=str(USER_DATA_DIR / "webview_data"),
+            menu=menu,
+        )
     finally:
         # The window closing (webview.start() returning) is the signal to
         # shut the server down -- it has no reason to keep running once

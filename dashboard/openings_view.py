@@ -11,6 +11,7 @@ import chess.svg
 import pandas as pd
 import streamlit as st
 
+import analytics
 import charts
 import chess_display
 import claude_narrative
@@ -18,37 +19,46 @@ import data
 import live_engine
 import theme
 from _common import get_connections
+from cached_queries import cached_headline_stats
 
 
-@st.cache_data
-def cached_openings_table(_duck_conn, _sqlite_conn, min_games):
-    return data.get_openings_table(_duck_conn, _sqlite_conn, min_games=min_games)
+@st.cache_data(show_spinner="Loading your opening statistics…")
+def cached_openings_table_full(_duck_conn, _sqlite_conn):
+    """Deliberately NOT keyed on the min-games slider -- the expensive
+    half of get_openings_table (a ~0.3s GROUP BY over all analyzed moves
+    for the ACPL column) never depended on min_games, only the HAVING on
+    the games-count half did, so keying on it made every slider move a
+    fresh cache miss (~0.4s measured). One unfiltered fetch per session;
+    callers filter `n >= min_games` in pandas. Also collapses what used
+    to be two separate cache entries (section 1's slider value and
+    section 4's fixed min_games=1) into one."""
+    return data.get_openings_table(_duck_conn, _sqlite_conn, min_games=1)
 
 
-@st.cache_data
-def cached_most_repeated_positions(_duck_conn, top_n):
-    return data.get_most_repeated_positions(_duck_conn, top_n=top_n)
+@st.cache_data(show_spinner="Finding your most-repeated positions…")
+def cached_most_repeated_positions(_sqlite_conn, top_n):
+    return data.get_most_repeated_positions(_sqlite_conn, top_n=top_n)
 
 
-@st.cache_data
+@st.cache_data(show_spinner="Computing accuracy move by move…")
 def cached_opening_ply_accuracy(_duck_conn, opening_family, player_color, min_appearances):
     return data.get_opening_ply_accuracy(
         _duck_conn, opening_family, player_color, min_appearances=min_appearances)
 
 
-@st.cache_data
-def cached_repertoire_holes(_duck_conn, min_appearances, top_n):
-    return data.get_repertoire_holes(_duck_conn, min_appearances=min_appearances, top_n=top_n)
+@st.cache_data(show_spinner="Scanning for repertoire holes…")
+def cached_repertoire_holes(_sqlite_conn, min_appearances, top_n):
+    return data.get_repertoire_holes(_sqlite_conn, min_appearances=min_appearances, top_n=top_n)
 
 
-@st.cache_data
-def cached_position_fen(_duck_conn, ply, zobrist_hash):
-    return data.get_position_fen(_duck_conn, ply, zobrist_hash)
+@st.cache_data(show_spinner=False)
+def cached_position_fen(_sqlite_conn, ply, zobrist_hash):
+    return data.get_position_fen(_sqlite_conn, ply, zobrist_hash)
 
 
-@st.cache_data
-def cached_position_analysis(_duck_conn, fen_before):
-    return data.get_position_analysis(_duck_conn, fen_before)
+@st.cache_data(show_spinner=False)
+def cached_position_analysis(_sqlite_conn, fen_before):
+    return data.get_position_analysis(_sqlite_conn, fen_before)
 
 
 def _board_svg(fen: str, player_san: str | None = None, engine_san: str | None = None,
@@ -74,19 +84,53 @@ def _board_svg(fen: str, player_san: str | None = None, engine_san: str | None =
                             arrows=arrows, colors=theme.BOARD_COLORS)
 
 
-@st.cache_data
-def cached_headline_stats(_duck_conn, _sqlite_conn):
-    return data.get_headline_stats(_duck_conn, _sqlite_conn)
-
-
 def render(drill_export_page=None):
     sqlite_conn, duck_conn = get_connections()
     st.title("Openings & Repertoire")
 
+    # Builds/refreshes repeated_positions_cache and repertoire_holes_cache
+    # (migration 0030) only when their respective analyzed-move counts
+    # have changed since the last build -- a no-op on every visit except
+    # the first one after new games get analyzed. Each @st.fragment below
+    # only reruns in isolation on its own widget interactions, so this has
+    # to run here, in render()'s own top-level body, to guarantee it
+    # completes before either fragment's first render -- not inside the
+    # fragments themselves.
+    if "openings_caches_ready" not in st.session_state:
+        with st.spinner("Indexing your repertoire — happens once per new batch of analyzed games…"):
+            analytics.ensure_repeated_positions_cache(sqlite_conn)
+            analytics.ensure_repertoire_holes_cache(sqlite_conn)
+        st.session_state["openings_caches_ready"] = True
+
+    # Each section is its own @st.fragment -- confirmed independent
+    # before splitting, unlike a first look might suggest: section 4
+    # (below) used to read section 1's own min_games-filtered
+    # openings_df directly, which would have silently frozen section
+    # 4's opening list at whatever section 1's slider happened to be
+    # set to the last time the whole page ran, the moment section 1
+    # became its own fragment. Fixed by giving section 4 its own
+    # independent, unfiltered query instead (see
+    # _render_opening_ply_accuracy_section) -- every opening ever
+    # played should be selectable there regardless of section 1's own
+    # filter, which is arguably more correct than the accidental
+    # coupling this replaces, not just a technical workaround.
+    _render_openings_table_section(sqlite_conn, duck_conn)
+    _render_most_repeated_positions_section(sqlite_conn)
+    _render_repertoire_holes_section(sqlite_conn, drill_export_page)
+    _render_opening_ply_accuracy_section(sqlite_conn, duck_conn)
+
+
+@st.fragment
+def _render_openings_table_section(sqlite_conn, duck_conn):
     with st.container(border=True):
-        st.subheader("Openings (sortable, min-games filter)")
+        st.subheader("Your openings")
+        st.caption("Click a column header to sort. The slider hides openings "
+                   "you've played fewer times than the minimum.")
         min_games = st.slider("Minimum games", 1, 50, 5)
-        openings_df = cached_openings_table(duck_conn, sqlite_conn, min_games)
+        full_df = cached_openings_table_full(duck_conn, sqlite_conn)
+        # Cheap pandas filter over the session-cached full table --
+        # equivalent to the old per-slider-value HAVING COUNT(*) >= ?.
+        openings_df = full_df[full_df.n >= min_games].reset_index(drop=True)
         # win_pct/draw_pct/loss_pct/n are always populated (ingest-time,
         # no engine needed); acpl needs analyzed games specifically in
         # that opening, and with only 185 of 32,295 games analyzed so
@@ -100,14 +144,17 @@ def render(drill_export_page=None):
                        f"-- no analyzed games have reached them yet, not a data error.")
         display_df = openings_df.copy()
         display_df["acpl"] = display_df["acpl"].apply(lambda v: "--" if pd.isna(v) else f"{v:.1f}")
-        st.dataframe(display_df, width='stretch', column_config={
+        st.dataframe(display_df, width='stretch', hide_index=True, column_config={
             "opening_family": "Opening",
             "player_color": "Color",
             "n": "Games",
             "win_pct": st.column_config.NumberColumn("Win %", format="%.1f"),
             "draw_pct": st.column_config.NumberColumn("Draw %", format="%.1f"),
-            "acpl": "ACPL",
-            "n_analyzed": "Analyzed",
+            "acpl": st.column_config.Column(
+                "ACPL", help="Average centipawn loss of your moves in this opening -- "
+                             "lower is more accurate. Blank until games in it are analyzed."),
+            "n_analyzed": st.column_config.Column(
+                "Analyzed games", help="How many of these games have engine analysis."),
         })
 
         if not openings_df.empty:
@@ -136,25 +183,34 @@ def render(drill_export_page=None):
                             chosen_row, stats["win_pct"], stats["analyzed_games"], stats["total_games"])
                         data.save_narrative(sqlite_conn, "opening", subject_key,
                                              response_text, claude_narrative.MODEL)
-                        st.rerun()
+                        # Scoped, not a full app rerun -- nothing else on
+                        # the page reads this narrative.
+                        st.rerun(scope="fragment")
                     except claude_narrative.MissingApiKeyError as e:
                         st.error(str(e))
                     except Exception as e:
                         st.error(f"Claude API call failed: {e}")
 
+
+@st.fragment
+def _render_most_repeated_positions_section(sqlite_conn):
     with st.container(border=True):
         st.subheader("Most-repeated positions")
         st.caption("Positions you've reached more than once (matched by exact board state, "
                    "not just opening name) -- shows whether your most-repeated lines are "
-                   "actually working out, win/loss-wise. Click a row to view the board.")
+                   "actually working out, win/loss-wise. Tick a row's checkbox to "
+                   "view the board.")
         top_n_positions = st.slider("Show top N", 5, 50, 20, key="positions_top_n")
-        positions_df = cached_most_repeated_positions(duck_conn, top_n_positions)
+        positions_df = cached_most_repeated_positions(sqlite_conn, top_n_positions)
         pos_sel = st.dataframe(
-            positions_df.drop(columns=["zobrist_hash"], errors="ignore"),
+            positions_df.drop(columns=["zobrist_hash"], errors="ignore")
+                .assign(ply=lambda d: (d.ply + 1) // 2),
             width="stretch", on_select="rerun", selection_mode="single-row",
-            key="most_repeated_sel",
+            key="most_repeated_sel", hide_index=True,
             column_config={
-                "ply": "At ply",
+                "ply": st.column_config.NumberColumn(
+                    "Move #", help="How deep into the game the position occurs "
+                                   "(one move = one White and one Black turn)."),
                 "n_games": "Times reached",
                 "win_pct": st.column_config.NumberColumn("Win %", format="%.1f"),
                 "draw_pct": st.column_config.NumberColumn("Draw %", format="%.1f"),
@@ -164,9 +220,9 @@ def render(drill_export_page=None):
         sel_rows = pos_sel.selection.rows if pos_sel and pos_sel.selection else []
         if sel_rows and not positions_df.empty:
             sel = positions_df.iloc[sel_rows[0]]
-            fen = cached_position_fen(duck_conn, int(sel.ply), int(sel.zobrist_hash))
+            fen = cached_position_fen(sqlite_conn, int(sel.ply), int(sel.zobrist_hash))
             if fen:
-                analysis = cached_position_analysis(duck_conn, fen)
+                analysis = cached_position_analysis(sqlite_conn, fen)
 
                 if analysis is None:
                     live_key = f"live_result__{fen}"
@@ -204,7 +260,7 @@ def render(drill_export_page=None):
                                 unsafe_allow_html=True)
                 with col_info:
                     st.markdown(
-                        f"**Ply {int(sel.ply)}** — reached {int(sel.n_games)} times\n\n"
+                        f"**Move {(int(sel.ply) + 1) // 2}** — reached {int(sel.n_games)} times\n\n"
                         f"Win {sel.win_pct:.0f}% · Draw {sel.draw_pct:.0f}%"
                         f" · Loss {sel.loss_pct:.0f}%\n\n"
                         f"Most common opening: {sel.common_opening or '—'}")
@@ -225,6 +281,9 @@ def render(drill_export_page=None):
                     else:
                         st.caption("No analysis available for this position.")
 
+
+@st.fragment
+def _render_repertoire_holes_section(sqlite_conn, drill_export_page):
     with st.container(border=True):
         st.subheader("Repertoire holes")
         st.caption("A 'hole' is a position you've reached multiple times but keep playing "
@@ -234,7 +293,7 @@ def render(drill_export_page=None):
         col_rep1, col_rep2 = st.columns(2)
         rep_min = col_rep1.slider("Min times reached", 3, 20, 5, key="rep_min_appearances")
         rep_top_n = col_rep2.slider("Show top N", 5, 50, 20, key="rep_top_n")
-        holes_df = cached_repertoire_holes(duck_conn, rep_min, rep_top_n)
+        holes_df = cached_repertoire_holes(sqlite_conn, rep_min, rep_top_n)
         if holes_df.empty:
             st.info(theme.thin_data_message(0, rep_min))
         else:
@@ -252,20 +311,27 @@ def render(drill_export_page=None):
                     "most_played_san":    "Usual move",
                     "n_games":            "Times reached",
                     "n_distinct_moves":   "Variations tried",
-                    "avg_cpl":            "Avg CPL",
-                    "hole_score":         "Hole score",
+                    "avg_cpl":            st.column_config.Column(
+                        "Avg CPL", help="Average centipawn loss of your moves from this "
+                                        "position -- lower is more accurate."),
+                    "hole_score":         st.column_config.Column(
+                        "Hole score", help="Inconsistency × average CPL. A bigger number = "
+                                           "a position you both keep playing differently "
+                                           "and keep paying for. Use it to rank, not to "
+                                           "measure."),
                 })
             top_hole = holes_df.iloc[0]
             st.caption(
                 f"Biggest hole: move {top_hole.approx_move_number} "
                 f"({top_hole.opening or 'unknown opening'}) — reached "
                 f"{top_hole.n_games}× with {top_hole.n_distinct_moves} different moves "
-                f"and avg {top_hole.avg_cpl:.0f} CPL. Click a row to view the board.")
+                f"and avg {top_hole.avg_cpl:.0f} CPL. Tick a row's checkbox to view "
+                f"the board.")
             hole_rows = hole_sel.selection.rows if hole_sel and hole_sel.selection else []
             if hole_rows:
                 sel = holes_df.iloc[hole_rows[0]]
                 if sel.fen_before:
-                    analysis = cached_position_analysis(duck_conn, sel.fen_before)
+                    analysis = cached_position_analysis(sqlite_conn, sel.fen_before)
 
                     if analysis is None:
                         live_key = f"live_result__{sel.fen_before}"
@@ -344,12 +410,21 @@ def render(drill_export_page=None):
                     }
                     st.switch_page(drill_export_page)
 
+
+@st.fragment
+def _render_opening_ply_accuracy_section(sqlite_conn, duck_conn):
     with st.container(border=True):
         st.subheader("Where in an opening does your accuracy drop?")
         st.caption("Average centipawn loss by move number within a specific opening. "
                    "A spike at move 8 means your choices at that move are costing you "
                    "more than at other points in the line -- not just a general feel, "
                    "but the exact move number where preparation runs out.")
+        # Deliberately independent of the "Openings" section's own
+        # min_games slider above (see render()'s comment) -- every
+        # opening ever played should be selectable here, not just
+        # whichever ones currently pass that other section's filter.
+        # Shares section 1's unfiltered cache entry.
+        openings_df = cached_openings_table_full(duck_conn, sqlite_conn)
         if openings_df.empty:
             st.info(theme.thin_data_message(0, 1))
         else:
@@ -367,7 +442,8 @@ def render(drill_export_page=None):
             else:
                 st.plotly_chart(
                     charts.bar_chart(ply_df, "move_number", "avg_cpl", theme.NEGATIVE,
-                                     height=280),
+                                     height=280, x_title="Move number",
+                                     y_title="Average centipawn loss"),
                     theme=None)
                 worst = ply_df.nlargest(3, "avg_cpl")
                 worst_nums = ", ".join(f"move {int(r.move_number)} "

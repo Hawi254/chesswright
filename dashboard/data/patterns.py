@@ -34,68 +34,100 @@ def get_blunder_rate_by_time_pressure(duck_conn):
 
 
 def get_acpl_by_time_control(sqlite_conn):
-    categories = sqlite_conn.execute(
-        "SELECT DISTINCT time_control_category FROM games WHERE time_control_category IS NOT NULL"
-    ).fetchall()
-    rows = []
-    for (cat,) in categories:
-        n_moves, n_games, acpl, blunder_rate = analytics.acpl_and_blunder_rate(
-            sqlite_conn, "g.time_control_category=?", (cat,))
-        if n_games:
-            rows.append((cat, n_games, n_moves, acpl, blunder_rate))
-    return pd.DataFrame(rows, columns=["time_control", "n_games", "n_moves", "acpl", "blunder_rate"])
+    """One GROUP BY instead of one analytics.acpl_and_blunder_rate() call
+    per DISTINCT time-control category -- each of those calls is a full
+    indexed aggregate over every analyzed player move (~160ms measured on
+    the real 2.3M-row moves table), so the loop paid ~1.0s where one
+    grouped pass costs ~0.28s. Same N-queries-to-1 fix shape as
+    get_openings_table / get_material_structure_table below. Verified
+    value-identical to the per-category loop on the real database."""
+    rows = sqlite_conn.execute("""
+        SELECT g.time_control_category, COUNT(DISTINCT m.game_id), COUNT(*), AVG(m.cpl),
+               100.0 * SUM(CASE WHEN m.classification='blunder' THEN 1 ELSE 0 END) / COUNT(*)
+        FROM moves m JOIN games g ON g.id = m.game_id
+        WHERE m.is_player_move=1 AND m.cpl IS NOT NULL
+          AND g.time_control_category IS NOT NULL
+        GROUP BY g.time_control_category
+    """).fetchall()
+    return pd.DataFrame(
+        [(cat, n_games, n_moves, acpl, blunder_rate)
+         for cat, n_games, n_moves, acpl, blunder_rate in rows],
+        columns=["time_control", "n_games", "n_moves", "acpl", "blunder_rate"])
 
 
 def get_phase_accuracy(sqlite_conn, config_path=None):
+    """One CASE-bucketed GROUP BY instead of three acpl_and_blunder_rate
+    calls (~0.58s -> ~0.25s measured; see get_acpl_by_time_control). The
+    CASE is the same exclusive phase partition get_piece_blunder_by_phase
+    and tactical.py's knight-rim query already use -- note the old
+    three-WHERE version could in principle count a move in BOTH 'opening'
+    and 'endgame' when a game simplifies before middlegame_ply (verified:
+    zero such moves in the real database, so results are identical)."""
     cfg = get_config(config_path)
     analytics.ensure_structure_ctx(sqlite_conn, cfg)
     middlegame_ply = cfg["analytics"]["middlegame_ply"]
-    structure_join = "JOIN structure_ctx sc ON sc.game_id = g.id"
-    phases = [
-        ("opening", f"m.ply < {middlegame_ply}"),
-        ("middlegame", f"m.ply >= {middlegame_ply} AND (sc.endgame_ply IS NULL OR m.ply < sc.endgame_ply)"),
-        ("endgame", "sc.endgame_ply IS NOT NULL AND m.ply >= sc.endgame_ply"),
-    ]
-    rows = []
-    for label, where_extra in phases:
-        n_moves, n_games, acpl, blunder_rate = analytics.acpl_and_blunder_rate(
-            sqlite_conn, where_extra, (), extra_join=structure_join)
-        if n_games:
-            rows.append((label, n_games, n_moves, acpl, blunder_rate))
-    return pd.DataFrame(rows, columns=["phase", "n_games", "n_moves", "acpl", "blunder_rate"])
+    rows = sqlite_conn.execute(f"""
+        SELECT CASE WHEN m.ply < {middlegame_ply} THEN 'opening'
+                    WHEN sc.endgame_ply IS NULL OR m.ply < sc.endgame_ply THEN 'middlegame'
+                    ELSE 'endgame' END AS phase,
+               COUNT(DISTINCT m.game_id), COUNT(*), AVG(m.cpl),
+               100.0 * SUM(CASE WHEN m.classification='blunder' THEN 1 ELSE 0 END) / COUNT(*)
+        FROM moves m JOIN games g ON g.id = m.game_id
+        JOIN structure_ctx sc ON sc.game_id = g.id
+        WHERE m.is_player_move=1 AND m.cpl IS NOT NULL
+        GROUP BY 1
+        ORDER BY CASE phase WHEN 'opening' THEN 0 WHEN 'middlegame' THEN 1 ELSE 2 END
+    """).fetchall()
+    return pd.DataFrame(
+        [(phase, n_games, n_moves, acpl, blunder_rate)
+         for phase, n_games, n_moves, acpl, blunder_rate in rows],
+        columns=["phase", "n_games", "n_moves", "acpl", "blunder_rate"])
 
 
 def get_prior_outcome_performance(sqlite_conn, config_path=None):
+    """One GROUP BY instead of four acpl_and_blunder_rate calls (~0.69s ->
+    ~0.23s measured; see get_acpl_by_time_control)."""
     cfg = get_config(config_path)
     analytics.ensure_session_ctx(sqlite_conn, cfg["analytics"]["session_gap_minutes"])
-    rows = []
-    n_moves, n_games, acpl, blunder_rate = analytics.acpl_and_blunder_rate(
-        sqlite_conn, "sc.prior_outcome IS NULL", (), extra_join=analytics.SESSION_JOIN)
-    if n_games:
-        rows.append(("first_game_of_session", n_games, n_moves, acpl, blunder_rate))
-    for outcome in ("win", "loss", "draw"):
-        n_moves, n_games, acpl, blunder_rate = analytics.acpl_and_blunder_rate(
-            sqlite_conn, "sc.prior_outcome=?", (outcome,), extra_join=analytics.SESSION_JOIN)
-        if n_games:
-            rows.append((f"after a {outcome}", n_games, n_moves, acpl, blunder_rate))
-    return pd.DataFrame(rows, columns=["bucket", "n_games", "n_moves", "acpl", "blunder_rate"])
+    rows = sqlite_conn.execute("""
+        SELECT CASE WHEN sc.prior_outcome IS NULL THEN 'first_game_of_session'
+                    ELSE 'after a ' || sc.prior_outcome END AS bucket,
+               COUNT(DISTINCT m.game_id), COUNT(*), AVG(m.cpl),
+               100.0 * SUM(CASE WHEN m.classification='blunder' THEN 1 ELSE 0 END) / COUNT(*)
+        FROM moves m JOIN games g ON g.id = m.game_id
+        JOIN session_ctx sc ON sc.game_id = g.id
+        WHERE m.is_player_move=1 AND m.cpl IS NOT NULL
+        GROUP BY 1
+        ORDER BY CASE bucket WHEN 'first_game_of_session' THEN 0 WHEN 'after a win' THEN 1
+                             WHEN 'after a loss' THEN 2 ELSE 3 END
+    """).fetchall()
+    return pd.DataFrame(
+        [(bucket, n_games, n_moves, acpl, blunder_rate)
+         for bucket, n_games, n_moves, acpl, blunder_rate in rows],
+        columns=["bucket", "n_games", "n_moves", "acpl", "blunder_rate"])
 
 
 def get_session_position_performance(sqlite_conn, config_path=None):
+    """One GROUP BY (bucketing session_game_number at the cap via the
+    two-argument scalar MIN) instead of cap+1 acpl_and_blunder_rate calls
+    (~0.65s -> ~0.23s measured; see get_acpl_by_time_control)."""
     cfg = get_config(config_path)
     analytics.ensure_session_ctx(sqlite_conn, cfg["analytics"]["session_gap_minutes"])
     cap = cfg["analytics"]["session_position_cap"]
-    rows = []
-    for n in range(1, cap):
-        n_moves, n_games, acpl, blunder_rate = analytics.acpl_and_blunder_rate(
-            sqlite_conn, "sc.session_game_number=?", (n,), extra_join=analytics.SESSION_JOIN)
-        if n_games:
-            rows.append((f"game #{n}", n_games, n_moves, acpl, blunder_rate))
-    n_moves, n_games, acpl, blunder_rate = analytics.acpl_and_blunder_rate(
-        sqlite_conn, "sc.session_game_number>=?", (cap,), extra_join=analytics.SESSION_JOIN)
-    if n_games:
-        rows.append((f"game #{cap}+", n_games, n_moves, acpl, blunder_rate))
-    return pd.DataFrame(rows, columns=["position", "n_games", "n_moves", "acpl", "blunder_rate"])
+    rows = sqlite_conn.execute("""
+        SELECT MIN(sc.session_game_number, ?) AS pos,
+               COUNT(DISTINCT m.game_id), COUNT(*), AVG(m.cpl),
+               100.0 * SUM(CASE WHEN m.classification='blunder' THEN 1 ELSE 0 END) / COUNT(*)
+        FROM moves m JOIN games g ON g.id = m.game_id
+        JOIN session_ctx sc ON sc.game_id = g.id
+        WHERE m.is_player_move=1 AND m.cpl IS NOT NULL
+        GROUP BY 1 ORDER BY 1
+    """, (cap,)).fetchall()
+    return pd.DataFrame(
+        [(f"game #{pos}" if pos < cap else f"game #{cap}+",
+          n_games, n_moves, acpl, blunder_rate)
+         for pos, n_games, n_moves, acpl, blunder_rate in rows],
+        columns=["position", "n_games", "n_moves", "acpl", "blunder_rate"])
 
 
 def get_day_hour_heatmap(duck_conn):

@@ -34,19 +34,30 @@ KEY_NAME = "anthropic_api_key"
 FALLBACK_DIR = pathlib.Path.home() / ".chesswright"
 FALLBACK_PATH = FALLBACK_DIR / "api_key.txt"
 
+# Cached result of the keyring round-trip probe, module-level so it's computed
+# once per process (i.e. once per app restart) rather than on every Streamlit
+# rerun -- a live probe touches the OS credential store (e.g. KWallet), which
+# can reprompt for a wallet password each time it's called.
+_backend_works_cache = None
+
 
 def _keyring_backend_works():
     """Round-trip a throwaway value rather than trusting keyring.get_keyring()'s
     class name -- the real failure mode (no Secret Service daemon running) only
     shows up when you actually try to use it, confirmed by testing this exact
     case, not assumed from the platform alone."""
+    global _backend_works_cache
+    if _backend_works_cache is not None:
+        return _backend_works_cache
+
     probe = "chesswright-backend-probe"
     try:
         keyring.set_password(SERVICE_NAME, probe, "ok")
         keyring.delete_password(SERVICE_NAME, probe)
-        return True
+        _backend_works_cache = True
     except keyring.errors.KeyringError:
-        return False
+        _backend_works_cache = False
+    return _backend_works_cache
 
 
 def using_secure_backend():

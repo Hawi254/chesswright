@@ -26,8 +26,7 @@ from version import __version__
 
 import analytics
 import theme
-from migrate import migrate
-from _common import get_config, get_connections, resolve_db_path
+from _common import get_config, get_connections
 import overview_view
 import patterns_view
 import openings_view
@@ -37,11 +36,15 @@ import tactical_highlights_view
 import game_explorer_view
 import game_detail_view
 import insights_view
+import points_view
+import evolution_view
 import settings_view
 import onboarding_view
 import analysis_jobs_view
 import ask_view
 import drill_export_view
+import srs_drill_view
+import opening_tree_view
 import prep_view
 import annotate
 import job_runner
@@ -49,13 +52,6 @@ import joblock
 
 st.set_page_config(page_title="Chesswright", layout="wide", page_icon="♟️")
 st.markdown(theme.CSS, unsafe_allow_html=True)
-
-# A truly fresh install has a database file with no tables at all yet --
-# every warm_up()/page query below assumes games/moves exist (even if
-# empty). Migrating here (idempotent, see migrate.py) guarantees that's
-# true before anything else touches the database, instead of every page
-# needing its own "does this table exist yet" guard.
-migrate(resolve_db_path())
 
 sqlite_conn, duck_conn = get_connections()
 
@@ -113,15 +109,24 @@ if not NEEDS_ONBOARDING and "warmed_up" not in st.session_state:
 # unlucky page load via a ttl.
 if st.sidebar.button("Refresh data"):
     st.cache_data.clear()
+    # Duck-side reads run against a private snapshot, not the live file
+    # (see _common.py's snapshot-isolation comment) -- this button is the
+    # explicit point where that snapshot picks up newly synced/analyzed
+    # games, exactly like st.cache_data above.
+    duck_conn.refresh_snapshot()
     sqlite_conn.execute("DROP TABLE IF EXISTS structure_ctx")
     sqlite_conn.execute("DROP TABLE IF EXISTS session_ctx")
+    # No TEMP TABLE fast path for opening_position_stats_cache (see
+    # analytics.ensure_opening_position_stats) -- its own session-level
+    # bypass is this session_state flag instead, so drop that too.
+    st.session_state.pop("ot_stats_cache_ready", None)
     warm_up()  # warm_up() already shows its own st.status steps
     st.rerun()
 if "last_refreshed" in st.session_state:
     st.sidebar.caption(f"Last refreshed: {st.session_state['last_refreshed']:%H:%M}")
 
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=3600, show_spinner=False)
 def _fetch_latest_version() -> str | None:
     """Check GitHub Releases for the latest tag. Returns tag string or None on failure."""
     try:
@@ -248,17 +253,26 @@ endings_page = st.Page(game_endings_view.render, title="Game Endings",
                         url_path="game-endings")
 highlights_page = st.Page(
     lambda: tactical_highlights_view.render(
-        highlights_page, detail_page, drill_export_page=drill_export_page),
+        highlights_page, detail_page, drill_export_page=drill_export_page,
+        analysis_jobs_page=analysis_jobs_page),
     title="Tactical Highlights", url_path="tactical-highlights",
 )
 insights_page = st.Page(
     lambda: insights_view.render(drill_export_page=drill_export_page, prep_page=prep_page),
     title="Insights", url_path="insights",
 )
+points_page = st.Page(lambda: points_view.render(points_page, detail_page),
+                       title="Where Your Points Go", url_path="points")
+evolution_page = st.Page(evolution_view.render, title="Repertoire Evolution",
+                          url_path="evolution")
 explorer_page = st.Page(lambda: game_explorer_view.render(explorer_page, detail_page),
                          title="Game Explorer", url_path="game-explorer")
 drill_export_page = st.Page(drill_export_view.render, title="Drill Export",
                              url_path="drill-export")
+srs_drill_page = st.Page(srs_drill_view.render, title="SRS Drills ✦",
+                          url_path="srs-drills")
+opening_tree_page = st.Page(opening_tree_view.render, title="Opening Tree ✦",
+                             url_path="opening-tree")
 prep_page = st.Page(prep_view.render, title="Opponent Prep", url_path="opponent-prep")
 ask_page = st.Page(ask_view.render, title="Ask", url_path="ask")
 settings_page = st.Page(settings_view.render, title="Settings", url_path="settings")
@@ -272,8 +286,10 @@ onboarding_page = st.Page(lambda: onboarding_view.render(overview_page),
 
 pg = st.navigation({
     "Career": [overview_page, patterns_page, openings_page, matchups_page,
-               endings_page, highlights_page, insights_page],
-    "Explore": [explorer_page, drill_export_page, prep_page, ask_page, detail_page],
+               endings_page, highlights_page, insights_page, points_page,
+               evolution_page],
+    "Explore": [explorer_page, drill_export_page, srs_drill_page, opening_tree_page,
+                prep_page, ask_page, detail_page],
     "App": [settings_page, analysis_jobs_page, onboarding_page],
     **_pro_nav_groups,
 })

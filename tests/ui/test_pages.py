@@ -57,6 +57,9 @@ class TestAllCareerPagesRender:
         "openings_view",
         "game_endings_view",
         "insights_view",
+        "points_view",  # render(self_page=None, detail_page=None) defaults
+        "srs_drill_view",  # renders upsell when pro_gate inactive, full tabs when active
+        "evolution_view",
     ])
     def test_no_arg_page_renders(self, module_name):
         at = _page_apptest(module_name)
@@ -134,12 +137,14 @@ class TestApiKeyButtonState:
 class TestNarrativeDeterminism:
     def test_same_game_gives_identical_narrative(self):
         """Seeded RNG: two calls for the same game must produce byte-identical text."""
-        from _common import resolve_db_path, get_duckdb_connection
+        # sqlite_conn, not duck -- get_game_detail was switched to the
+        # native connection in the 2026-07-04 point-lookup pass.
+        from _common import resolve_db_path, get_sqlite_connection
         import data
         import narrative
 
-        conn = get_duckdb_connection(resolve_db_path())
-        row = conn.execute("SELECT id FROM db.games LIMIT 1").fetchone()
+        conn = get_sqlite_connection(resolve_db_path())
+        row = conn.execute("SELECT id FROM games LIMIT 1").fetchone()
         if row is None:
             pytest.skip("No games in database")
         any_game_id = row[0]

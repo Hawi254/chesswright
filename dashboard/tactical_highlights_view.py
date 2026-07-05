@@ -16,62 +16,103 @@ from _common import get_config, get_connections, navigate_on_row_click
 from motif import MOTIF_LABELS
 
 
-@st.cache_data
-def cached_motif_breakdown(_duck_conn):
-    return data.get_motif_breakdown(_duck_conn)
+@st.cache_data(show_spinner="Loading your missed tactics…")
+def cached_motif_breakdown(_sqlite_conn):
+    return data.get_motif_breakdown(_sqlite_conn)
 
 
-@st.cache_data
-def cached_puzzle_sequences(_duck_conn, top_n):
-    return data.get_puzzle_sequences(_duck_conn, top_n=top_n)
+@st.cache_data(show_spinner=False)
+def cached_motif_backfill_needed(_duck_conn):
+    return data.motif_backfill_needed(_duck_conn)
 
 
-@st.cache_data
-def cached_brilliant_candidates(_duck_conn, top_n):
-    return data.get_brilliant_candidates(_duck_conn, top_n=top_n)
+@st.cache_data(show_spinner="Finding puzzle-like sequences in your games…")
+def cached_puzzle_sequences(_duck_conn):
+    # Deliberately NOT keyed on the top_n slider -- the full duck scan
+    # (~0.65s) doesn't depend on it, only the LIMIT did, so keying on it
+    # made every slider move a fresh full-table cache miss. Fetch every
+    # qualifying row once per session; the fragment slices with .head().
+    return data.get_puzzle_sequences(_duck_conn, top_n=None)
 
 
-@st.cache_data
+@st.cache_data(show_spinner="Finding brilliant-move candidates…")
+def cached_brilliant_candidates(_duck_conn):
+    # Same fetch-once/slice-in-fragment contract as cached_puzzle_sequences.
+    return data.get_brilliant_candidates(_duck_conn, top_n=None)
+
+
+@st.cache_data(show_spinner="Finding blown forced mates…")
 def cached_blown_mates(_duck_conn):
     return data.get_blown_mates(_duck_conn)
 
 
-@st.cache_data
-def cached_best_move_streaks(_duck_conn, top_n, min_unforced):
-    return data.get_best_move_streaks(_duck_conn, top_n=top_n, min_unforced=min_unforced)
+@st.cache_data(show_spinner="Finding your best-move streaks…")
+def cached_best_move_streaks(_duck_conn):
+    # min_unforced=1 is the qualifying minimum (every trigger row has
+    # unforced_count >= 1 by construction), so this fetch is the full
+    # superset; the fragment applies both sliders in pandas.
+    return data.get_best_move_streaks(_duck_conn, top_n=None, min_unforced=1)
 
 
-@st.cache_data
+@st.cache_data(show_spinner="Testing the knight-on-the-rim proverb…")
 def cached_knight_rim_performance(_sqlite_conn):
     return data.get_knight_rim_performance(_sqlite_conn)
 
 
-@st.cache_data
+@st.cache_data(show_spinner="Finding hanging-piece blunders…")
 def cached_hallucination_blunders(_duck_conn):
     return data.get_hallucination_blunders(_duck_conn)
 
 
-@st.cache_data
+@st.cache_data(show_spinner="Loading blunder context…")
 def cached_hallucination_context(_duck_conn, hangs):
     return data.get_hallucination_context(_duck_conn, hangs)
 
 
-def render(self_page, detail_page, drill_export_page=None):
+def render(self_page, detail_page, drill_export_page=None, analysis_jobs_page=None):
     sqlite_conn, duck_conn = get_connections()
     st.title("Tactical Highlights")
     st.write("A curated reel of the moments most worth remembering: sequences where a "
              "blunder got punished cleanly, real sacrifices that worked, and forced mates "
              "that slipped away. Click any row to open that game's full story.")
 
+    # Each section below is its own @st.fragment: none of these
+    # widgets/tables feed each other or anything outside this page (each
+    # navigate_on_row_click call's st.switch_page is confirmed fine
+    # inside a plain, non-parallel fragment per streamlit==1.58.0's own
+    # st.fragment docstring -- that restriction only applies to
+    # parallel=True fragments, not used here), so a slider change in one
+    # section has no reason to re-run or re-render any of the others.
+    _render_motifs_section(sqlite_conn, duck_conn, drill_export_page, analysis_jobs_page)
+    _render_puzzle_sequences_section(duck_conn, detail_page, self_page)
+    _render_brilliant_candidates_section(duck_conn, detail_page, self_page)
+    _render_best_move_streaks_section(duck_conn, detail_page, self_page)
+    _render_blown_mates_section(duck_conn, detail_page, self_page)
+    _render_knight_rim_section(sqlite_conn)
+    _render_hallucinations_section(duck_conn, detail_page, self_page)
+
+
+@st.fragment
+def _render_motifs_section(sqlite_conn, duck_conn, drill_export_page, analysis_jobs_page):
     with st.container(border=True):
         st.subheader("Missed tactical motifs")
         st.caption("Which types of tactic keep catching you out? For each mistake or blunder "
-                   "where the engine's best move was available, python-chess identifies the "
+                   "where the engine's best move was available, Chesswright identifies the "
                    "pattern behind it: a fork, pin, skewer, discovered attack, back-rank mate, "
                    "or a plain hanging piece. Motifs are filled in the next time an analysis "
                    "batch runs -- the chart below is blank until at least one batch has finished.")
-        motif_df = cached_motif_breakdown(duck_conn)
-        if motif_df.empty:
+        motif_df = cached_motif_breakdown(sqlite_conn)
+        if motif_df.empty and cached_motif_backfill_needed(duck_conn):
+            st.info(
+                "Tactical motif detection was added after your games were last "
+                "analyzed, so none of your existing mistakes and blunders have "
+                "been classified yet. Re-run the annotation pass to backfill "
+                "it — this reuses your existing Stockfish analysis, no new "
+                "engine time needed."
+            )
+            if analysis_jobs_page is not None and st.button("Go to Analysis Jobs"):
+                st.switch_page(analysis_jobs_page)
+        elif motif_df.empty:
             st.info(theme.thin_data_message(0, 1))
         else:
             motif_df = motif_df.copy()
@@ -82,6 +123,7 @@ def render(self_page, detail_page, drill_export_page=None):
             with col1:
                 st.plotly_chart(
                     charts.bar_chart(motif_df, "motif", "n_missed", theme.NEGATIVE,
+                                     x_title="Tactic type", y_title="Times missed",
                                      height=260),
                     theme=None)
             with col2:
@@ -120,6 +162,9 @@ def render(self_page, detail_page, drill_export_page=None):
                     }
                     st.switch_page(drill_export_page)
 
+
+@st.fragment
+def _render_puzzle_sequences_section(duck_conn, detail_page, self_page):
     with st.container(border=True):
         st.subheader("Puzzle-candidate sequences")
         st.caption("A trigger ply is a mistake/blunder by either side; the sequence length "
@@ -128,7 +173,7 @@ def render(self_page, detail_page, drill_export_page=None):
                    "Works in both directions: an opponent blunder you converted, or your own "
                    "blunder the opponent converted.")
         puzzle_top_n = st.slider("Show top N sequences", 5, 50, 15, key="puzzle_top_n")
-        puzzle_df = cached_puzzle_sequences(duck_conn, puzzle_top_n)
+        puzzle_df = cached_puzzle_sequences(duck_conn).head(puzzle_top_n)
         if not puzzle_df.empty:
             puzzle_df = puzzle_df.copy()
             puzzle_df["who_converted"] = puzzle_df.is_player_move.map(
@@ -138,13 +183,24 @@ def render(self_page, detail_page, drill_export_page=None):
             "puzzle_sequences", detail_page, self_page, "Tactical Highlights",
             column_config={
                 "game_id": "Game",
-                "ply": "At ply",
-                "san": "Trigger move",
-                "classification": "Quality",
-                "puzzle_sequence_length": "Sequence length",
-                "who_converted": "Outcome",
+                "ply": st.column_config.NumberColumn(
+                    "Move", help="Move number where the mistake happened "
+                                 "(one move = one White and one Black turn)."),
+                "san": st.column_config.Column(
+                    "Trigger move", help="The mistake or blunder that starts the sequence."),
+                "classification": st.column_config.Column(
+                    "How bad", help="The engine's severity call for the trigger move: "
+                                    "mistake or blunder."),
+                "puzzle_sequence_length": st.column_config.NumberColumn(
+                    "Accurate replies in a row",
+                    help="How many consecutive accurate moves followed the mistake -- "
+                         "longer = a cleaner conversion, better puzzle material."),
+                "who_converted": "Who converted",
             })
 
+
+@st.fragment
+def _render_brilliant_candidates_section(duck_conn, detail_page, self_page):
     with st.container(border=True):
         st.subheader("Brilliant-move candidates")
         st.caption("A real sacrifice, objectively best/excellent, recaptured by the opponent "
@@ -152,15 +208,22 @@ def render(self_page, detail_page, drill_export_page=None):
                    "false-positive bug (an unrelated capture elsewhere on the board was "
                    "originally being flagged).")
         brilliant_top_n = st.slider("Show top N", 5, 50, 15, key="brilliant_top_n")
-        brilliant_df = cached_brilliant_candidates(duck_conn, brilliant_top_n)
+        brilliant_df = cached_brilliant_candidates(duck_conn).head(brilliant_top_n)
         navigate_on_row_click(brilliant_df, "brilliant_candidates", detail_page, self_page,
                               "Tactical Highlights", column_config={
                                   "game_id": "Game",
-                                  "ply": "At ply",
-                                  "san": "Move",
-                                  "material_delta": "Material won",
+                                  "ply": st.column_config.NumberColumn(
+                                      "Move #", help="Move number in the game."),
+                                  "san": "Your move",
+                                  "material_delta": st.column_config.NumberColumn(
+                                      "Material given up",
+                                      help="Value of the material sacrificed, in centipawns "
+                                           "(100 = one pawn). 0 = an exchange-level shot."),
                               })
 
+
+@st.fragment
+def _render_best_move_streaks_section(duck_conn, detail_page, self_page):
     with st.container(border=True):
         st.subheader("Best-move streaks")
         st.caption("3+ consecutive turns matching the engine's literal top move. A streak only "
@@ -178,18 +241,28 @@ def render(self_page, detail_page, drill_export_page=None):
         streak_top_n = st.slider("Show top N streaks", 5, 50, 15, key="streak_top_n")
         streak_min_unforced = st.slider("Minimum unforced moves in the streak", 1, 10, 1,
                                          key="streak_min_unforced")
-        streak_df = cached_best_move_streaks(duck_conn, streak_top_n, streak_min_unforced)
+        streak_full = cached_best_move_streaks(duck_conn)
+        streak_df = streak_full[
+            streak_full.best_move_streak_unforced_count >= streak_min_unforced
+        ].head(streak_top_n)
         navigate_on_row_click(
             streak_df.drop(columns=["is_player_move"], errors="ignore"),
             "best_move_streaks", detail_page, self_page, "Tactical Highlights",
             column_config={
                 "game_id": "Game",
-                "ply": "At ply",
+                "ply": st.column_config.NumberColumn(
+                    "Starts at move", help="Move number where the streak begins."),
                 "san": "First move",
-                "best_move_streak_length": "Streak length",
-                "best_move_streak_unforced_count": "Unforced moves",
+                "best_move_streak_length": st.column_config.NumberColumn(
+                    "Streak length", help="Consecutive turns matching the engine's top move."),
+                "best_move_streak_unforced_count": st.column_config.NumberColumn(
+                    "Real choices", help="How many streak moves were genuine choices (engine's "
+                                         "best and second-best close in value), not forced."),
             })
 
+
+@st.fragment
+def _render_blown_mates_section(duck_conn, detail_page, self_page):
     with st.container(border=True):
         st.subheader("Blown forced mates")
         st.caption("A forced mate was available but you played something else. Most still won "
@@ -201,13 +274,19 @@ def render(self_page, detail_page, drill_export_page=None):
         navigate_on_row_click(blown_df, "blown_mates", detail_page, self_page,
                               "Tactical Highlights", column_config={
                                   "game_id": "Game",
-                                  "ply": "At ply",
-                                  "san": "Played",
-                                  "best_move_san": "Best move",
-                                  "eval_mate": "Mate in",
+                                  "ply": st.column_config.NumberColumn(
+                                      "Move #", help="Move number in the game."),
+                                  "san": "You played",
+                                  "best_move_san": st.column_config.Column(
+                                      "Mating move", help="The move that would have forced mate."),
+                                  "eval_mate": st.column_config.NumberColumn(
+                                      "Mate in", help="Forced mate available in this many moves."),
                                   "outcome_for_player": "Result",
                               })
 
+
+@st.fragment
+def _render_knight_rim_section(sqlite_conn):
     with st.container(border=True):
         st.subheader("\"A knight on the rim is dim\" -- tested directly")
         _, knight_phase_df = cached_knight_rim_performance(sqlite_conn)
@@ -220,9 +299,13 @@ def render(self_page, detail_page, drill_export_page=None):
                    + _thin_note)
         st.plotly_chart(
             charts.grouped_bar_chart(knight_phase_df, "phase", "location", "blunder_rate",
-                                     colors={"rim": theme.NEGATIVE, "interior": theme.POSITIVE}),
+                                     colors={"rim": theme.NEGATIVE, "interior": theme.POSITIVE},
+                                     x_title="Game phase", y_title="Blunder rate (% of knight moves)"),
             theme=None)
 
+
+@st.fragment
+def _render_hallucinations_section(duck_conn, detail_page, self_page):
     with st.container(border=True):
         st.subheader("Hallucination / mouse-slip blunders")
         st.caption("A stricter signal than any 'blunder' classification: the player's move is "
@@ -255,12 +338,16 @@ def render(self_page, detail_page, drill_export_page=None):
         hallucination_top_n = st.slider("Show top N examples", 5, 50, 15, key="hallucination_top_n")
         _hang_col_config = {
             "game_id": "Game",
-            "blunder_ply": "At ply",
+            "blunder_ply": st.column_config.NumberColumn(
+                "Move #", help="Move number where the piece was hung."),
             "blunder_san": "Move played",
-            "num_plies": "Game length",
+            "num_plies": st.column_config.NumberColumn(
+                "Game length", help="Total half-moves (single turns) in the game."),
             "outcome_for_player": "Result",
             "game_end_type": "Ended by",
-            "plies_remaining": "Plies remaining",
+            "plies_remaining": st.column_config.NumberColumn(
+                "Turns until the end", help="Single turns (half-moves) between the "
+                                            "hung piece and the end of the game."),
         }
         st.write("**Quickest hang-and-resign examples**")
         # No hanging-piece blunders found yet means `hangs` has no

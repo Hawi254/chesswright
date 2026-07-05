@@ -1,0 +1,106 @@
+<!doctype html>
+<!--
+Deliberately vanilla JS, no React/Vite build step (unlike
+dashboard/components/chessboard/) -- this is a single button, so hand
+implementing Streamlit's small, stable component-iframe postMessage
+protocol directly (documented inline below) is simpler than pulling in
+a bundler for it. Never loads anything over the network -- this file
+must work fully offline in the packaged desktop app.
+
+Protocol (confirmed by reading streamlit-component-lib's own source,
+dashboard/components/chessboard/frontend/node_modules/streamlit-component-lib/dist/streamlit.js):
+  - On load: postMessage {isStreamlitMessage: true, type: "streamlit:componentReady", apiVersion: 1}
+    to the parent frame, then postMessage {isStreamlitMessage: true, type: "streamlit:setFrameHeight", height: N}.
+  - To return a value to Python: postMessage {isStreamlitMessage: true, type: "streamlit:setComponentValue", value, dataType: "json"}.
+  - Args (kind, label) arrive via a "message" event with data.type === "streamlit:render",
+    data.args holding whatever the Python wrapper passed.
+
+Native-dialog mechanism (live-verified in BRIEF.md §6h / the Tier 2 plan):
+window.top.pywebview.api.* is reachable from this iframe's JS even though
+this page is served by the Streamlit server subprocess, not the
+pywebview launcher process that registered js_api -- the call still
+executes in the launcher process. When pywebview isn't present at all
+(the plain `streamlit run` dev workflow, or a browser tab), this button
+stays hidden so the calling Python code's existing fallback widget
+(st.text_input / st.file_uploader) is what the user actually sees.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; padding: 0; background: transparent; }
+  button {
+    font-family: sans-serif;
+    font-size: 14px;
+    padding: 0.4rem 0.75rem;
+    border-radius: 0.5rem;
+    border: 1px solid #C19A4B;
+    background: transparent;
+    color: #C19A4B;
+    cursor: pointer;
+  }
+  button:hover { background: #C19A4B22; }
+  button:disabled { opacity: 0.5; cursor: default; }
+</style>
+</head>
+<body>
+<button id="browse" style="display:none">Browse&hellip;</button>
+<div id="status" style="font-family:sans-serif;font-size:12px;color:#B0584F;margin-top:4px"></div>
+<script>
+(function () {
+  function sendToStreamlit(type, data) {
+    window.parent.postMessage(Object.assign({isStreamlitMessage: true, type: type}, data), "*");
+  }
+  function setComponentValue(value) {
+    sendToStreamlit("streamlit:setComponentValue", {value: value, dataType: "json"});
+  }
+  function setFrameHeight() {
+    sendToStreamlit("streamlit:setFrameHeight", {height: document.body.scrollHeight});
+  }
+
+  var currentArgs = {kind: "engine", label: "Browse…"};
+  var button = document.getElementById("browse");
+  var status = document.getElementById("status");
+
+  // JS-side allowlist mirrors desktop_app.py's own: each "kind" maps to
+  // one hardcoded js_api method, never a dialog type/filter chosen here.
+  var API_METHOD_BY_KIND = {engine: "pick_engine_file", database: "pick_database_file"};
+
+  function nativeApiAvailable() {
+    return !!(window.top && window.top.pywebview && window.top.pywebview.api);
+  }
+
+  function render(args) {
+    currentArgs = args || currentArgs;
+    button.textContent = currentArgs.label || "Browse…";
+    button.style.display = nativeApiAvailable() ? "inline-block" : "none";
+    setFrameHeight();
+  }
+
+  button.addEventListener("click", function () {
+    var methodName = API_METHOD_BY_KIND[currentArgs.kind];
+    if (!methodName || !nativeApiAvailable()) return;
+    button.disabled = true;
+    status.textContent = "";
+    window.top.pywebview.api[methodName]()
+      .then(function (path) {
+        button.disabled = false;
+        if (path) setComponentValue(path);
+      })
+      .catch(function (err) {
+        button.disabled = false;
+        status.textContent = "Couldn't open the file dialog: " + err;
+      });
+  });
+
+  window.addEventListener("message", function (event) {
+    if (event.data.type !== "streamlit:render") return;
+    render(event.data.args || {});
+  });
+
+  sendToStreamlit("streamlit:componentReady", {apiVersion: 1});
+  render(currentArgs);
+})();
+</script>
+</body>
+</html>

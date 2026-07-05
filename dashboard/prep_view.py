@@ -105,7 +105,16 @@ def _status_fragment() -> None:
         st.error(f"Analysis failed: {state.get('error', 'Unknown error')}")
         st.caption("Check that the username is spelled correctly and Stockfish is installed.")
     elif status == "done":
-        _render_scout_report(state.get("username", ""))
+        # Transient connection races (the DuckDB ATTACH retry in
+        # _common.py covers the known one) shouldn't surface as a raw
+        # traceback on a page that just told the user "Analysis
+        # complete" -- match the "explain, don't crash" handling every
+        # other AI/DB-backed panel in this app already uses.
+        try:
+            _render_scout_report(state.get("username", ""))
+        except Exception as e:
+            st.error(f"Couldn't load the scout report: {e}")
+            st.caption("Try again -- this is usually a transient database hiccup.")
     elif status == "idle":
         _render_prev_opponents()
 
@@ -117,9 +126,16 @@ def _render_scout_report(username: str) -> None:
         return
 
     try:
-        n = duck_conn.execute(
+        # A bare COUNT(*) always returns exactly one row -- None here means
+        # something went wrong beneath the query itself (a transient
+        # connection race), not a legitimate empty result. Same "explain
+        # what's missing, don't crash" guard as data/_shared.py's
+        # _fetchone_scalar, inlined here rather than reaching across
+        # packages for a private helper.
+        row = duck_conn.execute(
             "SELECT COUNT(*) FROM db.games WHERE analysis_status='done'"
-        ).fetchone()[0]
+        ).fetchone()
+        n = row[0] if row is not None else 0
 
         st.success(f"Analysis complete — **{n}** game(s) analysed for **{username}**.")
         if n < 5:

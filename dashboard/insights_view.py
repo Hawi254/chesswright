@@ -22,6 +22,7 @@ import claude_narrative
 import data
 import theme
 from _common import get_connections
+from cached_queries import cached_career_findings, cached_headline_stats
 
 # Findings whose title maps to a Drill Export preset.
 # Keys match finding["title"] exactly; values are passed as _drill_preset
@@ -48,16 +49,6 @@ _DRILL_PRESETS = {
 }
 
 
-@st.cache_data
-def cached_headline_stats(_duck_conn, _sqlite_conn):
-    return data.get_headline_stats(_duck_conn, _sqlite_conn)
-
-
-@st.cache_data
-def cached_career_findings(_duck_conn, baseline_blunder_rate):
-    return data.get_career_findings(_duck_conn, baseline_blunder_rate)
-
-
 def render(drill_export_page=None, prep_page=None):
     sqlite_conn, duck_conn = get_connections()
     st.title("Insights")
@@ -68,10 +59,17 @@ def render(drill_export_page=None, prep_page=None):
 
     stats = cached_headline_stats(duck_conn, sqlite_conn)
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Total games", f"{stats['total_games']:,}")
-    col2.metric("Analyzed games", f"{stats['analyzed_games']:,}")
-    col3.metric("Win rate", f"{stats['win_pct']:.1f}%" if stats['win_pct'] is not None else "--")
-    col4.metric("ACPL (analyzed)", f"{stats['acpl']:.1f}" if stats['acpl'] is not None else "--")
+    col1.metric("Total games", f"{stats['total_games']:,}",
+                help="Every game synced from your online accounts.")
+    col2.metric("Analyzed games", f"{stats['analyzed_games']:,}",
+                help="Games your engine has analyzed — the findings below only "
+                     "count these.")
+    col3.metric("Win rate", f"{stats['win_pct']:.1f}%" if stats['win_pct'] is not None else "--",
+                help="Wins as a share of all games. Online pairing aims for even "
+                     "matches, so most players sit near 50%.")
+    col4.metric("ACPL (analyzed)", f"{stats['acpl']:.1f}" if stats['acpl'] is not None else "--",
+                help="Average centipawn loss — measures move accuracy across "
+                     "analyzed games. Lower is better.")
 
     findings = cached_career_findings(duck_conn, stats["blunder_rate"])
 

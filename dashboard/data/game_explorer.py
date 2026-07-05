@@ -1,7 +1,7 @@
 """Badges, drama scoring, Game Explorer table, and the per-game detail
 query. These stay together: get_game_badges and get_game_explorer_table
-depend on get_lead_changes and on the comeback/giant-killing thresholds
-in roughly the order they appear below.
+share the comeback/giant-killing thresholds in roughly the order they
+appear below.
 """
 import pandas as pd
 
@@ -17,36 +17,6 @@ BRILLIANT_FIND_THRESHOLD = 2     # is_brilliant_candidate count in one game -- 3
 NAIL_BITER_THRESHOLD = 8         # lead changes (player win-prob crossing 50%) -- 45 games
 
 
-def get_lead_changes(duck_conn):
-    """Per-game count of how many times the player's win-probability
-    crosses 50% -- the nail-biter badge's input. Same POV-flip
-    comebacks.py already established (player_wp = win_prob_before if
-    is_player_move else 1-win_prob_before), walked in ply order per game."""
-    rows = duck_conn.execute("""
-        SELECT game_id, ply, is_player_move, win_prob_before FROM db.moves
-        WHERE win_prob_before IS NOT NULL ORDER BY game_id, ply
-    """).fetchall()
-    lead_changes = {}
-    cur_game = None
-    prev_sign = None
-    changes = 0
-    for game_id, _ply, is_player_move, wp in rows:
-        if game_id != cur_game:
-            if cur_game is not None:
-                lead_changes[cur_game] = changes
-            cur_game = game_id
-            prev_sign = None
-            changes = 0
-        player_wp = wp if is_player_move else 1 - wp
-        sign = player_wp > 0.5
-        if prev_sign is not None and sign != prev_sign:
-            changes += 1
-        prev_sign = sign
-    if cur_game is not None:
-        lead_changes[cur_game] = changes
-    return pd.DataFrame(list(lead_changes.items()), columns=["game_id", "lead_changes"])
-
-
 def get_game_badges(duck_conn):
     """One row per ALL games (not just analyzed ones) -- giant-killing is
     board-derived and applies database-wide; the other 4 badges are
@@ -58,8 +28,10 @@ def get_game_badges(duck_conn):
 
     All five badge metrics are computed in one DuckDB query using a LAG
     window function for lead changes, replacing five separate SQLITE_SCANs
-    + a Python loop. Saves ~600ms on a 32k-game database. get_lead_changes
-    is kept as a public function for callers that need the per-game df."""
+    + a Python loop. Saves ~600ms on a 32k-game database. (A standalone
+    get_lead_changes walking the same rows in Python existed here until the
+    2026-07-04 audit found it had no callers left -- this query is the only
+    lead-changes computation now.)"""
     df = duck_conn.execute(f"""
         WITH move_stats AS (
             SELECT
@@ -119,26 +91,40 @@ def get_game_explorer_table(duck_conn):
     badges = get_game_badges(duck_conn)
     headers = duck_conn.execute("""
         SELECT id AS game_id, utc_date, opponent_name, opponent_rating, player_color,
-               outcome_for_player, time_control_category, opening_family, rating_diff
+               outcome_for_player, time_control_category, opening_family, rating_diff, site
         FROM db.games
     """).fetchdf()
     return headers.merge(badges, on="game_id", how="inner").sort_values("drama_score", ascending=False)
 
 
-def get_game_detail(duck_conn, game_id):
+def get_game_detail(sqlite_conn, game_id):
     """Everything the per-game view needs: header info, the full move
     list (san, classification, cpl, sharpness, fen_before, is_brilliant_candidate,
-    is_puzzle_trigger), and the game_end_type for the narrative's closing line."""
-    header = duck_conn.execute("""
+    is_puzzle_trigger), and the game_end_type for the narrative's closing line.
+
+    Takes sqlite_conn, not duck_conn -- this is a point lookup on an exact
+    game_id, and DuckDB's ATTACHed sqlite_scanner doesn't push filter
+    predicates down as index seeks across the ATTACH boundary (same
+    phenomenon fixed for get_opening_moves_from_fen in openings.py; see
+    that function's docstring for the full EXPLAIN-confirmed mechanism).
+    Measured live: ~3.7s (1.2s games + 2.6s moves, both full-table
+    SQLITE_SCANs) via duck_conn vs ~0.001s via sqlite3, which uses the
+    already-existing idx_moves_game(game_id, ply) index and the games PK
+    -- no new index needed, unlike the opening-tree fix. This was the
+    single most expensive query in the app: Game Detail is opened on
+    essentially every distinct game a user looks at, so every first view
+    of any game paid this cost.
+    """
+    header = pd.read_sql_query("""
         SELECT id AS game_id, utc_date, opponent_name, opponent_rating, player_rating,
                player_color, outcome_for_player, time_control_category, opening_family,
-               rating_diff, game_end_type, analysis_status, last_analyzed_ply
-        FROM db.games WHERE id = ?
-    """, [game_id]).fetchdf().iloc[0]
-    moves = duck_conn.execute("""
+               rating_diff, game_end_type, analysis_status, last_analyzed_ply, site
+        FROM games WHERE id = ?
+    """, sqlite_conn, params=[game_id]).iloc[0]
+    moves = pd.read_sql_query("""
         SELECT ply, san, is_player_move, classification, cpl, sharpness,
                is_brilliant_candidate, is_puzzle_trigger, fen_before,
-               win_prob_before, win_prob_after
-        FROM db.moves WHERE game_id = ? ORDER BY ply
-    """, [game_id]).fetchdf()
+               win_prob_before, win_prob_after, motif
+        FROM moves WHERE game_id = ? ORDER BY ply
+    """, sqlite_conn, params=[game_id])
     return header, moves

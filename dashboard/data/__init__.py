@@ -39,9 +39,13 @@ from .overview import (
     get_progress_by_month,
 )
 from .openings import (
+    INITIAL_FEN, FLIP_SCAN_MIN_TOTAL_GAMES,
     get_openings_table, get_most_repeated_positions, get_opening_ply_accuracy,
     get_repertoire_holes, get_position_fen, get_position_analysis,
-    store_position_analysis,
+    store_position_analysis, get_opening_moves_from_fen,
+    get_opening_moves_by_year, get_player_move_year_stats,
+    compute_dominant_move_flips, summarize_position_timeline,
+    get_path_to_position,
 )
 from .patterns import (
     SHARPNESS_BUCKETS, PIECE_ORDER, PIECE_NAME,
@@ -64,14 +68,35 @@ from .tactical import (
     RIM_SQL,
     get_puzzle_sequences, get_brilliant_candidates, get_best_move_streaks,
     get_blown_mates, get_knight_rim_performance, get_hallucination_blunders,
-    get_hallucination_context, get_motif_breakdown,
+    get_hallucination_context, get_motif_breakdown, motif_backfill_needed,
 )
 from .game_explorer import (
     BLUNDER_FEST_THRESHOLD, BRILLIANT_FIND_THRESHOLD, NAIL_BITER_THRESHOLD,
-    get_lead_changes, get_game_badges, get_game_explorer_table, get_game_detail,
+    get_game_badges, get_game_explorer_table, get_game_detail,
 )
 from .insights import get_career_findings
-from .drills import get_motif_drill_positions, get_decisive_moment_positions
+from .points import (
+    WINNING_WP, LOST_WP, SWINDLE_CHANCE_WP, EVEN_WP, HOLD_EVEN_MIN_MOVE,
+    CONVERSION_BANDS, BUCKET_LABEL,
+    get_points_ledger, classify_points_ledger, summarize_buckets,
+    monthly_points, conversion_breakdown,
+)
+from .evolution import (
+    QUARTERS_WINDOW, MAJOR_SHARE_PCT, MINOR_SHARE_PCT, TREND_RATIO,
+    MIN_FAMILY_GAMES, ECO_SECTION_NAMES, STATUS_ORDER,
+    get_family_period_counts, filter_counts, period_shares,
+    classify_evolution, family_win_trend, get_family_acpl_by_period,
+)
+from .drills import (
+    get_motif_drill_positions, get_decisive_moment_positions, build_drill_cards,
+)
+from .srs import (
+    SrsCard, get_due_cards, get_card_counts, add_cards, apply_rating, delete_card,
+    TRANSFER_MIN_MOVES_AFTER,
+    get_review_history, weekly_recall, learning_curve, recall_by_source,
+    get_drilled_motifs, get_analyzed_move_series, get_motif_miss_series,
+    compute_motif_transfer,
+)
 from .prep import open_opponent_connections, get_recent_form, get_opening_tendencies
 from .variations import (
     Variation, Annotation,
@@ -89,7 +114,10 @@ __all__ = [
     "get_progress_by_month",
     "get_openings_table", "get_most_repeated_positions", "get_opening_ply_accuracy",
     "get_repertoire_holes", "get_position_fen", "get_position_analysis",
-    "store_position_analysis",
+    "store_position_analysis", "FLIP_SCAN_MIN_TOTAL_GAMES",
+    "get_opening_moves_by_year", "get_player_move_year_stats",
+    "compute_dominant_move_flips", "summarize_position_timeline",
+    "get_path_to_position",
     "SHARPNESS_BUCKETS", "PIECE_ORDER", "PIECE_NAME",
     "get_blunder_rate_by_time_pressure", "get_acpl_by_time_control",
     "get_phase_accuracy", "get_prior_outcome_performance",
@@ -106,11 +134,24 @@ __all__ = [
     "RIM_SQL",
     "get_puzzle_sequences", "get_brilliant_candidates", "get_best_move_streaks",
     "get_blown_mates", "get_knight_rim_performance", "get_hallucination_blunders",
-    "get_hallucination_context", "get_motif_breakdown",
+    "get_hallucination_context", "get_motif_breakdown", "motif_backfill_needed",
     "BLUNDER_FEST_THRESHOLD", "BRILLIANT_FIND_THRESHOLD", "NAIL_BITER_THRESHOLD",
-    "get_lead_changes", "get_game_badges", "get_game_explorer_table", "get_game_detail",
+    "get_game_badges", "get_game_explorer_table", "get_game_detail",
     "get_career_findings",
-    "get_motif_drill_positions", "get_decisive_moment_positions",
+    "WINNING_WP", "LOST_WP", "SWINDLE_CHANCE_WP", "EVEN_WP", "HOLD_EVEN_MIN_MOVE",
+    "CONVERSION_BANDS", "BUCKET_LABEL",
+    "get_points_ledger", "classify_points_ledger", "summarize_buckets",
+    "monthly_points", "conversion_breakdown",
+    "QUARTERS_WINDOW", "MAJOR_SHARE_PCT", "MINOR_SHARE_PCT", "TREND_RATIO",
+    "MIN_FAMILY_GAMES", "ECO_SECTION_NAMES", "STATUS_ORDER",
+    "get_family_period_counts", "filter_counts", "period_shares",
+    "classify_evolution", "family_win_trend", "get_family_acpl_by_period",
+    "get_motif_drill_positions", "get_decisive_moment_positions", "build_drill_cards",
+    "SrsCard", "get_due_cards", "get_card_counts", "add_cards", "apply_rating", "delete_card",
+    "TRANSFER_MIN_MOVES_AFTER",
+    "get_review_history", "weekly_recall", "learning_curve", "recall_by_source",
+    "get_drilled_motifs", "get_analyzed_move_series", "get_motif_miss_series",
+    "compute_motif_transfer",
     "open_opponent_connections", "get_recent_form", "get_opening_tendencies",
     "Variation", "Annotation",
     "compute_variation_fen",

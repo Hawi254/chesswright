@@ -19,36 +19,34 @@ import claude_narrative
 import data
 import theme
 from _common import get_connections, navigate_on_row_click
+from cached_queries import cached_headline_stats
 
 
-@st.cache_data
+@st.cache_data(show_spinner="Computing win rates by rating difference…")
 def cached_win_rate_by_rating_diff(_duck_conn):
     return data.get_win_rate_by_rating_diff(_duck_conn)
 
 
-@st.cache_data
+@st.cache_data(show_spinner="Counting upset wins and losses…")
 def cached_giant_killing_counts(_duck_conn):
     return data.get_giant_killing_counts(_duck_conn)
 
 
-@st.cache_data
+@st.cache_data(show_spinner="Finding comebacks and collapses…")
 def cached_comeback_collapse_counts(_duck_conn):
     return data.get_comeback_collapse_counts(_duck_conn)
 
 
-@st.cache_data
+@st.cache_data(show_spinner="Comparing your White and Black results…")
 def cached_color_performance_by_rating(_duck_conn):
     return data.get_color_performance_by_rating(_duck_conn)
 
 
-@st.cache_data
+@st.cache_data(show_spinner="Ranking your opponents…")
 def cached_nemesis_opponents(_duck_conn, min_games):
     return data.get_nemesis_opponents(_duck_conn, min_games=min_games)
 
 
-@st.cache_data
-def cached_headline_stats(_duck_conn, _sqlite_conn):
-    return data.get_headline_stats(_duck_conn, _sqlite_conn)
 
 
 def _clickable_game_ids(game_ids, key, detail_page, self_page):
@@ -68,8 +66,12 @@ def render(self_page, detail_page):
 
     with st.container(border=True):
         st.subheader("Win rate vs. rating differential")
+        st.caption("Your rating minus the opponent's: bars left of 0 are games against "
+                   "higher-rated opponents, right of 0 against lower-rated ones.")
         rd_df = cached_win_rate_by_rating_diff(duck_conn)
-        st.plotly_chart(charts.bar_chart(rd_df, "band", "win_pct", theme.POSITIVE), theme=None)
+        st.plotly_chart(charts.bar_chart(rd_df, "band", "win_pct", theme.POSITIVE,
+                                          x_title="Rating difference (you minus opponent)",
+                                          y_title="Win rate (%)"), theme=None)
 
     with st.container(border=True):
         st.subheader("Win rate by color, rating-adjusted")
@@ -96,16 +98,26 @@ def render(self_page, detail_page):
         collapse_pct = (100.0 * gk['n_collapses'] / gk['n_favorite_games']
                          if gk['n_favorite_games'] else None)
         col1, col2 = st.columns(2)
+        # Plain sentences, not st.metric deltas -- the delta arrow reads as
+        # "up vs. some earlier period", which these shares are not.
         col1.metric("Giant-killing wins (300+ underdog)",
                     f"{gk['n_upsets']} / {gk['n_underdog_games']}",
-                    f"{upset_pct:.1f}%" if upset_pct is not None else None)
+                    help="Games won when the opponent was rated 300+ points above you, "
+                         "out of all games against such opponents.")
+        if upset_pct is not None:
+            col1.caption(f"You win {upset_pct:.1f}% of games as a heavy underdog.")
         col2.metric("Collapse losses (300+ favorite)",
                     f"{gk['n_collapses']} / {gk['n_favorite_games']}",
-                    f"{collapse_pct:.1f}%" if collapse_pct is not None else None)
+                    help="Games lost when the opponent was rated 300+ points below you, "
+                         "out of all games against such opponents.")
+        if collapse_pct is not None:
+            col2.caption(f"You lose {collapse_pct:.1f}% of games as a heavy favorite.")
 
     with st.container(border=True):
         st.subheader("Comebacks and collapses (eval-based)")
-        st.caption("Click a row to open that game's full story.")
+        st.caption("Comeback: you won or drew a game the engine judged clearly lost for you "
+                   "at some point. Collapse: the reverse. Open a list and tick a row's "
+                   "checkbox to see that game's full story.")
         cc = cached_comeback_collapse_counts(duck_conn)
         col1, col2 = st.columns(2)
         col1.metric("Comebacks", cc["n_comebacks"])
@@ -116,61 +128,88 @@ def render(self_page, detail_page):
             _clickable_game_ids(cc["collapse_game_ids"], "collapse_games", detail_page, self_page)
 
     with st.container(border=True):
-        st.subheader("Nemesis and favorite opponents")
-        st.caption("Ranked by score% (win + 0.5*draw, standard tournament scoring) so repeated "
-                   "draws aren't misread as losses. Look for opponents you've played many times "
-                   "with a consistently lopsided record.")
-        nem_min_games = st.slider("Minimum games against this opponent", 3, 50, 5)
-        nem_df = cached_nemesis_opponents(duck_conn, nem_min_games)
+        _render_nemesis_section(sqlite_conn, duck_conn)
 
-        _nem_col_config = {
-            "opponent_name": "Opponent",
-            "n": "Games",
-            "wins": "Wins",
-            "draws": "Draws",
-            "losses": "Losses",
-            "score_pct": st.column_config.NumberColumn("Score %", format="%.1f"),
-        }
-        col1, col2 = st.columns(2)
-        with col1:
-            st.write("Toughest opponents (lowest score%)")
-            st.dataframe(nem_df.sort_values("score_pct").head(10), width='stretch',
-                         column_config=_nem_col_config)
-        with col2:
-            st.write("Favorite opponents (highest score%)")
-            st.dataframe(nem_df.sort_values("score_pct", ascending=False).head(10), width='stretch',
-                         column_config=_nem_col_config)
 
-        st.write("Most-played opponents overall")
-        st.dataframe(nem_df.sort_values("n", ascending=False).head(10), width='stretch',
+@st.fragment
+def _render_nemesis_section(sqlite_conn, duck_conn):
+    """Its own fragment: the min-games slider, the commentary selectbox,
+    and the Claude-commentary button all only affect this one section --
+    nothing else on the page reads nem_df or these session_state keys --
+    so none of that needs to re-run the rest of Matchups & Opponents."""
+    st.subheader("Nemesis and favorite opponents")
+    st.caption("Ranked by score% (win + 0.5*draw, standard tournament scoring) so repeated "
+               "draws aren't misread as losses. Look for opponents you've played many times "
+               "with a consistently lopsided record.")
+    nem_min_games = st.slider("Minimum games against this opponent", 3, 50, 5)
+    nem_df = cached_nemesis_opponents(duck_conn, nem_min_games)
+
+    # One combined W-D-L record column instead of three separate ones --
+    # in the side-by-side layout below, three number columns pushed the
+    # ranking metric (Score %) off the right edge at a normal window
+    # width, which is the one column these tables exist to show.
+    nem_display = nem_df.copy()
+    nem_display["record"] = (nem_display.wins.fillna(0).astype(int).astype(str) + "-"
+                             + nem_display.draws.fillna(0).astype(int).astype(str) + "-"
+                             + nem_display.losses.fillna(0).astype(int).astype(str))
+    nem_display = nem_display.drop(columns=["wins", "draws", "losses"])
+    _nem_col_config = {
+        "opponent_name": "Opponent",
+        "n": st.column_config.NumberColumn("Games", width="small"),
+        "record": st.column_config.TextColumn(
+            "W-D-L", width="small", help="Wins-Draws-Losses against this opponent."),
+        "score_pct": st.column_config.NumberColumn(
+            "Score %", format="%.1f",
+            help="Tournament scoring: a win = 100%, a draw = 50%. 0% means you have "
+                 "never taken a point off this opponent."),
+    }
+    _nem_col_order = ["opponent_name", "n", "record", "score_pct"]
+    col1, col2 = st.columns(2)
+    with col1:
+        st.write("Toughest opponents (lowest score%)")
+        st.dataframe(nem_display.sort_values("score_pct").head(10), width='stretch',
+                     hide_index=True, column_order=_nem_col_order,
+                     column_config=_nem_col_config)
+    with col2:
+        st.write("Favorite opponents (highest score%)")
+        st.dataframe(nem_display.sort_values("score_pct", ascending=False).head(10),
+                     width='stretch', hide_index=True, column_order=_nem_col_order,
                      column_config=_nem_col_config)
 
-        if not nem_df.empty:
-            opponent_names = nem_df.opponent_name.tolist()
-            chosen_name = st.selectbox("Tell me about this rivalry", opponent_names,
-                                        key="opponent_commentary_select")
-            chosen_row = nem_df.loc[nem_df.opponent_name == chosen_name].iloc[0]
+    st.write("Most-played opponents overall")
+    st.dataframe(nem_display.sort_values("n", ascending=False).head(10), width='stretch',
+                 hide_index=True, column_order=_nem_col_order,
+                 column_config=_nem_col_config)
 
-            cached = data.get_cached_narrative(sqlite_conn, "opponent", chosen_name)
-            if cached:
-                response_text, generated_at = cached
-                st.caption(f"Generated {generated_at}")
-                st.markdown(response_text)
-            button_label = "Regenerate commentary" if cached else "Generate commentary"
+    if not nem_df.empty:
+        opponent_names = nem_df.opponent_name.tolist()
+        chosen_name = st.selectbox("Tell me about this rivalry", opponent_names,
+                                    key="opponent_commentary_select")
+        chosen_row = nem_df.loc[nem_df.opponent_name == chosen_name].iloc[0]
 
-            if not claude_narrative.api_key_available():
-                st.info("Add your own Anthropic API key on the Settings page to enable this.")
-            if st.button(button_label, key="opponent_commentary_button",
-                         disabled=not claude_narrative.api_key_available()):
-                stats = cached_headline_stats(duck_conn, sqlite_conn)
-                with st.spinner("Asking Claude..."):
-                    try:
-                        response_text = claude_narrative.generate_opponent_commentary(
-                            chosen_row, stats["win_pct"], stats["analyzed_games"], stats["total_games"])
-                        data.save_narrative(sqlite_conn, "opponent", chosen_name,
-                                             response_text, claude_narrative.MODEL)
-                        st.rerun()
-                    except claude_narrative.MissingApiKeyError as e:
-                        st.error(str(e))
-                    except Exception as e:
-                        st.error(f"Claude API call failed: {e}")
+        cached = data.get_cached_narrative(sqlite_conn, "opponent", chosen_name)
+        if cached:
+            response_text, generated_at = cached
+            st.caption(f"Generated {generated_at}")
+            st.markdown(response_text)
+        button_label = "Regenerate commentary" if cached else "Generate commentary"
+
+        if not claude_narrative.api_key_available():
+            st.info("Add your own Anthropic API key on the Settings page to enable this.")
+        if st.button(button_label, key="opponent_commentary_button",
+                     disabled=not claude_narrative.api_key_available()):
+            stats = cached_headline_stats(duck_conn, sqlite_conn)
+            with st.spinner("Asking Claude..."):
+                try:
+                    response_text = claude_narrative.generate_opponent_commentary(
+                        chosen_row, stats["win_pct"], stats["analyzed_games"], stats["total_games"])
+                    data.save_narrative(sqlite_conn, "opponent", chosen_name,
+                                         response_text, claude_narrative.MODEL)
+                    # Scoped, not a full app rerun -- only this fragment's
+                    # own cached-narrative display needs to reflect the
+                    # write, nothing else on the page reads it.
+                    st.rerun(scope="fragment")
+                except claude_narrative.MissingApiKeyError as e:
+                    st.error(str(e))
+                except Exception as e:
+                    st.error(f"Claude API call failed: {e}")

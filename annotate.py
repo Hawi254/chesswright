@@ -373,6 +373,34 @@ def count_games_awaiting_annotation(conn) -> int:
     return row[0]
 
 
+# Sibling of dashboard/data/tactical.py's motif_backfill_needed() -- same
+# signal, same MOTIF_BACKFILL_MIN_CANDIDATES-equivalent threshold, but
+# against the plain sqlite3 connection this view already holds rather than
+# pulling in a DuckDB ATTACH just for one check. Kept in sync manually;
+# the underlying query is trivial and unlikely to drift.
+_MOTIF_BACKFILL_MIN_CANDIDATES = 20
+
+
+def motif_backfill_needed(conn) -> bool:
+    """True when real mistake/blunder moves exist that were never run
+    through motif classification -- i.e. annotated before annotate.py's
+    Pass 4 (v0.1.9) existed, and never re-annotated since. run(game_id=None)
+    already recomputes motif for every previously-analyzed game
+    (idempotent, see fetch_games_to_annotate above), so the fix already
+    exists; this is purely the detection signal for surfacing it."""
+    row = conn.execute("""
+        SELECT
+            COUNT(*)                                            AS n_candidates,
+            SUM(CASE WHEN motif IS NOT NULL THEN 1 ELSE 0 END)  AS n_with_motif
+        FROM moves
+        WHERE is_player_move = 1 AND classification IN ('mistake', 'blunder')
+    """).fetchone()
+    if row is None:
+        return False
+    n_candidates, n_with_motif = row
+    return n_candidates >= _MOTIF_BACKFILL_MIN_CANDIDATES and not n_with_motif
+
+
 def run(db_path, mate_cap, thresholds, brilliant_threshold, puzzle_cfg, streak_cfg, game_id):
     migrate(db_path)
     conn = get_connection(db_path)

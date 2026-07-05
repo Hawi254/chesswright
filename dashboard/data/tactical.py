@@ -15,22 +15,35 @@ RIM_SQL = "(substr(to_square,1,1) IN ('a','h') OR substr(to_square,2,1) IN ('1',
 def get_puzzle_sequences(duck_conn, top_n=15):
     """Mirrors analysis/puzzle_summary.py's trigger half -- 191 sequences
     computed in Phase 3b, never surfaced anywhere including the
-    dashboard until now."""
-    return duck_conn.execute("""
+    dashboard until now.
+
+    top_n=None returns every qualifying row (the trigger flag bounds this
+    to a few hundred rows) -- used by the view layer to cache ONE full
+    fetch per session and slice per slider value in pandas, instead of
+    re-running this full-table duck scan (~0.65s on the real 2.3M-row
+    moves table) on every distinct top_n slider position."""
+    limit = "" if top_n is None else "LIMIT ?"
+    params = [] if top_n is None else [top_n]
+    return duck_conn.execute(f"""
         SELECT game_id, ply, san, classification, is_player_move, puzzle_sequence_length
         FROM db.moves WHERE is_puzzle_trigger=1
-        ORDER BY puzzle_sequence_length DESC LIMIT ?
-    """, [top_n]).fetchdf()
+        ORDER BY puzzle_sequence_length DESC {limit}
+    """, params).fetchdf()
 
 
 def get_brilliant_candidates(duck_conn, top_n=15):
     """Mirrors analysis/puzzle_summary.py's brilliant half -- 146
     candidates computed in Phase 3b, never surfaced anywhere including
-    the dashboard until now."""
-    return duck_conn.execute("""
+    the dashboard until now.
+
+    top_n=None returns every qualifying row -- same fetch-once/slice-in-
+    pandas contract as get_puzzle_sequences above."""
+    limit = "" if top_n is None else "LIMIT ?"
+    params = [] if top_n is None else [top_n]
+    return duck_conn.execute(f"""
         SELECT game_id, ply, san, material_delta FROM db.moves
-        WHERE is_brilliant_candidate=1 LIMIT ?
-    """, [top_n]).fetchdf()
+        WHERE is_brilliant_candidate=1 {limit}
+    """, params).fetchdf()
 
 
 def get_best_move_streaks(duck_conn, top_n=15, min_unforced=1):
@@ -41,14 +54,20 @@ def get_best_move_streaks(duck_conn, top_n=15, min_unforced=1):
     FIRST move must itself be "unforced" -- a real choice, not the only
     sensible move -- to qualify at all); min_unforced raises that bar
     further, toward "every move in the streak was a real choice," not
-    just the minimum required to qualify."""
-    return duck_conn.execute("""
+    just the minimum required to qualify.
+
+    top_n=None returns every qualifying row -- the view layer caches one
+    full fetch at min_unforced=1 (the qualifying minimum, so a superset
+    of every stricter setting) and applies both sliders in pandas."""
+    limit = "" if top_n is None else "LIMIT ?"
+    params = [min_unforced] if top_n is None else [min_unforced, top_n]
+    return duck_conn.execute(f"""
         SELECT game_id, ply, san, is_player_move, best_move_streak_length,
                best_move_streak_unforced_count
         FROM db.moves
         WHERE is_best_move_streak_trigger=1 AND best_move_streak_unforced_count >= ?
-        ORDER BY best_move_streak_length DESC LIMIT ?
-    """, [min_unforced, top_n]).fetchdf()
+        ORDER BY best_move_streak_length DESC {limit}
+    """, params).fetchdf()
 
 
 def get_blown_mates(duck_conn):
@@ -104,14 +123,19 @@ def get_knight_rim_performance(sqlite_conn, config_path=None):
     return overall_df, phase_df
 
 
-def get_motif_breakdown(duck_conn):
+def get_motif_breakdown(sqlite_conn):
     """Frequency and avg CPL for each tactical motif the player missed.
 
     Only covers is_player_move=1 moves classified mistake/blunder where
     annotate.py's Pass 4 was able to identify a motif. Returns an empty
     DataFrame (not None) when no motifs have been classified yet.
+
+    Takes sqlite_conn, not duck_conn -- idx_moves_motif (partial index,
+    migration 0031, needs ANALYZE stats to be chosen) makes this a ~4ms
+    seek over the ~1.2k motif-bearing rows, vs ~0.5s as a full
+    SQLITE_SCAN of all of moves via duck_conn.
     """
-    return duck_conn.execute("""
+    return pd.read_sql_query("""
         SELECT
             motif,
             COUNT(*)                                                                  AS n_missed,
@@ -119,13 +143,45 @@ def get_motif_breakdown(duck_conn):
             AVG(cpl)                                                                  AS avg_cpl,
             100.0 * SUM(CASE WHEN classification='blunder' THEN 1 ELSE 0 END)
                   / COUNT(*)                                                           AS blunder_pct
-        FROM db.moves
+        FROM moves
         WHERE is_player_move = 1
           AND motif IS NOT NULL
           AND classification IN ('mistake', 'blunder')
         GROUP BY motif
         ORDER BY n_missed DESC
-    """).fetchdf()
+    """, sqlite_conn)
+
+
+# Minimum number of mistake/blunder candidates before an all-zero motif
+# count is trusted as "annotation predates motif classification" rather
+# than "coincidentally none of a handful of blunders matched a pattern" --
+# classify_motif() legitimately returns None for plenty of real blunders
+# (anything that isn't a clean fork/pin/skewer/discovery/hanging
+# piece/back-rank mate), so zero motifs on a small sample isn't unusual on
+# its own. Zero motifs across dozens+ of candidates is not a coincidence.
+MOTIF_BACKFILL_MIN_CANDIDATES = 20
+
+
+def motif_backfill_needed(duck_conn) -> bool:
+    """True when this database has real mistake/blunder moves that were
+    never run through motif classification at all -- i.e. games analyzed
+    before annotate.py's Pass 4 (v0.1.9) existed, and never re-annotated
+    since. annotate.run(game_id=None) already recomputes motif for every
+    previously-analyzed game (idempotent, see annotate.py's
+    fetch_games_to_annotate), so this is purely a detection signal for the
+    empty state -- the fix already exists, it just needs to be reachable
+    and correctly explained."""
+    row = duck_conn.execute("""
+        SELECT
+            COUNT(*)                                            AS n_candidates,
+            SUM(CASE WHEN motif IS NOT NULL THEN 1 ELSE 0 END)  AS n_with_motif
+        FROM db.moves
+        WHERE is_player_move = 1 AND classification IN ('mistake', 'blunder')
+    """).fetchone()
+    if row is None:
+        return False
+    n_candidates, n_with_motif = row
+    return n_candidates >= MOTIF_BACKFILL_MIN_CANDIDATES and not n_with_motif
 
 
 def get_hallucination_blunders(duck_conn, config_path=None):

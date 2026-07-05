@@ -52,6 +52,33 @@ def set_player_name(username, path=None):
     path.write_text(new_text)
 
 
+def set_chesscom_username(username, path=None):
+    """Same targeted-substitution approach as set_player_name(), for the
+    optional player.chesscom_username field (the additive-only chess.com
+    integration -- see settings_view.py's "Chess.com account" section).
+    username=None (or "") writes the YAML `null` literal, clearing the
+    connection rather than leaving a stale/empty string -- already-synced
+    chess.com games in the database are untouched either way, this only
+    controls whether "Sync now" has anything to sync with.
+
+    chesscom_username is a unique key name across the whole file (unlike
+    path:/name:, no other section repeats it), so this doesn't need
+    set_database_path()'s section-scoping -- same posture set_player_name()
+    already takes for the equally-unique `name:` key."""
+    path = pathlib.Path(path) if path else DEFAULT_CONFIG_PATH
+    text = path.read_text()
+    rendered = "null" if not username else f'"{username}"'
+    new_text, n = re.subn(
+        r'(?m)^(\s*)chesscom_username:\s*(?:"[^"]*"|null)(\s*#.*)?$',
+        lambda m: f'{m.group(1)}chesscom_username: {rendered}{m.group(2) or ""}',
+        text, count=1)
+    if n == 0:
+        raise ValueError(
+            f"Could not find a player.chesscom_username line to update in {path} -- "
+            "expected a line like `chesscom_username: null` or `chesscom_username: \"...\"`.")
+    path.write_text(new_text)
+
+
 def set_database_path(db_path, path=None):
     """Same targeted-substitution approach as set_player_name(), used
     once by desktop_app.py when it copies the bundled config.yaml

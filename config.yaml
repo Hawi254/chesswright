@@ -12,6 +12,12 @@ player:
                                # in your profile URL (lichess.org/@/CHANGE_ME).
                                # Every script reads this -- nothing else in
                                # the pipeline is hardcoded to a specific player.
+  chesscom_username: null    # optional: your chess.com username, exactly as it
+                               # appears in your profile URL (chess.com/member/CHANGE_ME).
+                               # Separate from player.name above because the two
+                               # platforms' usernames can genuinely differ --
+                               # unlike lichess, sync_chesscom.py has no username
+                               # to fall back to. Leave null if you don't use chess.com.
 
 engine:
   path: null          # null = auto-detect (stockfish / /usr/games/stockfish / etc.)
@@ -183,3 +189,13 @@ sync:                                # incremental fetch of new games via liches
   request_timeout_seconds: 30          # single HTTP request to lichess; no retry/backoff
                                          # built in (one small periodic fetch for one personal
                                          # account is well under any reasonable rate limit).
+
+sync_chesscom:                       # incremental fetch of new games via chess.com's public
+                                       # PubAPI (see BRIEF.md's chess.com integration spec).
+                                       # Uses player.chesscom_username above, not player.name.
+  request_timeout_seconds: 30          # per monthly-archive HTTP request. Chess.com has no
+                                         # single-request "everything since X" endpoint like
+                                         # lichess -- a full historical backfill makes one
+                                         # request per calendar month of account history,
+                                         # sequentially (chess.com's own guidance: sequential
+                                         # requests are unlimited, parallel ones risk 429).

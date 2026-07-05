@@ -13,17 +13,8 @@ import data
 import narrative
 import theme
 from _common import get_connections
+from cached_queries import cached_career_findings, cached_headline_stats
 from game_explorer_view import cached_game_explorer_table
-
-
-@st.cache_data
-def cached_headline_stats(_duck_conn, _sqlite_conn):
-    return data.get_headline_stats(_duck_conn, _sqlite_conn)
-
-
-@st.cache_data
-def cached_career_findings(_duck_conn, baseline_blunder_rate):
-    return data.get_career_findings(_duck_conn, baseline_blunder_rate)
 
 
 # Maps each finding title -> (page_ref_key, human-readable page name, optional tab hint).
@@ -68,22 +59,22 @@ def _render_focus_card(findings, page_refs: dict) -> None:
                 st.switch_page(dest_page)
 
 
-@st.cache_data
+@st.cache_data(show_spinner="Loading your rating history…")
 def cached_rating_trajectory(_duck_conn):
     return data.get_rating_trajectory(_duck_conn)
 
 
-@st.cache_data
+@st.cache_data(show_spinner="Loading your accuracy trend…")
 def cached_acpl_trajectory(_duck_conn):
     return data.get_acpl_trajectory(_duck_conn)
 
 
-@st.cache_data
+@st.cache_data(show_spinner="Computing win rate by color…")
 def cached_win_rate_by_color(_duck_conn):
     return data.get_win_rate_by_color(_duck_conn)
 
 
-@st.cache_data
+@st.cache_data(show_spinner="Loading monthly progress…")
 def cached_progress_by_month(_duck_conn):
     return data.get_progress_by_month(_duck_conn)
 
@@ -117,9 +108,14 @@ def render(self_page, detail_page, *, patterns_page=None, matchups_page=None,
         })
 
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Total games", f"{stats['total_games']:,}")
-    col2.metric("Analyzed games", f"{stats['analyzed_games']:,}")
-    col3.metric("Win rate", f"{stats['win_pct']:.1f}%" if stats['win_pct'] is not None else "--")
+    col1.metric("Total games", f"{stats['total_games']:,}",
+                help="Every game synced from your online accounts.")
+    col2.metric("Analyzed games", f"{stats['analyzed_games']:,}",
+                help="Games your engine has analyzed so far — accuracy stats only "
+                     "count these. Run more batches from Analysis Jobs to grow this.")
+    col3.metric("Win rate", f"{stats['win_pct']:.1f}%" if stats['win_pct'] is not None else "--",
+                help="Wins as a share of all games. Online pairing aims for even "
+                     "matches, so most players sit near 50%.")
     col4.metric("ACPL", f"{stats['acpl']:.1f}" if stats['acpl'] is not None else "--",
                 help="Average centipawn loss — measures move accuracy across analyzed games. Lower is better.")
 
@@ -129,6 +125,7 @@ def render(self_page, detail_page, *, patterns_page=None, matchups_page=None,
             st.subheader("Most dramatic game on record")
             if chips_html:
                 st.markdown(chips_html, unsafe_allow_html=True)
+                st.caption(theme.BADGE_LEGEND)
             st.write(f"vs. {top_game.opponent_name} on {top_game.utc_date} "
                      f"({top_game.outcome_for_player})")
             if st.button("View this game →"):
@@ -139,19 +136,22 @@ def render(self_page, detail_page, *, patterns_page=None, matchups_page=None,
 
     with st.container(border=True):
         st.subheader("Rating trajectory")
-        st.plotly_chart(charts.line_chart(rating_df, "year", "avg_rating", theme.ACCENT_GOLD),
+        st.plotly_chart(charts.line_chart(rating_df, "year", "avg_rating", theme.ACCENT_GOLD,
+                                            x_title="Year", y_title="Average rating"),
                          theme=None)
 
         acpl_df = cached_acpl_trajectory(duck_conn)
         st.caption(f"ACPL (average centipawn loss -- lower is more accurate play) trend, "
                     f"analyzed games only: based on {acpl_df.n_games.sum()} analyzed games "
                     f"across {len(acpl_df)} years, treat as preliminary given the small sample.")
-        st.plotly_chart(charts.line_chart(acpl_df, "year", "acpl", theme.NEGATIVE), theme=None)
+        st.plotly_chart(charts.line_chart(acpl_df, "year", "acpl", theme.NEGATIVE,
+                                          x_title="Year", y_title="ACPL (lower = more accurate)"), theme=None)
 
     with st.container(border=True):
         st.subheader("Win rate by color")
         color_df = cached_win_rate_by_color(duck_conn)
-        st.plotly_chart(charts.bar_chart(color_df, "player_color", "win_pct", theme.POSITIVE),
+        st.plotly_chart(charts.bar_chart(color_df, "player_color", "win_pct", theme.POSITIVE,
+                                          x_title="Color played", y_title="Win rate (%)"),
                          theme=None)
 
     progress_df = cached_progress_by_month(duck_conn)
@@ -164,10 +164,12 @@ def render(self_page, detail_page, *, patterns_page=None, matchups_page=None,
             with acpl_col:
                 st.caption("ACPL by month (lower = more accurate)")
                 st.plotly_chart(
-                    charts.line_chart(progress_df, "period", "acpl", theme.NEGATIVE, height=240),
+                    charts.line_chart(progress_df, "period", "acpl", theme.NEGATIVE, height=240,
+                                      x_title="Month", y_title="ACPL"),
                     theme=None, width='stretch')
             with win_col:
                 st.caption("Win rate % by month")
                 st.plotly_chart(
-                    charts.line_chart(progress_df, "period", "win_pct", theme.POSITIVE, height=240),
+                    charts.line_chart(progress_df, "period", "win_pct", theme.POSITIVE, height=240,
+                                      x_title="Month", y_title="Win rate (%)"),
                     theme=None, width='stretch')

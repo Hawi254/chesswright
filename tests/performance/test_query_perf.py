@@ -137,22 +137,28 @@ class TestQueryPerformance:
             f"get_openings_table mean={benchmark.stats['mean']:.3f}s > 500ms limit"
 
     def test_get_most_repeated_positions_under_500ms(self, large_db, benchmark):
+        # Takes sqlite_conn since the 2026-07-04 materialization -- reads
+        # repeated_positions_cache, built once here the way the view layer's
+        # ensure_* call does (with the test's own min_games floor).
         from data.openings import get_most_repeated_positions
-        duck = _duck(large_db)
+        import analytics
+        conn = _sqlite(large_db)
+        analytics.ensure_repeated_positions_cache(conn, min_games=1)
 
         def _run():
-            df = get_most_repeated_positions(duck, min_games=1)
+            df = get_most_repeated_positions(conn, min_games=1)
             return df
 
         benchmark.pedantic(_run, rounds=5, warmup_rounds=1)
         assert benchmark.stats["mean"] < 0.5
 
     def test_get_motif_breakdown_under_200ms(self, large_db, benchmark):
+        # takes sqlite_conn since migration 0031 (partial motif index)
         from data.tactical import get_motif_breakdown
-        duck = _duck(large_db)
+        conn = _sqlite(large_db)
 
         def _run():
-            df = get_motif_breakdown(duck)
+            df = get_motif_breakdown(conn)
             return df
 
         benchmark.pedantic(_run, rounds=5, warmup_rounds=1)

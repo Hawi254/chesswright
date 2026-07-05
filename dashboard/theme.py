@@ -46,6 +46,19 @@ TEXT = "#E8E6E1"
 TEXT_MUTED = "#E8E6E199"  # TEXT at ~60% opacity -- captions/secondary text,
                            # still 8.5:1+ on both backgrounds, well above AA
 
+# Categorical series colors for IDENTITY encoding (e.g. the Opening Tree
+# timeline's one-color-per-move chart). Deliberately NOT built from
+# ACCENT_GOLD/POSITIVE/NEGATIVE: POSITIVE/NEGATIVE carry win/loss status
+# semantics throughout this dashboard and must never double as "series 3".
+# Chosen from the dataviz reference dark palette and machine-validated
+# (validate_palette.js) against BG #14181F on 2026-07-05: all four inside
+# the dark lightness band, chroma >= 0.1, worst adjacent-pair CVD dE 58
+# (target >= 12), all >= 3:1 contrast on BG. Assign in this fixed order by
+# series rank; fold overflow series into "Other" (CATEGORICAL_OTHER), never
+# invent a 5th hue.
+CATEGORICAL_SERIES = ["#3987e5", "#c98500", "#9085e9", "#d95926"]
+CATEGORICAL_OTHER = "#8A8F98"  # neutral by design -- "Other" reads as gray
+
 # ---------------------------------------------------------------------------
 # Typography scale (Phase 6c.2) -- previously just Streamlit's unstyled
 # st.title/st.subheader/st.caption defaults, no deliberate hierarchy.
@@ -196,6 +209,15 @@ BADGE_CHIPS = {
     "is_nail_biter": ("Nail-biter", "chip-neutral"),
 }
 
+# One shared plain-language definition of the badges above -- shown as a
+# caption wherever badge chips appear without other context (Overview,
+# Game Detail, Game Explorer's filter). Keep the wording in sync with
+# BADGE_CHIPS rather than re-writing it per page.
+BADGE_LEGEND = ("Comeback: won/drew after being clearly lost. Giant-killing: beat a "
+                "much higher-rated opponent. Brilliant find: a real sacrifice that "
+                "worked. Blunder-fest: several big mistakes in one game. Nail-biter: "
+                "result stayed in doubt until late.")
+
 CSS = f"""
 <style>
 /* Off-brand default Streamlit chrome -- this is a finished personal
@@ -203,6 +225,14 @@ CSS = f"""
 #MainMenu {{visibility: hidden;}}
 footer {{visibility: hidden;}}
 [data-testid="stToolbar"] {{visibility: hidden;}}
+/* The sidebar's own re-expand control (shown only once the sidebar is
+   collapsed) lives inside stToolbar in this Streamlit version -- CSS
+   visibility is inherited, so hiding the whole toolbar above silently
+   also hid this, leaving no way to re-open a collapsed sidebar. Confirmed
+   live via computed-style + DOM inspection (element present, "visibility:
+   hidden", ancestor chain running through stToolbar) before adding this
+   override. */
+[data-testid="stExpandSidebarButton"] {{visibility: visible;}}
 
 .chip {{
     display: inline-block;
@@ -271,6 +301,17 @@ h3 {{
    panels; CARD styling below does the visual separation instead. */
 [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"] {{
     margin-bottom: {SPACE["xs"]};
+}}
+
+/* Streamlit's own default top-of-page padding (96px, confirmed live via
+   getComputedStyle -- not a value this app ever set) reads as unused
+   space above the fold, worst on short pages like Overview where it's a
+   bigger fraction of the visible content. 96px -> 24px, confirmed live
+   to not collide with the sidebar-collapse control. Not on the SPACE
+   scale above -- that scale is for inter-element rhythm, this is a
+   one-off page-edge margin, a different kind of measurement. */
+[data-testid="stMainBlockContainer"] {{
+    padding-top: 1.5rem;
 }}
 
 /* Card treatment (6c.2) -- restyles st.container(border=True), Streamlit's

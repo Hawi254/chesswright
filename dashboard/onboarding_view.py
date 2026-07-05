@@ -17,6 +17,7 @@ whole wizard again.
 """
 import pathlib
 import platform
+import shutil
 import stat
 
 import requests
@@ -25,8 +26,10 @@ import streamlit as st
 import annotate
 import config as config_module
 import sync
+import sync_chesscom
 import worker
-from _common import get_config, resolve_db_path, get_sqlite_connection
+import components.native_file_picker as native_file_picker
+from _common import get_config, get_connections, resolve_db_path, get_sqlite_connection
 
 MAX_FETCH_GAMES = 100   # generous enough to cover most starter-batch choices below
 CALIBRATION_PLIES = 10
@@ -44,6 +47,17 @@ def _already_onboarded(db_path):
 def _set_step(step):
     st.session_state["onboard_step"] = step
     st.rerun()
+
+
+def _refresh_duck_snapshot():
+    """Games/analysis just landed in the live database -- duck-side reads
+    run against a private snapshot (see _common.py's snapshot-isolation
+    comment) that only picks up changes at explicit refresh points.
+    Everywhere else the sidebar "Refresh data" button is that point, but a
+    user leaving this wizard has never seen that button -- without this, a
+    first run would land on an Overview showing zero games, violating the
+    honest-first-run rule."""
+    get_connections()[1].refresh_snapshot()
 
 
 def render(overview_page):
@@ -65,6 +79,8 @@ def render(overview_page):
         _render_engine()
     elif step == "fetch":
         _render_fetch(db_path)
+    elif step == "fetch_chesscom":
+        _render_fetch_chesscom(db_path)
     elif step == "calibrate":
         _render_calibrate(db_path)
     elif step == "plan":
@@ -84,12 +100,20 @@ def _render_status(db_path, overview_page):
     analyzed = conn.execute("SELECT COUNT(*) FROM games WHERE analysis_status='done'").fetchone()[0]
     st.success(f"Ready -- **{cfg['player']['name']}**, "
                f"{analyzed:,} of {total:,} games analyzed.")
-    col1, col2 = st.columns(2)
-    if col1.button("Fetch new games from lichess"):
+
+    chesscom_username = cfg["player"].get("chesscom_username")
+    cols = st.columns(3 if chesscom_username else 2)
+    if cols[0].button("Fetch new games from lichess"):
         st.session_state["onboard_returning"] = True
         _set_step("fetch")
-    if col2.button("Go to dashboard"):
+    if chesscom_username and cols[1].button("Fetch new games from chess.com"):
+        st.session_state["onboard_returning"] = True
+        _set_step("fetch_chesscom")
+    if cols[-1].button("Go to dashboard"):
         st.switch_page(overview_page)
+    if not chesscom_username:
+        st.caption("Also play on chess.com? Connect an account on the Settings page "
+                    "to sync those games in too.")
 
 
 def _render_welcome():
@@ -180,15 +204,28 @@ def _render_engine_picker():
         "or the official release page of another UCI engine. "
         "This app will execute the file you select — do not upload a file "
         "from an untrusted source.")
+
+    # Real native OS file dialog when running in the packaged desktop
+    # app (see components/native_file_picker); st.file_uploader stays
+    # as the always-available fallback for the plain `streamlit run`
+    # dev workflow, where no native dialog exists at all.
+    picked_path = native_file_picker.pick(
+        "engine", label="Browse for its executable file (native dialog)…",
+        key="engine_native_picker")
     uploaded = st.file_uploader(
         "Already have a UCI chess engine installed (Stockfish or another)? "
         "Browse for its executable file:")
-    if uploaded is None:
-        return
+
     engines_dir = pathlib.Path(config_module.DEFAULT_CONFIG_PATH).parent / "engines"
     engines_dir.mkdir(parents=True, exist_ok=True)
-    dest = engines_dir / pathlib.Path(uploaded.name).name  # .name strips any directory traversal
-    dest.write_bytes(uploaded.getvalue())
+    if picked_path:
+        dest = engines_dir / pathlib.Path(picked_path).name  # .name strips any directory traversal
+        shutil.copy2(picked_path, dest)
+    elif uploaded is not None:
+        dest = engines_dir / pathlib.Path(uploaded.name).name  # .name strips any directory traversal
+        dest.write_bytes(uploaded.getvalue())
+    else:
+        return
     dest.chmod(dest.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
     with st.spinner("Checking it speaks UCI..."):
@@ -270,10 +307,64 @@ def _render_fetch(db_path):
             return
         st.success(f"{n:,} game(s) ready to analyze.")
         st.session_state["onboard_fetched_count"] = n
+        with st.spinner("Updating dashboard data..."):
+            _refresh_duck_snapshot()
         if st.session_state.get("onboard_returning"):
             _set_step("fetch_done")
         else:
             _set_step("calibrate")
+
+
+def _render_fetch_chesscom(db_path):
+    """Chess.com's additive-only sync step, reached only from _render_status
+    (never a first-run path -- lichess's username/engine/calibrate/plan
+    steps are the only route into onboarding fresh). Always routes to
+    _render_fetch_done afterward, the same shared "done" screen the
+    returning-user lichess fetch already uses -- calibration is
+    engine-specific, not source-specific, and only ever needs to run once,
+    so there's no chess.com equivalent of the calibrate/plan steps at all.
+    """
+    st.subheader("Fetch new games from chess.com")
+    cfg = get_config()
+    username = cfg["player"].get("chesscom_username")
+    st.markdown(
+        f"We'll check for any new games from chess.com (`{username}`) since "
+        "the last sync and add them to the analysis queue. This does not "
+        "touch chess.com in any way other than a normal read of your "
+        "public game history.")
+    back_col, fetch_col = st.columns([1, 3])
+    with back_col:
+        if st.button("Back"):
+            _set_step("status")
+            st.rerun()
+    with fetch_col:
+        fetch_clicked = st.button("Fetch my games", type="primary")
+    if fetch_clicked:
+        with st.spinner("Talking to chess.com..."):
+            try:
+                sync_chesscom.run(db_path, username, cfg["ingestion"]["queue_strategy"],
+                                   cfg["ingestion"]["variant_policy"],
+                                   cfg["sync_chesscom"]["request_timeout_seconds"])
+            except ValueError as e:
+                # list_archive_months() raises this specifically for a 404
+                # -- a plain, non-technical message, same reasoning as the
+                # lichess HTTPError handling above.
+                st.error(str(e))
+                return
+            except requests.exceptions.RequestException:
+                st.error("Couldn't reach chess.com — check your internet connection and try again.")
+                return
+        conn = get_sqlite_connection(db_path)
+        n = conn.execute("SELECT COUNT(*) FROM games WHERE site = 'Chess.com'").fetchone()[0]
+        if n == 0:
+            st.error(f"No games found for '{username}' -- check the username is correct "
+                     "(case-sensitive) and that the account has public games.")
+            return
+        st.success(f"{n:,} chess.com game(s) in the database.")
+        st.session_state["onboard_fetched_count"] = n
+        with st.spinner("Updating dashboard data..."):
+            _refresh_duck_snapshot()
+        _set_step("fetch_done")
 
 
 def _render_calibrate(db_path):
@@ -378,6 +469,7 @@ def _render_running(db_path):
             f"The analysis run stopped with an error: {error}. {completed['games_done']} game(s) "
             "analyzed before the error are safe and saved -- try running another batch from the "
             "dashboard later.")
+        _refresh_duck_snapshot()  # the games saved before the error should still show up
         _set_step("done")
         return
 
@@ -393,6 +485,8 @@ def _render_running(db_path):
     annotate.run(db_path, cfg["annotation"]["mate_score_cap_cp"], cfg["annotation"]["thresholds"],
                  cfg["annotation"]["brilliant_material_threshold_cp"], cfg["annotation"]["puzzle"],
                  cfg["annotation"]["best_move_streak"], game_id=None)
+    status_text.text("Refreshing dashboard data...")
+    _refresh_duck_snapshot()
     status_text.success(f"Done -- {completed['games_done']} games analyzed.")
     _set_step("done")
 

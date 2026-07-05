@@ -7,12 +7,16 @@ variables or a terminal at all.
 """
 import pathlib
 
+import requests
 import streamlit as st
 
 import api_key_store
 import config
 import db_import
 import live_engine
+import sync_chesscom
+from _common import resolve_db_path
+import components.native_file_picker as native_file_picker
 
 
 def render():
@@ -168,8 +172,31 @@ def render():
     pending_path = st.session_state.get("import_pending_path")
 
     if not pending_path:
-        src = st.text_input("Path to the database file on this computer",
-                             placeholder="/home/you/some-folder/chess.db")
+        col1, col2 = st.columns([5, 1])
+        # Rendered (and its session_state applied) before the text_input
+        # below is instantiated -- Streamlit raises if a widget's key is
+        # written to AFTER that widget exists this run, confirmed live.
+        # col2 still lands visually on the right regardless of this code
+        # order, since column position comes from the column object, not
+        # execution order.
+        with col2:
+            # Real native OS file dialog when running in the packaged
+            # desktop app; renders nothing in the plain `streamlit run`
+            # dev workflow, where the text input below is the only way
+            # in -- see components/native_file_picker for the mechanism.
+            st.markdown("<div style='height:1.7rem'></div>", unsafe_allow_html=True)
+            picked = native_file_picker.pick("database", key="import_native_picker")
+        # A component's return value persists across reruns until the JS
+        # sends a new one -- guard against reapplying the same pick on
+        # every later rerun, which would otherwise clobber anything the
+        # user typed into the field afterward.
+        if picked and picked != st.session_state.get("import_native_picker_applied"):
+            st.session_state["import_native_picker_applied"] = picked
+            st.session_state["import_path_input"] = picked
+        with col1:
+            src = st.text_input("Path to the database file on this computer",
+                                 placeholder="/home/you/some-folder/chess.db",
+                                 key="import_path_input")
         if st.button("Import"):
             try:
                 dest_dir = pathlib.Path(config.DEFAULT_CONFIG_PATH).parent
@@ -206,7 +233,74 @@ def render():
             st.rerun()
 
     st.divider()
+    _render_chesscom_section()
+
+    st.divider()
     _render_pro_section()
+
+
+def _render_chesscom_section():
+    """Additive-only chess.com sync (see BRIEF.md's chess.com integration
+    scope note): lichess stays the required first-run identity via the
+    onboarding wizard; this is where a SECOND, optional source gets
+    connected for anyone who also plays on chess.com. Games from both
+    platforms coexist in the same database with no conflict -- games.site
+    already discriminates them ('Chess.com' vs a lichess.org URL), so
+    nothing here needs its own database or profile."""
+    st.subheader("Chess.com account (optional)")
+    st.caption(
+        "Connect a chess.com account to also pull those games into this "
+        "same database, alongside your lichess history. Fully optional -- "
+        "everything else in the app works with lichess alone.")
+
+    cfg = config.load_config()
+    current_username = cfg["player"].get("chesscom_username")
+
+    if current_username:
+        st.success(f"Connected: **{current_username}**")
+        col1, col2 = st.columns(2)
+        if col1.button("Sync now", key="chesscom_sync_now"):
+            _run_chesscom_sync(current_username)
+        if col2.button("Disconnect", key="chesscom_disconnect"):
+            config.set_chesscom_username(None)
+            st.success("Disconnected. Games already synced are untouched.")
+            st.rerun()
+    else:
+        with st.form("chesscom_connect_form", clear_on_submit=True):
+            new_username = st.text_input(
+                "Chess.com username",
+                placeholder="exactly as it appears in your profile URL")
+            connect_clicked = st.form_submit_button("Connect", type="primary")
+        if connect_clicked:
+            if not new_username.strip():
+                st.error("Enter a username before connecting.")
+            else:
+                config.set_chesscom_username(new_username.strip())
+                st.rerun()
+
+
+def _run_chesscom_sync(username):
+    """Same error-handling shape as onboarding_view._render_fetch's lichess
+    sync -- chess.com's PubAPI returns the same class of errors (404 for
+    an unknown username, connectivity failures), just from a different
+    module (sync_chesscom, not sync)."""
+    cfg = config.load_config()
+    db_path = resolve_db_path()
+    with st.spinner("Talking to chess.com..."):
+        try:
+            sync_chesscom.run(db_path, username, cfg["ingestion"]["queue_strategy"],
+                               cfg["ingestion"]["variant_policy"],
+                               cfg["sync_chesscom"]["request_timeout_seconds"])
+        except ValueError as e:
+            # list_archive_months() raises this specifically for a 404 --
+            # a plain, non-technical message rather than str(e) on a raw
+            # HTTPError (same reasoning as the lichess onboarding flow).
+            st.error(str(e))
+            return
+        except requests.exceptions.RequestException:
+            st.error("Couldn't reach chess.com — check your internet connection and try again.")
+            return
+    st.success("Sync complete. Head to **Analysis Jobs** in the sidebar to analyze any new games.")
 
 
 def _render_pro_section():
@@ -218,9 +312,7 @@ def _render_pro_section():
             "**Coach Mode** is available in Chesswright Pro.\n\n"
             "Pro adds student profile management — analyse any lichess player's "
             "games in an isolated database, switch between profiles without "
-            "losing your own analysis, and generate session reports. Coming "
-            "soon: signed installer with auto-updates and a hosted Claude API "
-            "so students don't need their own key.\n\n"
+            "losing your own analysis, and generate per-game reports.\n\n"
             "Purchase at [chesswright.gumroad.com](https://chesswright.gumroad.com) "
             "then install the Pro package and enter your license key here."
         )
@@ -230,7 +322,9 @@ def _render_pro_section():
     key = _lic.get_license_key()
     if key:
         masked = f"{key[:8]}...{key[-4:]}" if len(key) > 14 else "set"
-        st.success(f"Pro license active ({masked}).")
+        info = _lic.get_license_info()
+        email_hint = f" · {info['purchase_email']}" if info and info.get("purchase_email") else ""
+        st.success(f"Pro license active ({masked}{email_hint}).")
         if st.button("Deactivate license"):
             _lic.deactivate()
             st.success("License removed. Pro features will be unavailable until re-activated.")

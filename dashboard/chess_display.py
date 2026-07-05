@@ -2,11 +2,65 @@
 import datetime
 import json
 import math
+import re
 
 import chess
 import chess.pgn
 
+from chesscom_pgn import CHESSCOM_SITE_HEADER
+
 _GLYPH_TO_NAG = {"!": 1, "?": 2, "!!": 3, "??": 4, "!?": 5, "?!": 6}
+
+
+def lichess_game_url(game_id: str, site) -> str | None:
+    """Real, clickable link back to the original game -- lichess only.
+    games.site stores the PGN Site header verbatim; for lichess exports
+    that's always the game's own canonical URL (confirmed by how
+    ingest.py's parse_game_id already extracts game_id from this exact
+    header), so reconstructing from game_id is equivalent and more
+    robust than trusting the stored string's exact formatting (trailing
+    slash, http vs https, etc.).
+
+    Returns None for chess.com games: games.site there is the literal
+    string "Chess.com", not a URL -- the real per-game Link header was
+    only used transiently during ingest to parse game_id and was never
+    persisted, so there's nothing reliable to link to yet without a
+    schema change. Deliberately not guessed at -- chess.com has used more
+    than one URL scheme (live vs. daily games), and a wrong guess is a
+    silently broken link, worse than no link."""
+    if not game_id or site == CHESSCOM_SITE_HEADER:
+        return None
+    return f"https://lichess.org/{game_id}"
+
+
+def material_sig_str(sig: str) -> str:
+    """Human-readable rendering of a chess_utils.material_signature()
+    string, e.g. "Q1R1B1P6vQ1R1B1P6" -> "Q+R+B+6P vs Q+R+B+6P". Formatted
+    at display time only, same pattern game_endings_view.py's
+    _END_TYPE_LABELS already uses for its own chart labels -- the
+    underlying cached DataFrame is never mutated.
+
+    Kept intentionally more granular than game_endings.py's 4-bucket
+    _classify_endgame_type (Queen/Rook/Minor/King & pawn): this is for
+    the Patterns page's material-structure breakdown, where the exact
+    piece combination (opposite-colored bishops, queenless middlegame,
+    etc.) is the whole point, not a broad category."""
+    def side_str(side: str) -> str:
+        pairs = re.findall(r"([QRBNP])(\d+)", side)
+        # Preserve chess_utils's own piece order rather than regex match
+        # order, which already follows it -- re.findall over "Q1R1B1P6"
+        # naturally yields [('Q','1'), ('R','1'), ('B','1'), ('P','6')]
+        # in that order, so no re-sort needed; ordering is documented here
+        # for the reader, not because it's at risk of drifting silently.
+        if not pairs:
+            return "K"  # bare king -- no other piece letters present
+        return "+".join(letter if count == "1" else f"{count}{letter}"
+                         for letter, count in pairs)
+
+    if "v" not in sig:
+        return sig  # unexpected format -- show raw rather than mangle it
+    white_side, black_side = sig.split("v", 1)
+    return f"{side_str(white_side)} vs {side_str(black_side)}"
 
 
 def eval_str(eval_cp, eval_mate) -> str:
@@ -213,7 +267,11 @@ def game_to_annotated_pgn(header, moves_df, narrative_text: str | None = None,
     header: namedtuple from data.get_game_detail()
     moves_df: DataFrame with ply, san, classification, cpl columns
     narrative_text: embedded as the PGN game comment when present
-    player_name: used as the White or Black player tag (caller's lichess username)
+    player_name: used as the White or Black player tag -- the caller's
+        username on WHICHEVER platform header.site says this game is from
+        (lichess or chess.com), not always the lichess one; see
+        game_detail_view.py's call site, which picks the right config field
+        based on header.site before calling this.
     """
     game = chess.pgn.Game()
 
@@ -236,8 +294,14 @@ def game_to_annotated_pgn(header, moves_df, narrative_text: str | None = None,
     except Exception:
         date_str = "????.??.??"
 
+    # header.site is the raw games.site column: literally "Chess.com" for
+    # chess.com-origin games (see chesscom_pgn.CHESSCOM_SITE_HEADER),
+    # otherwise a lichess.org game URL. Was unconditionally hardcoded to
+    # "Lichess (via Chesswright)" before chess.com was a real second
+    # source -- silently mislabeled the export's origin for those games.
+    source = "Chess.com" if getattr(header, "site", "") == "Chess.com" else "Lichess"
     game.headers["Event"] = f"vs {header.opponent_name or 'Opponent'}"
-    game.headers["Site"] = "Lichess (via Chesswright)"
+    game.headers["Site"] = f"{source} (via Chesswright)"
     game.headers["Date"] = date_str
     game.headers["White"] = white_name
     game.headers["Black"] = black_name

@@ -23,6 +23,7 @@ BACKEND_MODULES = [
     "ingest.py", "worker.py", "annotate.py", "analytics.py", "db.py",
     "config.py", "chess_utils.py", "migrate.py", "sync.py", "opening_explorer.py",
     "db_import.py", "joblock.py", "motif.py", "opponent_analysis.py",
+    "sync_chesscom.py", "chesscom_pgn.py",
 ]
 
 datas = [(str(ROOT / "config.yaml"), ".")]
@@ -67,6 +68,33 @@ for pkg in ["streamlit", "chess", "yaml", "duckdb", "pandas", "matplotlib",
     binaries += pkg_binaries
     hiddenimports += pkg_hiddenimports
 
+# Third-party packages' own internal test suites -- dead weight in a frozen
+# app (~18.5MB measured in the real bundle: pandas 16M, matplotlib 2.2M,
+# pyarrow 324K, plotly 12K; BRIEF.md named this follow-up when the CI
+# matrix first ran). Two prune points are BOTH needed: `excludes` below
+# stops the module graph pulling them into the PYZ, and the a.datas
+# filter after Analysis catches the data-file copies -- pyarrow's and
+# plotly's tests arrive via PyInstaller's own dependency hooks during
+# Analysis, not our collect_all() list, so filtering only `datas` here
+# would miss them.
+_TEST_PRUNE_PREFIXES = (
+    "pandas/tests", "matplotlib/tests", "mpl_toolkits/tests",
+    "pyarrow/tests", "plotly/matplotlylib/tests",
+)
+
+
+def _keep_toc_entry(dest_name: str) -> bool:
+    # Segment-boundary match: prune "pandas/tests" and "pandas/tests/...",
+    # never a lookalike like "pandas/testing" (a real public pandas API).
+    name = dest_name.replace("\\", "/")
+    return not any(name == p or name.startswith(p + "/")
+                   for p in _TEST_PRUNE_PREFIXES)
+
+
+hiddenimports = [h for h in hiddenimports
+                 if not h.startswith(("pandas.tests", "matplotlib.tests",
+                                      "pyarrow.tests", "plotly.matplotlylib.tests"))]
+
 a = Analysis(
     ["desktop_app.py"],
     pathex=[],
@@ -79,10 +107,14 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=["pandas.tests", "matplotlib.tests", "pyarrow.tests",
+              "plotly.matplotlylib.tests"],
     noarchive=False,
     cipher=block_cipher,
 )
+
+a.datas = [entry for entry in a.datas if _keep_toc_entry(entry[0])]
+a.pure = [entry for entry in a.pure if _keep_toc_entry(entry[0].replace(".", "/"))]
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 

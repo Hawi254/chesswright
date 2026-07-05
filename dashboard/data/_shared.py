@@ -89,14 +89,28 @@ def save_narrative(sqlite_conn, subject_type, subject_key, response_text, model)
     sqlite_conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
 
+def _fetchone_scalar(duck_conn, sql, default: int | None = 0):
+    """duck_conn.execute(sql).fetchone() should always return exactly one
+    row for a bare COUNT(*)/aggregate query -- a None here means something
+    went wrong beneath the query itself (confirmed live: a transient race
+    on the shared DuckDB connection, now fixed at the source in
+    _common.py's locking wrapper), not a legitimate empty result. Treat it
+    as unknown rather than crashing the page with a raw traceback -- same
+    "explain what's missing, don't crash" philosophy as
+    theme.thin_data_message()."""
+    row = duck_conn.execute(sql).fetchone()
+    return row[0] if row is not None else default
+
+
 def get_headline_stats(duck_conn, sqlite_conn):
-    total_games = duck_conn.execute("SELECT COUNT(*) FROM db.games").fetchone()[0]
-    analyzed_games = duck_conn.execute("SELECT COUNT(*) FROM db.games WHERE analysis_status='done'").fetchone()[0]
+    total_games = _fetchone_scalar(duck_conn, "SELECT COUNT(*) FROM db.games")
+    analyzed_games = _fetchone_scalar(
+        duck_conn, "SELECT COUNT(*) FROM db.games WHERE analysis_status='done'")
     n_moves, n_games, acpl, blunder_rate = analytics.acpl_and_blunder_rate(sqlite_conn)
-    overall_win_pct = duck_conn.execute("""
+    overall_win_pct = _fetchone_scalar(duck_conn, """
         SELECT 100.0 * SUM(CASE WHEN outcome_for_player='win' THEN 1 ELSE 0 END) / COUNT(*)
         FROM db.games WHERE outcome_for_player IS NOT NULL
-    """).fetchone()[0]
+    """, default=None)
     return {
         "total_games": total_games,
         "analyzed_games": analyzed_games,

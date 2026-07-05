@@ -160,7 +160,34 @@ def select_critical_moments(moves_df):
     return critical_moments, turning_point, n_other
 
 
-def _moment_sentence(row, rng, is_turning_point, opponent_name):
+def _choice_no_immediate_repeat(rng, phrases, used):
+    """rng.choice(phrases), but excludes whichever index(es) of this exact
+    phrases list were already picked earlier in the same narrative --
+    caught live: a game with two blunders in the same category (both
+    BLUNDER_PHRASES_YOU) drew the identical template verbatim for both,
+    since plain rng.choice() has no memory across calls. `used` is a
+    dict[id(phrases), set[int]] scoped to one generate_narrative() call,
+    so different categories (e.g. BLUNDER_PHRASES_YOU vs _OPPONENT) don't
+    interfere with each other. Once every index in a category has been
+    used, that category's used-set clears -- a 4th+ moment in the same
+    category can recur, just never immediately.
+
+    Uses the SAME rng instance and makes exactly one rng call per
+    invocation (rng.choice on the remaining candidates), so the sequence
+    of random calls -- and therefore per-game determinism from
+    random.Random(game_id) -- is unchanged; only which index within that
+    call can be picked is restricted."""
+    key = id(phrases)
+    seen = used.setdefault(key, set())
+    if len(seen) >= len(phrases):
+        seen.clear()
+    candidates = [p for i, p in enumerate(phrases) if i not in seen]
+    choice = rng.choice(candidates)
+    seen.add(phrases.index(choice))
+    return choice
+
+
+def _moment_sentence(row, rng, is_turning_point, opponent_name, used_phrases):
     is_you = bool(row.is_player_move)
     if is_turning_point:
         phrases = TURNING_POINT_PHRASES_YOU if is_you else TURNING_POINT_PHRASES_OPPONENT
@@ -172,7 +199,7 @@ def _moment_sentence(row, rng, is_turning_point, opponent_name):
         phrases = BRILLIANT_PHRASES_YOU if is_you else BRILLIANT_PHRASES_OPPONENT
     else:
         phrases = SHARP_FIND_PHRASES_YOU if is_you else SHARP_FIND_PHRASES_OPPONENT
-    template = rng.choice(phrases)
+    template = _choice_no_immediate_repeat(rng, phrases, used_phrases)
     move_number = (row.ply + 1) // 2
     return template.format(move_number=move_number, san=row.san, opponent=opponent_name)
 
@@ -196,9 +223,11 @@ def generate_narrative(header, moves_df):
 
     critical_moments, turning_point, n_other = select_critical_moments(moves_df)
     moment_sentences = []
+    used_phrases: dict = {}
     for row in critical_moments:
         is_tp = turning_point is not None and row.ply == turning_point.ply
-        moment_sentences.append(_moment_sentence(row, rng, is_tp, header.opponent_name))
+        moment_sentences.append(
+            _moment_sentence(row, rng, is_tp, header.opponent_name, used_phrases))
     if n_other > 0:
         moment_sentences.append(f"There were {n_other} other notable moments along the way.")
 

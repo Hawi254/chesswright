@@ -19,14 +19,16 @@ from config import load_config, pick
 from db import get_connection
 from chess_utils import (material_signature, signed_zobrist, material_delta_for_move,
                           parse_clock_seconds, detect_berserk)
+from chesscom_pgn import (is_chesscom_game, parse_chesscom_time_control,
+                           classify_chesscom_termination, chesscom_opening_family)
 
 COMMIT_EVERY_N_GAMES = 500  # bounds how much re-parsing a crash/interrupt can cost on a big file
 
 
-def parse_game_id(site_url: str):
-    if not site_url:
+def parse_game_id(url: str):
+    if not url:
         return None
-    return site_url.rstrip("/").split("/")[-1]
+    return url.rstrip("/").split("/")[-1]
 
 
 def parse_time_control(tc_raw: str):
@@ -122,6 +124,11 @@ def process_one_game(game, game_id, white, black, player_name, variant_policy, c
     h = game.headers
 
     variant = h.get("Variant", "Standard")
+    # For chess.com games, this is a secondary check only -- the primary
+    # variant filter runs in sync_chesscom.py against the JSON "rules"
+    # field before a game's PGN ever reaches here, since it's unverified
+    # whether chess.com's exported PGN reliably sets this header (flagged,
+    # not assumed, in BRIEF.md's chess.com integration spec).
     if variant != "Standard":
         if variant_policy == "skip":
             # python-chess / Stockfish assume standard rules; analyzing a
@@ -171,8 +178,19 @@ def process_one_game(game, game_id, white, black, player_name, variant_policy, c
         except ValueError:
             pass
 
-    base_seconds, increment_seconds, tc_category = parse_time_control(h.get("TimeControl", ""))
+    on_chesscom = is_chesscom_game(h)
+    if on_chesscom:
+        base_seconds, increment_seconds, tc_category = parse_chesscom_time_control(
+            h.get("TimeControl", ""))
+    else:
+        base_seconds, increment_seconds, tc_category = parse_time_control(h.get("TimeControl", ""))
+
     opening_family = normalize_opening_family(h.get("Opening", ""))
+    if opening_family is None and on_chesscom:
+        # Chess.com PGN has no Opening name header at all (confirmed
+        # live) -- fall back to the exact per-game name encoded in ECOUrl
+        # rather than leaving this NULL.
+        opening_family = chesscom_opening_family(h.get("ECOUrl", ""))
 
     # Berserk (lichess arena tournaments): halves a color's starting
     # clock, cancels their increment for the rest of that game. No PGN
@@ -238,8 +256,25 @@ def process_one_game(game, game_id, white, black, player_name, variant_policy, c
     # game_end_type: derived from the final position, no engine needed.
     # Termination only gives coarse buckets (Normal/Time forfeit/Abandoned);
     # this fills in what actually happened within "Normal".
+    #
+    # For chess.com games, trust classify_chesscom_termination()'s reading
+    # of the explicit Termination sentence over a board-state guess
+    # whenever it recognizes the string, not just for time_forfeit/
+    # abandoned -- an earlier version of this trusted board.is_insufficient
+    # _material() for chess.com's "Game drawn by insufficient material"
+    # too, on the assumption board-state alone was already
+    # platform-neutral and reliable. A real live test (Hikaru's actual
+    # games, 2026-07) falsified that: python-chess's strict definition of
+    # insufficient material didn't agree with chess.com's own ruling on at
+    # least one real game, silently mislabeling it "draw_agreement". Since
+    # chess.com always states an explicit reason (unlike lichess's bare
+    # "Normal"), there's no need to reconstruct it from the board at all
+    # when the classifier understood the sentence.
     termination = h.get("Termination", "")
-    if termination == "Time forfeit":
+    chesscom_end_type = classify_chesscom_termination(termination, result) if on_chesscom else None
+    if chesscom_end_type is not None and chesscom_end_type != "unknown":
+        game_end_type = chesscom_end_type
+    elif termination == "Time forfeit":
         game_end_type = "time_forfeit"
     elif termination == "Abandoned":
         game_end_type = "abandoned"
@@ -345,7 +380,12 @@ def ingest(pgn_path: str, db_path: str, player_name: str, variant_policy: str = 
                 break
 
             h = game.headers
-            game_id = parse_game_id(h.get("Site", ""))
+            # Chess.com's Site header is always the literal string
+            # "Chess.com", never a game URL -- the real per-game URL lives
+            # in the Link header instead (confirmed live). Lichess has no
+            # Link header, so this dispatch never accidentally reads the
+            # wrong field for a lichess game.
+            game_id = parse_game_id(h.get("Link", "") if is_chesscom_game(h) else h.get("Site", ""))
             if not game_id:
                 skipped_no_id += 1
                 continue  # skip malformed entries rather than crash a 30k-game run

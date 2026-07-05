@@ -1,7 +1,9 @@
 PRAGMA journal_mode = WAL;  -- better concurrent read/write behavior for the long engine pass later
 
 CREATE TABLE IF NOT EXISTS games (
-    id                  TEXT PRIMARY KEY,      -- lichess game id, parsed from Site URL
+    id                  TEXT PRIMARY KEY,      -- game id: parsed from the Site URL (lichess)
+                                                 -- or the Link URL (chess.com -- Site is just
+                                                 -- the literal string "Chess.com" there)
     event               TEXT,
     site                TEXT,
     pgn_raw             TEXT,                  -- full original PGN text, kept for reference/debugging

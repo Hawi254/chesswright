@@ -370,6 +370,101 @@ def answer_question(question: str, data_brief: str) -> str:
     return contextualize(_build_ask_prompt(question, data_brief), max_tokens=300)
 
 
+_GAME_REPORT_VOICE = """VOICE: Write as an experienced chess coach annotating a student's game — analytical,
+precise, and direct. Every sentence must carry specific chess information. Use concrete
+concepts: piece activity, pawn structure, weak squares, open files, outpost squares,
+king safety, tactical patterns. Name specific squares, pieces, and pawn features rather
+than abstract descriptions. Avoid sports-commentary flourishes ("what a blunder!"),
+suspense-building ("little did they know…"), and filler phrases ("this was a key moment",
+"interestingly", "notably"). Do not praise moves as "excellent" or "brilliant" — describe
+what they accomplish. Address the player as "you".
+
+TERMS — introduce with a brief in-sentence definition the first time each appears, then
+use freely:
+- ACPL (Average Centipawn Loss): average engine-evaluation cost per move — lower is more accurate
+- CPL (Centipawn Loss): the evaluation cost of one specific move
+- Blunder / mistake / inaccuracy: severity tiers; a blunder typically drops at least a pawn of value
+- Outpost: a square the opponent's pawns can no longer attack, ideal for a piece to lodge permanently
+- Open file: a file with no pawns of either colour, valuable for rooks
+- Backward pawn: a pawn that has advanced beyond its neighbours and cannot be protected by other pawns"""
+
+
+def _build_game_report_prompt(header, num_plies: int,
+                               phase_stats: str, notable_moments: str) -> str:
+    return f"""You are writing a structured game report for a chess player reviewing one of their games.
+This is an analytical coaching document, not a narrative story: section headings, specific phase
+breakdowns, each notable moment annotated with concrete chess reasoning, and actionable takeaways.
+
+{_GAME_REPORT_VOICE}
+
+STRICT FACTUAL RULES — do not violate these:
+- Do not invent moves, evaluations, square names, or any detail not given below.
+- Do not invent comparisons to other players or rating levels. Never write "X% of players" or similar.
+- Each moment in the list is tagged YOUR move or OPPONENT's move — credit the correct side every time.
+- If a motif is listed (fork, pin, skewer, discovered attack, back-rank mate, hanging piece), name it.
+  If no motif is listed for a move, do not invent one.
+- The phase accuracy stats are for context — synthesise what they mean, do not recite them as a list.
+
+{_game_completeness_note(header, num_plies)}
+
+GAME FACTS:
+Date: {header.utc_date}
+Opponent: {header.opponent_name} (rated {header.opponent_rating})
+Player rating: {header.player_rating}
+Color played: {header.player_color}
+Time control: {header.time_control_category}
+Opening: {header.opening_family}
+Result: {header.outcome_for_player}
+How it ended: {header.game_end_type}
+
+YOUR ACCURACY BY PHASE (your moves only, engine-analyzed — use to characterise each phase):
+{phase_stats}
+
+NOTABLE MOMENTS (player mistakes/blunders/highlights + opponent blunders, ordered by ply):
+{notable_moments}
+
+Write the report using EXACTLY these section headings in bold markdown. Omit Endgame entirely
+if the game ended before a genuine endgame (resignation, mate, or time forfeit in the middlegame).
+
+**Opening:** 1-2 sentences. Characterise how the {header.opening_family} was handled — whether the position
+was steered into familiar or unfamiliar territory, and what structural feature (pawn centre, piece
+placement, king safety) shaped the early middlegame. Do not recite accuracy numbers.
+
+**Middlegame:** 2-3 sentences. Identify the key structural or tactical theme that ran through this
+phase (e.g. a weak square, an open file, a queenside pawn majority, uncastled kings). Explain how the
+notable moments connect to that theme and what ultimately decided the game's direction.
+
+**Endgame:** 1-2 sentences, only if a genuine endgame was reached. Name the material imbalance (e.g.
+rook vs. bishop, king-and-pawn), identify the key winning or drawing resource, and assess whether
+technique was sound or where it broke down.
+
+**Key moments:**
+One bullet per entry in the notable moments list above — do not skip any. Format each as:
+"- **[Move number]. [SAN]** ([whose move]): [2 sentences — (1) what the position required at that
+moment: the specific threat, weak square, piece, or tactical pattern at stake; (2) what the played
+move did or failed to do, and for mistakes/blunders what the engine's preference addressed instead.
+For listed tactical motifs, name and briefly explain the pattern.]"
+
+**Verdict:**
+2-3 numbered takeaways, each naming a specific chess concept or position type from this game.
+Not "work on tactics" but e.g. "In positions with an open g-file against your king, calculate
+forcing lines before committing to a pawn advance." Omit a third point rather than pad.
+1. [Most important lesson, tied to a specific moment or pattern from this game]
+2. [Second distinct lesson]
+3. [Third only if genuinely distinct]"""
+
+
+def generate_game_report(header, num_plies: int,
+                          phase_stats: str, notable_moments: str) -> str:
+    """Structured per-game report: phase analysis, annotated key moments, verdict.
+
+    A Pro feature -- more structured and longer than generate_rich_narrative()
+    (which is the free on-demand narrative). Both can coexist for the same game.
+    """
+    prompt = _build_game_report_prompt(header, num_plies, phase_stats, notable_moments)
+    return contextualize(prompt, max_tokens=1600)
+
+
 def annotate_position(fen: str, eval_cp: int | None = None,
                       engine_best_san: str | None = None,
                       user_comment: str | None = None) -> str:

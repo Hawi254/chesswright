@@ -200,10 +200,17 @@ def _render_status(db_path, cfg):
     awaiting_annotation = annotate.count_games_awaiting_annotation(conn)
 
     cols = st.columns(4)
-    cols[0].metric("Pending analysis", pending)
-    cols[1].metric("Analyzed", done)
-    cols[2].metric("Failed", failed)
-    cols[3].metric("Awaiting annotation", awaiting_annotation)
+    cols[0].metric("Waiting for analysis", f"{pending:,}",
+                   help="Synced games queued for engine analysis. Start a batch "
+                        "below to work through them.")
+    cols[1].metric("Analyzed", f"{done:,}",
+                   help="Games fully analyzed by the engine.")
+    cols[2].metric("Failed", f"{failed:,}",
+                   help="Games where analysis hit an error — retried on a later batch.")
+    cols[3].metric("Awaiting annotation", f"{awaiting_annotation:,}",
+                   help="Analyzed games missing the final bookkeeping step that "
+                        "computes accuracy stats and move labels — run it with the "
+                        "button below.")
 
     if running:
         games_done = state.get("games_done", 0)
@@ -239,9 +246,25 @@ def _render_status(db_path, cfg):
     if lock_info is not None and not running:
         _render_lock_warning(lock_info)
 
-    if awaiting_annotation and not running:
-        st.info(f"{awaiting_annotation} game(s) have analysis data not yet annotated "
-                "(CPL, move classification, etc.).")
+    # Two distinct reasons to show "Run annotation pass now", checked
+    # separately since a database can have either without the other:
+    # awaiting_annotation is games that have never been annotated at all
+    # (narrow signal, see count_games_awaiting_annotation's docstring);
+    # motif_backfill_needed is games that WERE annotated, but before motif
+    # classification (Pass 4, v0.1.9) existed, so they need the same
+    # idempotent run() again even though awaiting_annotation reads 0 for
+    # them. Without this second check, a database that only has the
+    # backfill problem never shows a way to fix it.
+    backfill_needed = annotate.motif_backfill_needed(conn)
+    if (awaiting_annotation or backfill_needed) and not running:
+        if awaiting_annotation:
+            st.info(f"{awaiting_annotation:,} game(s) are analyzed but not yet annotated — "
+                    "annotation is the quick final step that turns raw engine numbers "
+                    "into accuracy stats and move labels (best/mistake/blunder).")
+        else:
+            st.info("Some of your analyzed games are missing tactical motif data "
+                    "(fork/pin/skewer/etc. classification) because they were analyzed "
+                    "before that feature existed.")
         if st.button("Run annotation pass now"):
             with st.spinner("Annotating..."):
                 annotate.run(db_path, cfg["annotation"]["mate_score_cap_cp"],
@@ -295,8 +318,13 @@ def render():
     with st.form("analysis_job_settings"):
         col1, col2 = st.columns(2)
         depth = col1.number_input("Search depth", min_value=1, max_value=40,
+                                  help="How deep the engine looks at every move. Higher = "
+                                       "more accurate verdicts but much slower analysis.",
                                    value=cfg["engine"]["depth"])
         multipv = col2.number_input("MultiPV (candidate lines per move)", min_value=1, max_value=10,
+                                    help="How many alternative moves the engine evaluates per "
+                                         "position — needed for sharpness and missed-tactic "
+                                         "detection. 3 is a good default.",
                                      value=cfg["engine"]["multipv"])
         max_games = col1.number_input("Max games this run (0 = no limit)", min_value=0,
                                        value=cfg["worker"]["max_games"] or 0)

@@ -17,14 +17,16 @@ import components.chessboard as chessboard_component
 import data
 import live_engine
 import narrative
+import pro_gate
 import theme
 from _common import get_config, get_connections
+from cached_queries import cached_headline_stats
 from game_explorer_view import cached_game_explorer_table
 
 
-@st.cache_data
-def cached_game_detail(_duck_conn, game_id):
-    return data.get_game_detail(_duck_conn, game_id)
+@st.cache_data(show_spinner="Loading this game…")
+def cached_game_detail(_sqlite_conn, game_id):
+    return data.get_game_detail(_sqlite_conn, game_id)
 
 
 def _render_move_explanation(game_id: str, ply: int, fen: str, live_result) -> None:
@@ -99,7 +101,7 @@ def _eval_graph(moves, ply, on_point_click_ply_key):
     # explain this chart, so no real title text is wanted -- just not via
     # leaving the property absent.
     fig.update_layout(title_text="", showlegend=False, height=220,
-                       xaxis_title="Move", yaxis_title="Your win probability",
+                       xaxis_title="Turn (one player's move)", yaxis_title="Your win probability",
                        yaxis=dict(range=[0, 1], tickformat=".0%"))
     theme.apply_plotly_theme(fig)
     event = st.plotly_chart(fig, on_select="rerun", selection_mode="points", key="eval_graph",
@@ -109,9 +111,36 @@ def _eval_graph(moves, ply, on_point_click_ply_key):
         st.session_state[on_point_click_ply_key] = clicked_ply
 
 
-@st.cache_data
-def cached_headline_stats(_duck_conn, _sqlite_conn):
-    return data.get_headline_stats(_duck_conn, _sqlite_conn)
+def _render_game_report(sqlite_conn, selected_game_id: str, header, moves: pd.DataFrame) -> None:
+    """The container/title/caption + the pro_gate check and free-tier upsell
+    live here in the core repo; the actual report generation lives in the
+    private chesswright_pro package (chesswright_pro/game_report.py) so the
+    public core repo never ships that logic, only the fact that it exists."""
+    with st.container(border=True):
+        st.subheader("Game Report")
+        st.caption(
+            "A structured coach's review: phase-by-phase accuracy, every notable "
+            "moment annotated, and concrete takeaways from this specific game."
+        )
+
+        if not pro_gate.is_pro_active():
+            st.info(
+                "**Game Report** is a Chesswright Pro feature — a structured, "
+                "phase-by-phase breakdown with annotated key moments and specific "
+                "takeaways, exportable as Markdown. "
+                "Upgrade at [chesswright.gumroad.com](https://chesswright.gumroad.com)."
+            )
+            return
+
+        try:
+            from chesswright_pro import game_report
+        except ImportError:
+            st.error(
+                "Pro is licensed but the chesswright_pro package couldn't be "
+                "imported. Try reinstalling it."
+            )
+            return
+        game_report.render_game_report(sqlite_conn, selected_game_id, header, moves)
 
 
 def _render_annotation_panel(sqlite_conn, variation_id: str, step: int,
@@ -224,20 +253,24 @@ def render():
     if return_page is not None and st.button(f"← Back to {return_label}"):
         st.switch_page(return_page)
 
-    header, moves = cached_game_detail(duck_conn, selected_game_id)
+    header, moves = cached_game_detail(sqlite_conn, selected_game_id)
     if moves.empty:
-        st.warning(f"{selected_game_id} has no recorded moves (abandoned/forfeit game).")
+        st.warning("This game has no recorded moves (an abandoned or forfeited game).")
         return
 
     badges_df = cached_game_explorer_table(duck_conn)
     badge_row = badges_df.loc[badges_df.game_id == selected_game_id]
     chips_html = theme.chip_row_html(badge_row.iloc[0]) if not badge_row.empty else ""
 
-    st.title(f"{header.opponent_name} ({header.utc_date})")
+    _result = {"win": "win", "loss": "loss", "draw": "draw"}.get(
+        header.outcome_for_player, header.outcome_for_player or "?")
+    _color = "White" if header.player_color == "white" else "Black"
+    st.title(f"vs {header.opponent_name} — {_result} as {_color} ({header.utc_date})")
     st.markdown(f'<p class="game-id-caption">Game {html.escape(str(selected_game_id))}</p>',
                 unsafe_allow_html=True)
     if chips_html:
         st.markdown(chips_html, unsafe_allow_html=True)
+        st.caption(theme.BADGE_LEGEND)
     st.markdown(
         f'<div class="narrative-quote">'
         f'{html.escape(narrative.generate_narrative(header, moves))}</div>',
@@ -278,7 +311,9 @@ def render():
             if st.button("Next >", key=f"next__{selected_game_id}"):
                 st.session_state[ply_key] = min(num_plies, st.session_state[ply_key] + 1)
         with nav_slider:
-            ply = st.slider("Move", 1, num_plies, key=ply_key)
+            ply = st.slider("Turn", 1, num_plies, key=ply_key,
+                            help="One turn = one player's move. A full chess move "
+                                 "is two turns, so turn 59 is White's 30th move.")
 
         row = moves[moves.ply == ply].iloc[0]
         board_before = chess.Board(row.fen_before)
@@ -318,12 +353,32 @@ def render():
                 except Exception:
                     pass
 
+            # Stable key (no `var_step`) -- see the non-variation board's
+            # comment above for why: avoids the remount-per-step flash,
+            # staleness now handled via "nonce" instead.
+            var_board_key = f"var_board__{selected_game_id}"
             board_result = chessboard_component.render(
                 fen=current_fen, orientation=orientation, interactive=True,
                 arrows=var_engine_arrows,
-                key=f"var_board__{selected_game_id}__{var_step}",
+                enable_keyboard_nav=True,
+                key=var_board_key,
             )
-            if board_result and board_result.get("fen") != current_fen:
+            var_board_nonce_key = f"{var_board_key}__nonce"
+            var_result_nonce = board_result.get("nonce") if board_result else None
+            is_new_var_event = (
+                board_result is not None
+                and var_result_nonce != st.session_state.get(var_board_nonce_key)
+            )
+            if is_new_var_event:
+                st.session_state[var_board_nonce_key] = var_result_nonce
+            if is_new_var_event and board_result.get("type") == "nav":
+                if board_result["direction"] == "prev" and var_step > 0:
+                    st.session_state[f"var_step__{selected_game_id}"] = var_step - 1
+                    st.rerun()
+                elif board_result["direction"] == "next" and var_step < len(var_moves):
+                    st.session_state[f"var_step__{selected_game_id}"] = var_step + 1
+                    st.rerun()
+            elif is_new_var_event and board_result.get("fen") != current_fen:
                 last_processed = st.session_state.get(f"var_last_fen__{selected_game_id}")
                 if board_result["fen"] != last_processed:
                     uci = board_result["uci"]
@@ -437,6 +492,15 @@ def render():
                 except Exception:
                     pass
 
+            # A stable key (no `ply`) keeps the component's iframe mounted
+            # across navigation instead of forcing a full remount every ply
+            # -- that remount was the actual mechanism behind a visible
+            # board flash on every Prev/Next/keyboard-nav click. Staleness
+            # (a Streamlit custom component keeps re-returning its last
+            # value on every subsequent rerun until it sends a new one) is
+            # now handled by comparing "nonce" against the last one this
+            # game processed, rather than by forcing a fresh instance.
+            game_board_key = f"game_board__{selected_game_id}"
             board_result = chessboard_component.render(
                 fen=game_fen_after,
                 orientation=orientation,
@@ -444,9 +508,30 @@ def render():
                 interactive=True,
                 lastmove_from=chess.square_name(move.from_square),
                 lastmove_to=chess.square_name(move.to_square),
-                key=f"game_board__{selected_game_id}",
+                enable_keyboard_nav=True,
+                key=game_board_key,
             )
-            if board_result and board_result.get("fen") != game_fen_after:
+            game_board_nonce_key = f"{game_board_key}__nonce"
+            result_nonce = board_result.get("nonce") if board_result else None
+            is_new_board_event = (
+                board_result is not None
+                and result_nonce != st.session_state.get(game_board_nonce_key)
+            )
+            if is_new_board_event:
+                st.session_state[game_board_nonce_key] = result_nonce
+            if is_new_board_event and board_result.get("type") == "nav":
+                # Can't set st.session_state[ply_key] directly here -- the
+                # st.slider bound to that same key already ran earlier in
+                # this script (same constraint the "jump to a critical
+                # moment" flow above already works around via
+                # _load_ply_key). Route through the same pending-key
+                # indirection instead of duplicating a second mechanism.
+                if board_result["direction"] == "prev":
+                    st.session_state[_load_ply_key] = max(1, ply - 1)
+                else:
+                    st.session_state[_load_ply_key] = min(num_plies, ply + 1)
+                st.rerun()
+            elif is_new_board_event and board_result.get("fen") != game_fen_after:
                 uci = board_result["uci"]
                 # Validate before entering variation mode -- a stale component
                 # result could carry a UCI legal on a previous ply but illegal here.
@@ -470,7 +555,10 @@ def render():
             move_no = (ply + 1) // 2
             who   = "White" if ply % 2 == 1 else "Black"
             mover = "You" if row.is_player_move else header.opponent_name
-            detail = f" — {row.classification}, cpl={int(row.cpl)}" if pd.notna(row.cpl) else ""
+            detail = (f" — {row.classification}: cost {int(row.cpl)} centipawns "
+                      f"vs. the engine's best (100 = one pawn)"
+                      if pd.notna(row.cpl) and row.cpl > 0
+                      else (f" — {row.classification}" if pd.notna(row.cpl) else ""))
             st.caption(f"Move {move_no} ({who}, {mover}): {row.san}{detail}")
 
             if live_result:
@@ -524,10 +612,18 @@ def render():
 
         st.divider()
         _pgn_narrative = cached[0] if cached else None
+        _cfg = get_config()
+        # Pick the username for WHICHEVER platform this specific game came
+        # from -- header.site is "Chess.com" for chess.com-origin games,
+        # otherwise a lichess.org URL (see chesscom_pgn.CHESSCOM_SITE_HEADER).
+        # Using player.name unconditionally used to stamp the wrong
+        # (lichess) handle into exported chess.com games.
+        _player_name = (_cfg["player"].get("chesscom_username") or _cfg["player"]["name"]) \
+            if getattr(header, "site", "") == "Chess.com" else _cfg["player"]["name"]
         pgn_bytes = chess_display.game_to_annotated_pgn(
             header, moves,
             narrative_text=_pgn_narrative,
-            player_name=get_config()["player"]["name"],
+            player_name=_player_name,
         ).encode()
         safe_opp = (header.opponent_name or "game").replace(" ", "_")
         st.download_button(
@@ -538,23 +634,42 @@ def render():
             key=f"game_pgn__{selected_game_id}",
         )
 
+    _render_game_report(sqlite_conn, selected_game_id, header, moves)
+
     with st.container(border=True):
         st.subheader("Full annotated move list")
         display_moves = moves.drop(
-            columns=["fen_before", "win_prob_before", "win_prob_after"], errors="ignore").copy()
+            columns=["fen_before", "win_prob_before", "win_prob_after", "motif"],
+            errors="ignore").copy()
         for flag_col in ("is_player_move", "is_brilliant_candidate", "is_puzzle_trigger"):
             if flag_col in display_moves.columns:
                 display_moves[flag_col] = display_moves[flag_col].map(
                     {1: "✓", 0: ""}).fillna("")
         styled_moves = display_moves.style.map(
             lambda v: theme.CLASSIFICATION_BG.get(v, ""), subset=["classification"])
-        st.dataframe(styled_moves, width='stretch', column_config={
-            "ply": "Ply",
+        st.dataframe(styled_moves, width='stretch', hide_index=True, column_config={
+            "ply": st.column_config.NumberColumn(
+                "Turn", help="One turn = one player's move -- matches the board "
+                             "slider above. A full chess move is two turns."),
             "san": "Move",
-            "is_player_move": "Yours",
-            "classification": "Quality",
-            "cpl": "Centipawn Loss",
-            "sharpness": "Sharpness",
-            "is_brilliant_candidate": "Brilliant",
-            "is_puzzle_trigger": "Puzzle Trigger",
+            "is_player_move": st.column_config.Column(
+                "Yours", help="✓ = a move you played, blank = your opponent's."),
+            "classification": st.column_config.Column(
+                "Quality", help="The engine's verdict: best, excellent, good, "
+                                "inaccuracy, mistake, or blunder."),
+            "cpl": st.column_config.NumberColumn(
+                "Centipawn loss", format="%d",
+                help="How much the move cost vs. the engine's best, in centipawns "
+                     "(100 = one pawn). 0 = you found the best move."),
+            "sharpness": st.column_config.NumberColumn(
+                "Sharpness", format="%d",
+                help="How forcing the position was: the gap between the engine's "
+                     "best and second-best move, in centipawns. High = only one "
+                     "good move existed."),
+            "is_brilliant_candidate": st.column_config.Column(
+                "Brilliant", help="✓ = a real sacrifice the engine confirms as "
+                                  "best or excellent."),
+            "is_puzzle_trigger": st.column_config.Column(
+                "Starts puzzle", help="✓ = this mistake starts a puzzle-like "
+                                      "sequence (see Tactical Highlights)."),
         })

@@ -175,17 +175,17 @@ def test_narrative_is_deterministic_for_the_same_game():
     redesign. This is arguably the better test anyway: it exercises the
     actual determinism guarantee without depending on UI simulation."""
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
-    from _common import resolve_db_path, get_duckdb_connection
+    from _common import resolve_db_path, get_sqlite_connection
     import data
     import narrative
 
     db_path = resolve_db_path()
-    conn = get_duckdb_connection(db_path)
+    conn = get_sqlite_connection(db_path)
     # Any real game_id works for a determinism check -- fetch one from
     # whatever database is actually configured rather than hardcoding a
     # specific original-project game_id, which wouldn't exist in a fresh
     # install's database.
-    any_game_id = conn.execute("SELECT id FROM db.games LIMIT 1").fetchone()[0]
+    any_game_id = conn.execute("SELECT id FROM games LIMIT 1").fetchone()[0]
     header, moves = data.get_game_detail(conn, any_game_id)
     narrative_1 = narrative.generate_narrative(header, moves)
     narrative_2 = narrative.generate_narrative(header, moves)

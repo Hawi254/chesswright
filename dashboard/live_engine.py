@@ -23,6 +23,7 @@ import chess
 import chess.engine
 import streamlit as st
 
+import chess_display
 import config
 import joblock
 import worker
@@ -139,7 +140,7 @@ class EngineService:
         self._engine = None
 
 
-@st.cache_resource
+@st.cache_resource(show_spinner="Starting the analysis engine…")
 def get_engine_service() -> EngineService | None:
     """Return the singleton EngineService, or None if Stockfish is not found."""
     cfg = config.load_config()
@@ -157,3 +158,38 @@ def batch_running() -> bool:
     """True when the batch worker holds the joblock and its process is alive."""
     info = joblock.status()
     return info is not None and info.alive
+
+
+def render_confirm_toggle(sqlite_conn, fen: str, key: str,
+                           label: str = "Confirm with live engine") -> None:
+    """Optional live-engine confirmation, off by default (analyse() has a
+    real time cost) -- shared by SRS Drills and Opening Tree so both get
+    the same session_state caching convention game_detail_view.py's
+    "Analyse position" button already established."""
+    import data  # local import: avoids a module-level dashboard.data <-> live_engine dependency
+
+    engine_svc = get_engine_service()
+    if engine_svc is None:
+        return
+
+    if not st.checkbox(label, key=key):
+        return
+
+    live_key = f"live_result__{fen}"
+    live_result = st.session_state.get(live_key)
+    if live_result is None:
+        if batch_running():
+            st.caption("Batch analysis running — live engine paused.")
+            return
+        with st.spinner("Analysing..."):
+            live_result = engine_svc.analyse(fen)
+        if live_result is None:
+            st.caption("Engine analysis unavailable right now.")
+            return
+        st.session_state[live_key] = live_result
+        data.store_position_analysis(sqlite_conn, fen, live_result)
+
+    eval_label = chess_display.eval_str(live_result.eval_cp, live_result.eval_mate)
+    pv = chess_display.pv_str(fen, live_result.pv_json)
+    depth_str = f" (depth {live_result.depth})" if live_result.depth else ""
+    st.caption("Engine: " + eval_label + (f" — {pv}" if pv else "") + depth_str)

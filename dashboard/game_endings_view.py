@@ -24,12 +24,12 @@ _END_TYPE_LABELS = {
 }
 
 
-@st.cache_data
+@st.cache_data(show_spinner="Loading how your games end…")
 def cached_game_end_type_breakdown(_duck_conn):
     return data.get_game_end_type_breakdown(_duck_conn)
 
 
-@st.cache_data
+@st.cache_data(show_spinner="Computing your endgame results…")
 def cached_endgame_type_performance(_sqlite_conn):
     return data.get_endgame_type_performance(_sqlite_conn)
 
@@ -53,7 +53,8 @@ def render():
             overall_df = overall_df.copy()
             overall_df["game_end_type"] = overall_df["game_end_type"].map(
                 lambda x: _END_TYPE_LABELS.get(x, x))
-            st.plotly_chart(charts.bar_chart(overall_df, "game_end_type", "n", theme.ACCENT_GOLD),
+            st.plotly_chart(charts.bar_chart(overall_df, "game_end_type", "n", theme.ACCENT_GOLD,
+                                              x_title="How the game ended", y_title="Games"),
                              theme=None)
 
     with st.container(border=True):
@@ -62,7 +63,9 @@ def render():
             st.info(theme.thin_data_message(0, 1))
         else:
             by_tc_df = by_tc_df.rename(columns=lambda c: _END_TYPE_LABELS.get(c, c))
-            st.plotly_chart(charts.heatmap(by_tc_df, theme.SEQUENTIAL_GOLD_COLORSCALE, value_suffix="%"),
+            st.plotly_chart(charts.heatmap(by_tc_df, theme.SEQUENTIAL_GOLD_COLORSCALE, value_suffix="%",
+                                            x_title="How the game ended", y_title="Time control",
+                                            colorbar_title="% of games"),
                              theme=None)
 
     with st.container(border=True):
@@ -83,7 +86,7 @@ def render():
                     melted, "endgame_type", "outcome", "pct",
                     colors={"win": theme.POSITIVE, "draw": theme.ACCENT_GOLD,
                             "loss": theme.NEGATIVE},
-                    height=300),
+                    height=300, x_title="Endgame type", y_title="% of games"),
                 theme=None)
 
             stats = eg_df[["endgame_type", "n_games", "acpl", "blunder_rate"]].copy()
@@ -93,7 +96,11 @@ def render():
                 lambda v: "--" if v is None or pd.isna(v) else f"{v:.1f}%")
             st.dataframe(stats, hide_index=True, column_config={
                 "endgame_type": "Type",
-                "n_games":      "Games",
-                "acpl":         "Endgame ACPL",
-                "blunder_rate": "Blunder rate",
+                "n_games":      st.column_config.NumberColumn(
+                    "Games", help="Games that reached this endgame type."),
+                "acpl":         st.column_config.Column(
+                    "Endgame ACPL", help="Average centipawn loss of your moves inside the "
+                                         "endgame -- lower is more accurate."),
+                "blunder_rate": st.column_config.Column(
+                    "Blunder rate", help="Share of your endgame moves classified as blunders."),
             })

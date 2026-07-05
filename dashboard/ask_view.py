@@ -16,9 +16,10 @@ import claude_narrative
 import data
 import theme
 from _common import get_connections
+from cached_queries import cached_career_findings, cached_headline_stats
 
 
-@st.cache_data
+@st.cache_data(show_spinner="Gathering your stats…")
 def _build_data_brief(_duck_conn, _sqlite_conn):
     """Structured text block of career stats for the Claude prompt.
 
@@ -30,8 +31,11 @@ def _build_data_brief(_duck_conn, _sqlite_conn):
     Wraps each section in a try/except so a single unavailable data function
     can't crash the whole brief -- it contributes a "(unavailable)" line instead.
     """
-    stats = data.get_headline_stats(_duck_conn, _sqlite_conn)
-    findings = data.get_career_findings(_duck_conn, stats.get("blunder_rate"))
+    # Shared cached wrappers, not raw data.get_* calls -- these two are the
+    # most expensive queries in the app (~0.4s / ~4.3s) and Overview/Insights
+    # have usually already computed them (see cached_queries.py).
+    stats = cached_headline_stats(_duck_conn, _sqlite_conn)
+    findings = cached_career_findings(_duck_conn, stats.get("blunder_rate"))
 
     sections = []
 
@@ -107,7 +111,7 @@ def _build_data_brief(_duck_conn, _sqlite_conn):
 
     # Most common missed tactical motifs
     try:
-        df = data.get_motif_breakdown(_duck_conn)
+        df = data.get_motif_breakdown(_sqlite_conn)
         if df is not None and not df.empty:
             lines = []
             for row in df.head(5).itertuples(index=False):
@@ -134,7 +138,7 @@ def render():
         "Hit **Refresh data** in the sidebar after a new analysis batch to see the latest."
     )
 
-    stats = data.get_headline_stats(duck_conn, sqlite_conn)
+    stats = cached_headline_stats(duck_conn, sqlite_conn)
     if stats.get("analyzed_games", 0) == 0:
         st.info(theme.thin_data_message(0, 1))
         return
