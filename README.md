@@ -24,6 +24,8 @@ things.
 *Illustrative data — a synthetic game history generated for these
 screenshots, not a real account.*
 
+![Chesswright walkthrough](docs/screenshots/demo.gif)
+
 | | |
 |---|---|
 | ![Overview](docs/screenshots/overview.png) **Overview** — headline stats and the most dramatic game on record, first thing you see. | ![Openings & Repertoire](docs/screenshots/openings.png) **Openings & Repertoire** — win rate and accuracy by opening, per color. |
