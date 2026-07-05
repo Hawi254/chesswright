@@ -19,6 +19,17 @@ what confused you, how long things actually took — is the entire point
 of you running it. Please report anything that goes wrong, even small
 things.
 
+## Screenshots
+
+*Illustrative data — a synthetic game history generated for these
+screenshots, not a real account.*
+
+| | |
+|---|---|
+| ![Overview](docs/screenshots/overview.png) **Overview** — headline stats and the most dramatic game on record, first thing you see. | ![Openings & Repertoire](docs/screenshots/openings.png) **Openings & Repertoire** — win rate and accuracy by opening, per color. |
+| ![Insights](docs/screenshots/insights.png) **Insights** — a live digest of what stands out in your analyzed games so far. | ![Tactical Highlights](docs/screenshots/tactical-highlights.png) **Tactical Highlights** — which tactical motifs keep catching you out. |
+| ![Repertoire Evolution](docs/screenshots/repertoire-evolution.png) **Repertoire Evolution** — how your opening choices shifted over time, and whether the change paid off. | |
+
 ## Before you install: one honest thing up front
 
 **Engine analysis is genuinely slow.** Stockfish has to actually
@@ -166,3 +177,10 @@ computer, and nothing is ever uploaded.
 Chesswright's own code: MIT (see this repo). Stockfish is a separate
 project under GPLv3 — Chesswright never bundles, modifies, or links
 against it, which is exactly why you install it yourself in step 1.
+
+## Support this project
+
+Chesswright's core is free and stays free — this isn't a paywall. If
+you'd like to support ongoing development anyway, you can do so via
+[GitHub Sponsors](https://github.com/sponsors/Hawi254) or
+[Open Collective](https://opencollective.com/chesswright).
