@@ -21,6 +21,13 @@ import theme
 from _common import get_connections, navigate_on_row_click
 from cached_queries import cached_headline_stats
 
+_GK_REASON_LABELS = {
+    "hung_piece":     "Hung a piece",
+    "faced_mate":     "Faced a forced mate",
+    "time_pressure":  "Time pressure",
+    "other":          "Other / gradual decline",
+}
+
 
 @st.cache_data(show_spinner="Computing win rates by rating difference…")
 def cached_win_rate_by_rating_diff(_duck_conn):
@@ -30,6 +37,16 @@ def cached_win_rate_by_rating_diff(_duck_conn):
 @st.cache_data(show_spinner="Counting upset wins and losses…")
 def cached_giant_killing_counts(_duck_conn):
     return data.get_giant_killing_counts(_duck_conn)
+
+
+@st.cache_data(show_spinner="Working out why your collapses happened…")
+def cached_giant_killing_collapse_causes(_duck_conn):
+    return data.get_giant_killing_collapse_causes(_duck_conn)
+
+
+@st.cache_data(show_spinner="Tracking your giant-killing rate over time…")
+def cached_giant_killing_rate_trend(_duck_conn):
+    return data.get_giant_killing_rate_trend(_duck_conn)
 
 
 @st.cache_data(show_spinner="Finding comebacks and collapses…")
@@ -112,6 +129,88 @@ def render(self_page, detail_page, prep_page=None):
                          "out of all games against such opponents.")
         if collapse_pct is not None:
             col2.caption(f"You lose {collapse_pct:.1f}% of games as a heavy favorite.")
+
+    with st.container(border=True):
+        st.subheader("Why collapses happen")
+        st.caption("Of your losses as a 300+ rating favorite: how many followed a "
+                   "hanging-piece blunder (the same detection Tactical Highlights' "
+                   "hallucination section uses) near the end of the game, vs. a forced "
+                   "mate already on the board with no such hang, vs. losing while "
+                   "critically low on the clock against an opponent with a real time "
+                   "advantage, vs. neither -- regardless of whether the game actually "
+                   "ended by checkmate, resignation, or flag. The first two need engine "
+                   "analysis to exist at all; the clock check doesn't (it reads straight "
+                   "off the game's move times), so games with no explanation of any kind "
+                   "are tracked and excluded separately rather than being silently counted "
+                   "as \"gradual decline.\"")
+        reason_df, piece_df, mate_df = cached_giant_killing_collapse_causes(duck_conn)
+        if reason_df.empty:
+            st.info(theme.thin_data_message(0, 1))
+        else:
+            n_total = int(reason_df.n.sum())
+            n_not_analyzed = int(reason_df.loc[reason_df.reason == "not_analyzed", "n"].sum())
+            n_explained = n_total - n_not_analyzed
+            st.caption(f"{n_explained} of {n_total} collapses "
+                       f"({100.0 * n_explained / n_total:.0f}%) have some explanation found "
+                       "below -- the rest have neither been analyzed by the engine nor show "
+                       "a clock-pressure signal, so no cause could be determined yet.")
+            if n_explained == 0:
+                st.info(theme.thin_data_message(0, 1))
+            else:
+                explained_df = reason_df[reason_df.reason != "not_analyzed"].copy()
+                explained_df["pct"] = 100.0 * explained_df.n / n_explained
+                explained_df["reason"] = explained_df["reason"].map(
+                    lambda x: _GK_REASON_LABELS.get(x, x))
+                st.plotly_chart(
+                    charts.bar_chart(explained_df, "reason", "pct", theme.ACCENT_GOLD,
+                                      x_title="Cause", y_title="% of explained collapses"),
+                    theme=None)
+
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.write("**Which piece hung**")
+                    if piece_df.empty:
+                        st.info(theme.thin_data_message(0, 1))
+                    else:
+                        piece_plot = piece_df.copy()
+                        piece_plot["piece_name"] = piece_plot["hung_piece"].map(
+                            lambda p: str(data.PIECE_NAME.get(p, p)).title())
+                        order = {p: i for i, p in enumerate(data.PIECE_ORDER)}
+                        piece_plot = piece_plot.sort_values(
+                            by="hung_piece", key=lambda s: s.map(order))
+                        st.plotly_chart(
+                            charts.bar_chart(piece_plot, "piece_name", "pct", theme.NEGATIVE,
+                                              x_title="Piece hung",
+                                              y_title="% of hung-piece collapses"),
+                            theme=None)
+                with col2:
+                    st.write("**How many moves to mate**")
+                    if mate_df.empty:
+                        st.info(theme.thin_data_message(0, 1))
+                    else:
+                        st.plotly_chart(
+                            charts.bar_chart(mate_df, "bucket", "pct", theme.NEGATIVE,
+                                              x_title="Forced mate distance",
+                                              y_title="% of faced-mate collapses"),
+                            theme=None)
+
+    with st.container(border=True):
+        st.subheader("Giant-killing rate over time")
+        st.caption("Quarterly share of heavy-underdog games won, and heavy-favorite games "
+                   "lost. Unlike the cause breakdown above, both rates are honest to trend "
+                   "by calendar date -- rating difference and outcome come straight from "
+                   "the game record, with no analysis backlog to skew them.")
+        gk_trend_df = cached_giant_killing_rate_trend(duck_conn)
+        if gk_trend_df.empty or gk_trend_df["period"].nunique() < 2:
+            st.info(theme.thin_data_message(0, 1))
+        else:
+            st.plotly_chart(
+                charts.multi_line_chart(
+                    gk_trend_df, "label",
+                    [("pct_upset", "upset win rate (300+ underdog)", theme.POSITIVE),
+                     ("pct_collapse", "collapse loss rate (300+ favorite)", theme.NEGATIVE)],
+                    x_title="Quarter", y_title="% of games"),
+                theme=None)
 
     with st.container(border=True):
         st.subheader("Comebacks and collapses (eval-based)")
@@ -198,13 +297,34 @@ def _render_nemesis_section(sqlite_conn, duck_conn, prep_page=None):
     }
     _nem_col_order = ["opponent_name", "n", "record", "score_pct"]
 
-    def _nem_table(subset, key):
+    # A second column set for the surprise table below -- kept separate
+    # from _nem_col_config rather than added to every table, so the three
+    # existing tables' column widths (already once fixed to stop Score %
+    # clipping off the right edge, see the comment above) don't get
+    # squeezed further by two more numeric columns they don't need.
+    _surprise_col_config = dict(_nem_col_config, **{
+        "expected_score_pct": st.column_config.NumberColumn(
+            "Expected %", format="%.1f", width="small",
+            help="What the rating gap alone predicts you'd score against this opponent "
+                 "(standard Elo expected-score formula), averaged over each game's own "
+                 "rating difference."),
+        "surprise_pct": st.column_config.NumberColumn(
+            "Surprise", format="%.1f", width="small",
+            help="Score % minus Expected %. A large negative number is a genuine "
+                 "surprise -- underperforming what the rating gap alone predicts, not "
+                 "just facing a stronger opponent."),
+    })
+    _surprise_col_order = _nem_col_order + ["expected_score_pct", "surprise_pct"]
+
+    def _nem_table(subset, key, col_order=None, col_config=None):
+        col_order = col_order or _nem_col_order
+        col_config = col_config or _nem_col_config
         if prep_page:
-            _scout_on_row_click(subset, key, prep_page, _nem_col_order, _nem_col_config)
+            _scout_on_row_click(subset, key, prep_page, col_order, col_config)
         else:
             st.dataframe(subset.drop(columns=["all_lichess"]), width='stretch',
-                         hide_index=True, column_order=_nem_col_order,
-                         column_config=_nem_col_config)
+                         hide_index=True, column_order=col_order,
+                         column_config=col_config)
 
     col1, col2 = st.columns(2)
     with col1:
@@ -217,6 +337,14 @@ def _render_nemesis_section(sqlite_conn, duck_conn, prep_page=None):
 
     st.write("Most-played opponents overall")
     _nem_table(nem_display.sort_values("n", ascending=False).head(10), "nem_most_played")
+
+    st.write("Biggest surprises (score below Elo expectation)")
+    st.caption("Ranked by surprise, not raw score% -- most \"toughest opponents\" above "
+               "are simply rated well above you, which raw score% alone can't "
+               "distinguish from a genuinely lopsided result against a similarly- or "
+               "lower-rated player.")
+    _nem_table(nem_display.sort_values("surprise_pct").head(10), "nem_surprise",
+               _surprise_col_order, _surprise_col_config)
 
     if not nem_df.empty:
         opponent_names = nem_df.opponent_name.tolist()

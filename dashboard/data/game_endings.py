@@ -7,26 +7,7 @@ import analytics
 from chess_utils import material_balance_cp
 from _common import get_config
 
-
-def _quarterly_zero_fill(df, count_cols):
-    """Expand a (year, quarter, counts...) frame to one row per quarter
-    from the first to the last observed, zero-filling the given count
-    columns -- so a quarter with no qualifying games at all renders as an
-    honest gap rather than being silently skipped (same convention as
-    evolution.period_shares). Adds period (sortable int) and label
-    ("2019 Q1") columns; callers compute their own pct columns on top,
-    using NaN (not 0) where a denominator is 0 -- 0/0 is "no data," not
-    "0%." Shared by both calendar trends in this module, which used to be
-    on track to restate this merge/fill dance independently."""
-    df["period"] = df["year"].astype(int) * 4 + (df["quarter"].astype(int) - 1)
-    all_periods = pd.DataFrame({"period": range(int(df["period"].min()), int(df["period"].max()) + 1)})
-    df = all_periods.merge(df, on="period", how="left")
-    df["year"] = df["period"] // 4
-    df["quarter"] = df["period"] % 4 + 1
-    for col in count_cols:
-        df[col] = df[col].fillna(0).astype(int)
-    df["label"] = df["year"].astype(str) + " Q" + df["quarter"].astype(str)
-    return df
+from ._shared import _quarterly_zero_fill
 
 
 def _classify_endgame_type(endgame_sig: str) -> str | None:

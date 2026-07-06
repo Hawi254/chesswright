@@ -146,23 +146,41 @@ def stacked_bar_chart(df, x, group_col, y, colors, height=320,
 
 
 def heatmap(pivoted_df, colorscale, value_suffix="", height=380,
-            x_title=None, y_title=None, colorbar_title=None):
+            x_title=None, y_title=None, colorbar_title=None, hover_extra=None):
     """pivoted_df: a DataFrame already shaped index=rows, columns=cols,
     values=cell values (data.py's heatmap-producing functions already
     return this shape). NO in-cell text -- the structural fix for the
     measured ~2.1-2.2:1 contrast failure on the old background_gradient
     tables (see theme.py docstring): exact values live in the hover
     tooltip and the colorbar, never as text rendered against a
-    variable-lightness cell background."""
+    variable-lightness cell background.
+
+    hover_extra: optional (extra_pivoted_df, label) pair -- the 2D
+    analogue of line_chart's hover_extra (see its docstring for the
+    mechanism). extra_pivoted_df must share pivoted_df's index/columns
+    values (reindexed here defensively, so a caller's differently-sorted
+    frame still lines up cell-for-cell); appends "label: <value>" to every
+    cell's hover text via a 2D customdata array. Same contract as
+    line_chart's hover_extra: values are used as-is with no numeric
+    format spec applied (confirmed live -- %{customdata:+.0f} silently
+    renders the raw unformatted float in this Plotly build), so the
+    caller must pre-format extra_pivoted_df's values into display strings."""
     colorbar: dict = dict(outlinewidth=0, tickfont=dict(color=theme.TEXT))
     if colorbar_title:
         colorbar["title"] = dict(text=colorbar_title, font=dict(color=theme.TEXT))
+    hovertemplate = f"%{{y}} / %{{x}}: %{{z:.1f}}{value_suffix}"
+    customdata = None
+    if hover_extra is not None:
+        extra_df, extra_label = hover_extra
+        customdata = extra_df.reindex(index=pivoted_df.index, columns=pivoted_df.columns).values
+        hovertemplate += f"<br>{extra_label}: %{{customdata}}"
     fig = go.Figure(go.Heatmap(
         z=pivoted_df.values,
         x=[str(c) for c in pivoted_df.columns],
         y=[str(i) for i in pivoted_df.index],
         colorscale=colorscale,
-        hovertemplate=f"%{{y}} / %{{x}}: %{{z:.1f}}{value_suffix}<extra></extra>",
+        customdata=customdata,
+        hovertemplate=hovertemplate + "<extra></extra>",
         colorbar=colorbar,
     ))
     fig.update_layout(title_text="", height=height,

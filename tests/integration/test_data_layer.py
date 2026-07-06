@@ -256,6 +256,168 @@ class TestMatchupsData:
         finally:
             duck.close(); disk.close(); os.unlink(tmp)
 
+    def test_get_nemesis_opponents_surprise_index(self, migrated_db):
+        """expected_score_pct is the average per-game Elo-predicted score
+        (logistic, 400-point scale) for rating_diff, NOT the score implied
+        by the opponent's average rating_diff -- those differ once
+        per-game gaps vary (Jensen's inequality), so this seeds two
+        DIFFERENT rating_diff values averaging to the same mean and checks
+        against the per-game hand-computed expectation, not a single
+        plugged-in average."""
+        import math
+        from data.matchups import get_nemesis_opponents
+        # rating_diff +100 and +300 (avg +200) -- three total games, all
+        # losses, to stay above min_games=3.
+        rows = [("g1", 100), ("g2", 300), ("g3", 200)]
+        for gid, rd in rows:
+            migrated_db.execute(
+                "INSERT INTO games (id, white, black, opponent_name, "
+                "outcome_for_player, rating_diff) VALUES (?, 'W', 'B', 'Foe', 'loss', ?)",
+                (gid, rd))
+        migrated_db.commit()
+        duck, disk, tmp = _duck_from_conn(migrated_db)
+        try:
+            df = get_nemesis_opponents(duck, min_games=3)
+            row = df[df.opponent_name == "Foe"].iloc[0]
+            expected_frac = sum(1.0 / (1.0 + 10 ** (-rd / 400.0)) for _, rd in rows) / len(rows)
+            assert row.score_pct == 0.0
+            assert row.expected_score_pct == pytest.approx(100.0 * expected_frac)
+            assert row.surprise_pct == pytest.approx(0.0 - 100.0 * expected_frac)
+        finally:
+            duck.close(); disk.close(); os.unlink(tmp)
+
+    def test_get_giant_killing_collapse_causes_on_empty_db(self, migrated_db):
+        from data.matchups import get_giant_killing_collapse_causes
+        duck, disk, tmp = _duck_from_conn(migrated_db)
+        try:
+            reason_df, piece_df, mate_df = get_giant_killing_collapse_causes(duck)
+            assert reason_df.empty and piece_df.empty and mate_df.empty
+        finally:
+            duck.close(); disk.close(); os.unlink(tmp)
+
+    def _seed_collapse_game(self, conn, game_id, num_plies, moves, rating_diff=300):
+        """moves: list of dicts, one per ply, color/is_player_move derived
+        the same way TestPointsData._seed_causes_game does (player is
+        White). num_plies drives the "near the end" window
+        (hallucination_max_moves_to_resign*2 plies, default 6)."""
+        conn.execute(
+            "INSERT INTO games (id, white, black, outcome_for_player, "
+            "rating_diff, num_plies) VALUES (?, 'W', 'B', 'loss', ?, ?)",
+            (game_id, rating_diff, num_plies))
+        for mv in moves:
+            ply = mv["ply"]
+            color = "w" if ply % 2 == 1 else "b"
+            is_player_move = mv.get("is_player_move", 1 if color == "w" else 0)
+            conn.execute("""
+                INSERT INTO moves (game_id, ply, move_number, color, san,
+                    is_player_move, classification, cpl, eval_cp, eval_mate,
+                    clock_seconds, is_capture, material_delta, to_square, piece)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (game_id, ply, (ply + 1) // 2, color, mv.get("san", "e4"),
+                  is_player_move, mv.get("classification"), mv.get("cpl"),
+                  mv.get("eval_cp"), mv.get("eval_mate"), mv.get("clock_seconds"),
+                  mv.get("is_capture", 0), mv.get("material_delta"), mv.get("to_square"),
+                  mv.get("piece")))
+        conn.commit()
+
+    def test_get_giant_killing_collapse_causes_classifies_reasons(self, migrated_db):
+        from data.matchups import get_giant_killing_collapse_causes
+        # num_plies=10, window=6 plies -> ply>=4 counts as "near the end".
+        self._seed_collapse_game(migrated_db, "gk_hang", 10, [
+            {"ply": 7, "classification": "blunder", "cpl": 250,
+             "san": "Qe5", "piece": "Q", "to_square": "e5"},
+            {"ply": 8, "is_player_move": 0, "is_capture": 1, "to_square": "e5",
+             "material_delta": 900, "san": "Rxe5"},
+        ])
+        self._seed_collapse_game(migrated_db, "gk_mate", 10, [
+            {"ply": 7, "eval_mate": -4, "san": "Nf3"},
+        ])
+        self._seed_collapse_game(migrated_db, "gk_timepressure", 10, [
+            {"ply": 7, "clock_seconds": 10},
+            {"ply": 8, "is_player_move": 0, "clock_seconds": 90},
+        ])
+        self._seed_collapse_game(migrated_db, "gk_other", 10, [
+            {"ply": 3, "eval_cp": 50, "cpl": 10, "classification": "good"},
+        ])
+        self._seed_collapse_game(migrated_db, "gk_not_analyzed", 10, [
+            {"ply": 3, "san": "Nf3"},
+        ])
+        duck, disk, tmp = _duck_from_conn(migrated_db)
+        try:
+            reason_df, piece_df, mate_df = get_giant_killing_collapse_causes(duck)
+            reason_lookup = dict(zip(reason_df.reason, reason_df.n))
+            assert reason_lookup["hung_piece"] == 1
+            assert reason_lookup["faced_mate"] == 1
+            assert reason_lookup["time_pressure"] == 1
+            assert reason_lookup["other"] == 1
+            assert reason_lookup["not_analyzed"] == 1
+            assert dict(zip(piece_df.hung_piece, piece_df.n)) == {"Q": 1}
+            assert mate_df.iloc[0]["bucket"] == "Mate in 3-5"  # eval_mate=-4
+        finally:
+            duck.close(); disk.close(); os.unlink(tmp)
+
+    def test_get_giant_killing_collapse_causes_hang_beats_faced_mate(self, migrated_db):
+        """Same priority order as get_resignation_loss_causes: hung_piece
+        wins over faced_mate when both signals qualify."""
+        from data.matchups import get_giant_killing_collapse_causes
+        self._seed_collapse_game(migrated_db, "gk_priority", 10, [
+            {"ply": 5, "eval_mate": -4, "san": "Nf3"},
+            {"ply": 7, "classification": "blunder", "cpl": 250,
+             "san": "Qe5", "piece": "Q", "to_square": "e5"},
+            {"ply": 8, "is_player_move": 0, "is_capture": 1, "to_square": "e5",
+             "material_delta": 900, "san": "Rxe5"},
+        ])
+        duck, disk, tmp = _duck_from_conn(migrated_db)
+        try:
+            reason_df, _piece_df, _mate_df = get_giant_killing_collapse_causes(duck)
+            reason_lookup = dict(zip(reason_df.reason, reason_df.n))
+            assert reason_lookup["hung_piece"] == 1
+            assert reason_lookup.get("faced_mate", 0) == 0
+        finally:
+            duck.close(); disk.close(); os.unlink(tmp)
+
+    def test_get_giant_killing_rate_trend_on_empty_db(self, migrated_db):
+        from data.matchups import get_giant_killing_rate_trend
+        duck, disk, tmp = _duck_from_conn(migrated_db)
+        try:
+            df = get_giant_killing_rate_trend(duck)
+            assert df.empty
+        finally:
+            duck.close(); disk.close(); os.unlink(tmp)
+
+    def test_get_giant_killing_rate_trend_zero_fills_and_computes_pct(self, migrated_db):
+        from data.matchups import get_giant_killing_rate_trend
+        rows = [
+            # Q1 2025: one upset win out of one underdog game; one
+            # favorite game, no collapse.
+            ("g1", 2025, 1, -300, "win"),
+            ("g2", 2025, 1, 300, "win"),
+            # Q3 2025 (Q2 deliberately skipped -- must zero-fill): one
+            # favorite game, one collapse.
+            ("g3", 2025, 7, 300, "loss"),
+        ]
+        for gid, year, month, rd, outcome in rows:
+            migrated_db.execute(
+                "INSERT INTO games (id, white, black, outcome_for_player, "
+                "rating_diff, year, month) VALUES (?, 'W', 'B', ?, ?, ?, ?)",
+                (gid, outcome, rd, year, month))
+        migrated_db.commit()
+        duck, disk, tmp = _duck_from_conn(migrated_db)
+        try:
+            df = get_giant_killing_rate_trend(duck)
+            by_label = df.set_index("label")
+            assert by_label.loc["2025 Q1", "n_underdog"] == 1
+            assert by_label.loc["2025 Q1", "pct_upset"] == pytest.approx(100.0)
+            assert by_label.loc["2025 Q1", "n_favorite"] == 1
+            assert by_label.loc["2025 Q1", "pct_collapse"] == pytest.approx(0.0)
+            assert by_label.loc["2025 Q3", "n_favorite"] == 1
+            assert by_label.loc["2025 Q3", "pct_collapse"] == pytest.approx(100.0)
+            # zero-filled gap quarter between Q1 and Q3.
+            assert "2025 Q2" in by_label.index
+            assert by_label.loc["2025 Q2", "n_favorite"] == 0
+        finally:
+            duck.close(); disk.close(); os.unlink(tmp)
+
 
 @pytest.mark.integration
 class TestTacticalData:
@@ -323,6 +485,36 @@ class TestPatternsData:
             result_df, n_analyzed, n_total = get_instant_move_accuracy_by_legal_replies(duck)
             assert result_df is not None
             assert n_total == 0
+        finally:
+            duck.close(); disk.close(); os.unlink(tmp)
+
+    def test_get_day_hour_heatmap_returns_aligned_pivots(self, migrated_db):
+        """Returns (win_pct_pivot, avg_rating_diff_pivot) sharing the same
+        index/columns shape -- charts.heatmap's hover_extra reindexes the
+        second onto the first, so a caller passing a differently-sorted
+        frame must still line up cell-for-cell."""
+        from data.patterns import get_day_hour_heatmap
+        rows = [
+            ("g1", 0, 12, "win", 100),
+            ("g2", 0, 12, "loss", -50),
+            ("g3", 1, 18, "win", 300),
+        ]
+        for gid, dow, hour, outcome, rd in rows:
+            migrated_db.execute(
+                "INSERT INTO games (id, white, black, outcome_for_player, "
+                "day_of_week, hour_utc, rating_diff) VALUES (?, 'W', 'B', ?, ?, ?, ?)",
+                (gid, outcome, dow, hour, rd))
+        migrated_db.commit()
+        duck, disk, tmp = _duck_from_conn(migrated_db)
+        try:
+            win_pivot, rating_pivot = get_day_hour_heatmap(duck)
+            assert win_pivot.shape == rating_pivot.shape
+            assert list(win_pivot.index) == list(rating_pivot.index)
+            assert list(win_pivot.columns) == list(rating_pivot.columns)
+            assert win_pivot.loc[0, 12] == pytest.approx(50.0)      # 1 win of 2
+            assert rating_pivot.loc[0, 12] == pytest.approx(25.0)   # avg(100, -50)
+            assert win_pivot.loc[1, 18] == pytest.approx(100.0)
+            assert rating_pivot.loc[1, 18] == pytest.approx(300.0)
         finally:
             duck.close(); disk.close(); os.unlink(tmp)
 

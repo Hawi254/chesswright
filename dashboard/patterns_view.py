@@ -224,15 +224,24 @@ def _render_tab_rhythm(sqlite_conn, duck_conn):
 
     with st.container(border=True):
         st.subheader("Win rate heatmap: day of week × hour of day (UTC)")
-        heatmap_df = cached_day_hour_heatmap(duck_conn)
+        st.caption("Hover a cell to see your average rating difference at that day/hour too -- "
+                   "win rate varies partly because who you face varies by time of day, not "
+                   "only how you play then.")
+        heatmap_df, rating_df = cached_day_hour_heatmap(duck_conn)
         # day_of_week is stored 0=Monday .. 6=Sunday (migrations/0001_init.sql)
-        # -- rename for display only, the cached pivot is untouched.
-        heatmap_df = heatmap_df.rename(index={0: "Mon", 1: "Tue", 2: "Wed", 3: "Thu",
-                                              4: "Fri", 5: "Sat", 6: "Sun"})
+        # -- rename for display only, the cached pivots are untouched.
+        day_labels = {0: "Mon", 1: "Tue", 2: "Wed", 3: "Thu", 4: "Fri", 5: "Sat", 6: "Sun"}
+        heatmap_df = heatmap_df.rename(index=day_labels)
+        # Pre-formatted signed-integer display strings, not raw floats --
+        # charts.heatmap's hover_extra applies no numeric format spec (see
+        # its docstring), so the caller formats.
+        rating_df = rating_df.rename(index=day_labels).map(
+            lambda v: "--" if pd.isna(v) else f"{v:+.0f}")
         st.plotly_chart(
             charts.heatmap(heatmap_df, theme.DIVERGING_COLORSCALE, value_suffix="%",
                            x_title="Hour of day (UTC)", y_title="Day of week",
-                           colorbar_title="Win %"),
+                           colorbar_title="Win %",
+                           hover_extra=(rating_df, "Avg rating diff")),
             theme=None)
 
 

@@ -17,6 +17,8 @@ a placeholder, when its underlying data is too thin to say anything real
 findings yet" must be a normal, common state, not a crash or a wall of
 "--" placeholders.
 """
+import pandas as pd
+
 from . import patterns, matchups, game_endings
 from ._shared import TIME_PRESSURE_BUCKETS, THINKING_TIME_BUCKETS, bucket_acpl_blunder_rate
 from _common import get_config
@@ -169,14 +171,28 @@ def _backrank(moves_df):
 
 
 def _nemesis(duck_conn):
+    """Ranked by surprise_pct (score_pct minus the Elo-expected score for
+    each game's own rating_diff), not raw score_pct -- picking the lowest
+    raw score would usually just surface "the opponent you happen to be
+    most out-rated by," which raw score% alone can't distinguish from a
+    genuinely lopsided result against a similarly- or lower-rated player
+    (see matchups.get_nemesis_opponents' docstring for the live example
+    that motivated this). Falls back to raw score_pct only if every
+    opponent's expected_score_pct is unavailable (no rated games at all)."""
     df = matchups.get_nemesis_opponents(duck_conn, min_games=MIN_OPPONENT_GAMES)
     if df.empty:
         return None
-    toughest = df.loc[df.score_pct.idxmin()]
+    rated = df[df.surprise_pct.notna()]
+    toughest = (rated.loc[rated.surprise_pct.idxmin()] if len(rated)
+                else df.loc[df.score_pct.idxmin()])
+    detail = f"Over {int(toughest.n)} games (win + 0.5 x draw, standard tournament scoring)."
+    if pd.notna(toughest.get("expected_score_pct")):
+        detail += (f" The rating gap alone predicted {toughest.expected_score_pct:.1f}% -- "
+                   "this is a real surprise, not just a stronger opponent.")
     return {
         "title": "Toughest opponent",
         "headline": f"{toughest.score_pct:.1f}% score against {toughest.opponent_name}",
-        "detail": f"Over {int(toughest.n)} games (win + 0.5 x draw, standard tournament scoring).",
+        "detail": detail,
         "opponent_name": toughest.opponent_name,
         # Gates the "Scout this opponent" deep link -- see the all_lichess
         # comment in matchups.get_nemesis_opponents.

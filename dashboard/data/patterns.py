@@ -133,16 +133,32 @@ def get_session_position_performance(sqlite_conn, config_path=None):
 
 def get_day_hour_heatmap(duck_conn):
     """New cross-tab, not built in Phase 5 -- day_of_week x hour_utc win
-    rate, full dataset (board-derived)."""
+    rate, full dataset (board-derived).
+
+    Also returns avg_rating_diff pivoted to the same (day_of_week, hour_utc)
+    shape -- a confidence-gap disclaimer, not a new finding: win% varies by
+    hour partly because the opponent pool's average strength varies by hour
+    too, not only because of how the player performs at that hour. Verified
+    live (2026-07-07) on the real dev DB: hours 17-18 UTC combine both the
+    most favorable average rating_diff (+33 to +37) and the highest win%
+    (49-50%), while hours 20-23 combine a negative rating_diff (-20 to -35)
+    with some of the lowest win%, so a bare win% cell can't tell "played
+    worse at this hour" apart from "faced tougher opponents at this hour."
+    Returns (win_pct_pivot, avg_rating_diff_pivot) -- callers pass the
+    second into charts.heatmap's hover_extra, they are never blended into
+    one number."""
     df = duck_conn.execute("""
         SELECT day_of_week, hour_utc,
                COUNT(*) AS n,
-               100.0 * SUM(CASE WHEN outcome_for_player='win' THEN 1 ELSE 0 END) / COUNT(*) AS win_pct
+               100.0 * SUM(CASE WHEN outcome_for_player='win' THEN 1 ELSE 0 END) / COUNT(*) AS win_pct,
+               AVG(rating_diff) AS avg_rating_diff
         FROM db.games
         WHERE day_of_week IS NOT NULL AND hour_utc IS NOT NULL AND outcome_for_player IS NOT NULL
         GROUP BY day_of_week, hour_utc
     """).fetchdf()
-    return df.pivot(index="day_of_week", columns="hour_utc", values="win_pct")
+    win_pivot = df.pivot(index="day_of_week", columns="hour_utc", values="win_pct")
+    rating_pivot = df.pivot(index="day_of_week", columns="hour_utc", values="avg_rating_diff")
+    return win_pivot, rating_pivot
 
 
 def get_material_structure_table(sqlite_conn, structure_type="endgame", config_path=None, top_n=15):
