@@ -233,6 +233,37 @@ def run_check_imports():
     sys.exit(0)
 
 
+def check_cpu_compat():
+    """Preflight for the v0.1.16 Windows pilot crash: numpy 2.x wheels
+    are compiled against the x86-64-v2 CPU baseline and raise
+    RuntimeError at import on older machines. The import actually
+    happens deep in the server subprocess (app.py -> pandas -> numpy),
+    where it surfaces as a raw traceback and a dead "server did not
+    start in time" launcher. Importing numpy here, in the launcher,
+    turns that into one readable sentence before anything is spawned.
+
+    numpy is pinned to 1.26.4 (old baseline) in requirements.txt, so
+    with the pin in place this should never fire on hardware newer than
+    ~2005 -- it exists so that if the pin is ever lifted, old-CPU users
+    get told what happened instead of a traceback. Costs one extra
+    numpy import (~100ms) at launch."""
+    try:
+        import numpy  # noqa: F401
+    except RuntimeError as exc:
+        if "baseline" not in str(exc).lower():
+            raise
+        print(
+            "Chesswright cannot run on this computer: its processor does "
+            "not support the CPU instructions this build was compiled "
+            f"with.\n(Details: {exc})\n"
+            "Please report this at "
+            "https://github.com/Hawi254/chesswright/issues so we know "
+            "which hardware to support.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
 def launch_server_subprocess(port, config_path):
     """Re-invokes this same executable with --server-mode. sys.executable
     alone is correct in BOTH modes: a real Python interpreter in a source
@@ -257,6 +288,7 @@ def main():
         run_server_mode(port, config_path)
         return
 
+    check_cpu_compat()
     user_config = ensure_user_data()
     port = free_port()
     url = f"http://127.0.0.1:{port}"

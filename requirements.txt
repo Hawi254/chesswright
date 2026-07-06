@@ -2,6 +2,14 @@ chess==1.11.2
 PyYAML==6.0.3
 duckdb==1.5.4
 pandas==3.0.3
+# Transitive dep, pinned deliberately: numpy 2.x wheels require the
+# x86-64-v2 CPU baseline (SSE4.2 etc.) and refuse to start on older
+# machines -- a real Windows pilot tester's crash (v0.1.16). 1.26.x is
+# the last line with the old, low baseline; it's also what local dev
+# runs, so the shipped bundle matches what's actually tested. Caps
+# Python at 3.12. Before unpinning, decide whether dropping pre-2009
+# Intel / pre-2011 AMD hardware is acceptable.
+numpy==1.26.4
 matplotlib==3.11.0
 streamlit==1.58.0
 anthropic==0.111.0
