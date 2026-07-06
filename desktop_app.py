@@ -177,6 +177,62 @@ class NativeApi:
         return result[0] if result else None
 
 
+def run_check_imports():
+    """CI smoke mode: import every module the dashboard loads at runtime,
+    inside THIS (in CI: frozen) interpreter, and exit non-zero if any is
+    missing/unimportable.
+
+    This is the direct guard against the recurring frozen-bundle failure
+    class (BRIEF §6n): a backend module dropped from chesswright.spec's
+    BACKEND_MODULES list, or a third-party dependency never collected,
+    builds cleanly and only crashes when dashboard/app.py's own top-level
+    imports run at first page load -- which the build matrix's path-grep
+    can't see and, historically, a pilot tester found first. dashboard/
+    app.py itself is deliberately NOT imported (it runs st.navigation/
+    pg.run() at module scope, which needs a live Streamlit runtime); every
+    module app.py imports IS, plus the whole backend and the data package,
+    so a missing bundled file surfaces here as ImportError instead of at
+    runtime.
+
+    The module set is discovered by scanning the bundled tree (root *.py =
+    backend, dashboard/*.py = views/helpers), not hardcoded, so a newly
+    added view is covered automatically without editing this check."""
+    root = resource_dir()
+    sys.path.insert(0, str(root))
+    sys.path.insert(0, str(root / "dashboard"))
+    # Some modules read config at import; point at the bundled read-only
+    # copy so that resolves rather than falling back unpredictably.
+    os.environ.setdefault("CHESSWRIGHT_CONFIG_PATH", str(root / "config.yaml"))
+
+    import importlib
+
+    # desktop_app: this launcher itself (already running). app: needs a
+    # live Streamlit runtime at import (pg.run()), tested by the live-boot
+    # smoke check instead.
+    skip = {"desktop_app", "app"}
+    backend = sorted(p.stem for p in root.glob("*.py") if p.stem not in skip)
+    views = sorted(p.stem for p in (root / "dashboard").glob("*.py")
+                   if p.stem not in skip)
+    targets = backend + views + ["data"]  # data = the dashboard/data package
+
+    failures = []
+    for name in targets:
+        try:
+            importlib.import_module(name)
+        except Exception as exc:  # noqa: BLE001 -- report every failure, not just ImportError
+            failures.append((name, f"{type(exc).__name__}: {exc}"))
+
+    if failures:
+        print("FAIL: frozen-bundle import check found unimportable modules:",
+              file=sys.stderr)
+        for name, err in failures:
+            print(f"  - {name}: {err}", file=sys.stderr)
+        sys.exit(1)
+    print(f"OK: all {len(targets)} runtime modules imported cleanly "
+          f"({len(backend)} backend, {len(views)} dashboard, 1 data package).")
+    sys.exit(0)
+
+
 def launch_server_subprocess(port, config_path):
     """Re-invokes this same executable with --server-mode. sys.executable
     alone is correct in BOTH modes: a real Python interpreter in a source
@@ -192,6 +248,9 @@ def launch_server_subprocess(port, config_path):
 
 
 def main():
+    if "--check-imports" in sys.argv:
+        run_check_imports()
+        return
     if "--server-mode" in sys.argv:
         port = int(sys.argv[sys.argv.index("--port") + 1])
         config_path = sys.argv[sys.argv.index("--config") + 1]

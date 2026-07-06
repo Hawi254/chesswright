@@ -43,10 +43,13 @@ jobs:
         include:
           - os: ubuntu-latest
             artifact_name: chesswright-linux
+            exe: dist/chesswright/chesswright
           - os: windows-latest
             artifact_name: chesswright-windows
+            exe: dist/chesswright/chesswright.exe
           - os: macos-latest
             artifact_name: chesswright-macos
+            exe: dist/chesswright/chesswright
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -120,6 +123,26 @@ jobs:
             exit 1
           fi
           echo "OK: gi package is present in the frozen Linux bundle."
+
+      # Imports EVERY module the dashboard loads at runtime, inside the
+      # FROZEN interpreter -- the direct guard against a backend module
+      # dropped from chesswright.spec's BACKEND_MODULES, or an uncollected
+      # third-party dep (BRIEF §6n). The build succeeding does not mean
+      # dashboard/app.py's own top-level imports resolve at runtime; this
+      # runs them, so that failure surfaces here instead of on a pilot's
+      # first page load. Cross-platform: a bundling gap can differ per OS.
+      - name: Smoke-test the frozen bundle's import graph
+        shell: bash
+        run: "${{ matrix.exe }} --check-imports"
+
+      # Boots the built server headlessly and confirms it actually serves
+      # (health ok + / returns Streamlit's frontend, not a 404) -- catches
+      # the streamlit-static-not-bundled class the import check can't see.
+      # Linux only: the serving/static layer isn't OS-specific, and one
+      # platform proving it is enough to fail a broken release.
+      - name: Smoke-test the frozen bundle boots and serves (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: python scripts/ci_smoke_boot.py dist/chesswright/chesswright
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
