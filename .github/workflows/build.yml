@@ -105,10 +105,17 @@ jobs:
       # to a pilot tester's older machine precisely because transitives
       # were re-resolved fresh on every CI build. See constraints.txt's
       # own header for how to regenerate it deliberately.
+      # --ignore-installed: on Linux the venv inherits system site-packages
+      # (for gi/GTK), and apt's copies of common deps (requests, certifi,
+      # cryptography, ...) otherwise "satisfy" requirements so pip never
+      # installs the pinned versions -- the first constraint-checked run
+      # proved every prior Linux bundle had been shipping Ubuntu's apt
+      # versions, not the resolved ones. This forces the full pinned
+      # closure into the venv, shadowing the system copies.
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt -c constraints.txt
+          pip install --ignore-installed -r requirements.txt -c constraints.txt
           pip install pyinstaller -c constraints.txt
 
       # The constraints file only binds what pip installs in the step

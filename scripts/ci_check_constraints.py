@@ -13,8 +13,8 @@ its pin or be explicitly allowlisted below.
 
 Run on every CI build, all three platforms: python scripts/ci_check_constraints.py
 """
-import site
 import sys
+import sysconfig
 import pathlib
 from importlib import metadata
 
@@ -24,6 +24,10 @@ from importlib import metadata
 ALLOWED_UNPINNED_PREFIXES = (
     "pip", "setuptools", "wheel", "pyinstaller-hooks-contrib",
     "altgraph", "pefile", "macholib", "pywin32",  # pyinstaller's own deps
+    # Preinstalled pipx toolchain on GitHub's Windows runner image --
+    # never imported by the app, never collected by the spec (confirmed
+    # by the v0.1.18 run: present before our install step ran at all).
+    "argcomplete", "userpath", "platformdirs", "pipx",
 )
 
 
@@ -43,13 +47,14 @@ def main() -> int:
 
     failures = []
     unpinned = []
-    # Enumerate only THIS environment's own site-packages (where pip just
+    # Enumerate only THIS environment's own purelib (where pip just
     # installed to), not inherited system-site packages -- the Linux CI
     # venv is deliberately --system-site-packages for gi/GTK (see
-    # build.yml), and Ubuntu's dozens of apt-installed Python packages are
-    # not what gets frozen from pip's install set.
+    # build.yml), and on Debian/Ubuntu site.getsitepackages() can include
+    # the system dist-packages dir too, which would report apt's copy of
+    # a package alongside the pinned venv copy that actually shadows it.
     seen_pinned = set()
-    for dist in metadata.distributions(path=site.getsitepackages()):
+    for dist in metadata.distributions(path=[sysconfig.get_paths()["purelib"]]):
         name = normalize(dist.metadata["Name"])
         if name in pins:
             seen_pinned.add(name)
