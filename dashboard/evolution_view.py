@@ -210,12 +210,28 @@ def _render_deep_dive(counts, duck_conn, color, tc, tc_choice) -> None:
                 "shows only quarters with 30+ analyzed moves in this opening."
             )
         else:
+            acpl = acpl.assign(
+                hover_coverage=acpl.apply(
+                    lambda r: f"{int(r.n_games)} of {int(r.n_total_games)} games ({r.coverage_pct:.1f}%)",
+                    axis=1))
             st.plotly_chart(
                 charts.line_chart(acpl, "label", "acpl", theme.ACCENT_GOLD,
                                   height=300, x_title="Quarter",
-                                  y_title="Avg centipawn loss"),
+                                  y_title="Avg centipawn loss",
+                                  hover_extra=("hover_coverage", "Analyzed")),
                 use_container_width=True)
             st.caption(
                 "Lower is more accurate. Only quarters with 30+ analyzed "
                 "moves count; the gaps are where analysis is thin."
             )
+            min_row = acpl.loc[acpl.coverage_pct.idxmin()]
+            max_row = acpl.loc[acpl.coverage_pct.idxmax()]
+            if max_row.coverage_pct >= 2 * max(min_row.coverage_pct, 0.1):
+                st.caption(
+                    f"⚠️ These quarters aren't equally analyzed -- from "
+                    f"{min_row.coverage_pct:.1f}% in {min_row.label} to "
+                    f"{max_row.coverage_pct:.1f}% in {max_row.label}. Analysis "
+                    "prioritizes recently-synced games, so a shift here can "
+                    "mean \"this quarter finally got analyzed\" rather than "
+                    "a real accuracy change. Hover a point for its own coverage."
+                )

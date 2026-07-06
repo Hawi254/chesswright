@@ -239,29 +239,59 @@ def get_family_acpl_by_period(duck_conn, opening_family: str, player_color: str,
     scan genuinely depends on). Only meaningful for the family grouping:
     the deep-dive selector never offers ECO sections. Analyzed player
     moves only; quarters with < min_moves_per_quarter analyzed moves are
-    dropped as noise."""
+    dropped as noise.
+
+    Also returns n_total_games/coverage_pct per quarter (of all games in
+    this family/color/time-control, not just this scan's analyzed ones) --
+    same skew-honesty reasoning as overview.get_acpl_trajectory: analysis
+    coverage is not spread evenly across calendar time (ingest.py bumps
+    freshly-synced games to the front of the analysis queue), so a quarter
+    with a handful of analyzed games out of a much larger total reads, on
+    the bare ACPL line, as an equally-confident point as a heavily-analyzed
+    one. Verified live (2026-07-07) on White's "English Opening" (flagged
+    as "Rising" by classify_evolution): only 3 of 31 quarters ever clear
+    the min_moves_per_quarter floor at all -- 2018 Q4 (1 of 22 games
+    analyzed, 4.5% coverage), 2025 Q2 (24 of 30 games, 80.0%), 2026 Q2
+    (6 of 39 games, 15.4%) -- every other quarter is 0% analyzed. Without
+    disclosure, that 3-point
+    line spanning 2018-2026 reads as an accuracy trend when it's really
+    "whichever quarter the backlog quota happened to reach." The view uses
+    coverage_pct to disclaim this rather than hide it, same posture as
+    every other coverage gap in this package."""
     tc_clause = "AND g.time_control_category = ?" if time_control else ""
     params = [opening_family, player_color] + ([time_control] if time_control else [])
     df = duck_conn.execute(f"""
+        WITH totals AS (
+            SELECT g.year, ((g.month - 1) // 3) + 1 AS quarter,
+                   COUNT(*) AS n_total_games
+            FROM db.games g
+            WHERE g.opening_family = ? AND g.player_color = ? {tc_clause}
+              AND g.year IS NOT NULL AND g.month IS NOT NULL
+            GROUP BY 1, 2
+        )
         SELECT
             g.year,
             ((g.month - 1) // 3) + 1        AS quarter,
             COUNT(*)                        AS n_moves,
             COUNT(DISTINCT m.game_id)       AS n_games,
-            AVG(m.cpl)                      AS acpl
+            AVG(m.cpl)                      AS acpl,
+            t.n_total_games
         FROM db.moves m
         JOIN db.games g ON g.id = m.game_id
+        JOIN totals t ON t.year = g.year AND t.quarter = ((g.month - 1) // 3) + 1
         WHERE g.opening_family = ?
           AND g.player_color   = ?
           {tc_clause}
           AND m.is_player_move = 1
           AND m.cpl IS NOT NULL
-        GROUP BY 1, 2
+        GROUP BY 1, 2, t.n_total_games
         ORDER BY 1, 2
-    """, params).fetchdf()
+    """, params + params).fetchdf()
+    cols = ["label", "n_moves", "n_games", "acpl", "n_total_games", "coverage_pct"]
     if df.empty:
-        return pd.DataFrame(columns=["label", "n_moves", "n_games", "acpl"])
+        return pd.DataFrame(columns=cols)
+    df["coverage_pct"] = 100.0 * df["n_games"] / df["n_total_games"]
     df = df[df["n_moves"] >= min_moves_per_quarter].copy()
     df["label"] = (df["year"].astype(int).astype(str)
                    + " Q" + df["quarter"].astype(int).astype(str))
-    return df.reset_index(drop=True)
+    return df[cols].reset_index(drop=True)

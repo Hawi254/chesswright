@@ -32,6 +32,15 @@ def render(self_page, detail_page):
 
     st.write(f"{len(explorer_df):,} games total "
              f"({int(explorer_df.badge_count.gt(0).sum()):,} with at least one badge)")
+    if len(explorer_df):
+        n_analyzed = int((explorer_df.analysis_status == "done").sum())
+        st.caption(
+            f"All badges except Giant-killing need engine analysis, so a game "
+            f"with zero badges may just be unanalyzed, not undramatic -- "
+            f"{n_analyzed:,} of {len(explorer_df):,} games "
+            f"({100.0 * n_analyzed / len(explorer_df):.1f}%) have been analyzed so far. "
+            f"Run more batches from Analysis Jobs to grow this."
+        )
 
     with st.container(border=True):
         st.subheader("Filter")
@@ -40,12 +49,18 @@ def render(self_page, detail_page):
         selected_badges = st.pills("Filter by story badge", list(badge_labels.keys()),
                                     selection_mode="multi")
         opponent_search = st.text_input("Opponent name contains")
+        analyzed_only = st.checkbox(
+            "Only show analyzed games",
+            help="Hide games that can't earn any badge but Giant-killing "
+                 "because they haven't been analyzed yet.")
 
     filtered = explorer_df
     for label in selected_badges:
         filtered = filtered[filtered[badge_labels[label]]]
     if opponent_search:
         filtered = filtered[filtered.opponent_name.str.contains(opponent_search, case=False, na=False)]
+    if analyzed_only:
+        filtered = filtered[filtered.analysis_status == "done"]
 
     st.write(f"Showing {len(filtered):,} games, sorted by drama score (most dramatic first)")
     st.caption("Drama score: a composite of this game's badges and eval swings -- the "

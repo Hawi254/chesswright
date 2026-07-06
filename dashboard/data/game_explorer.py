@@ -87,11 +87,23 @@ def get_game_badges(duck_conn):
 def get_game_explorer_table(duck_conn):
     """Joins game_badges with the header info the Game Explorer table
     needs to display/filter on (date, opponent, color, result, time
-    control, opening) -- one row per game with badges, ready to filter/sort."""
+    control, opening) -- one row per game with badges, ready to filter/sort.
+
+    Includes analysis_status: 4 of the 5 badges (everything except
+    giant_killing) require engine analysis, so badge_count=0 does NOT mean
+    "nothing dramatic happened" for a game that's never been analyzed --
+    it's guaranteed 0 regardless. Verified live (2026-07-07): only
+    944/32,295 games (2.9%) have any engine-derived move data at all, so
+    31,103 of the 32,040 non-giant-killing games (97.1%) are structurally
+    unable to show a badge. The view uses this column to disclose that gap
+    rather than let the drama-score sort silently read "unanalyzed" as
+    "boring," same "explain, don't hide" posture as every other coverage
+    gap in this package."""
     badges = get_game_badges(duck_conn)
     headers = duck_conn.execute("""
         SELECT id AS game_id, utc_date, opponent_name, opponent_rating, player_color,
-               outcome_for_player, time_control_category, opening_family, rating_diff, site
+               outcome_for_player, time_control_category, opening_family, rating_diff,
+               site, analysis_status
         FROM db.games
     """).fetchdf()
     return headers.merge(badges, on="game_id", how="inner").sort_values("drama_score", ascending=False)
