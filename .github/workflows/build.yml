@@ -145,6 +145,29 @@ jobs:
           fi
           echo "OK: gi package is present in the frozen Linux bundle."
 
+      # DuckDB's sqlite_scanner is fetched at build time (see
+      # chesswright.spec) precisely so first launch never touches
+      # extensions.duckdb.org -- the v0.1.19 Windows pilot failure was a
+      # firewalled machine dying on that download at startup. Same
+      # lesson as the gi check above: the build succeeding doesn't prove
+      # the file landed in the bundle, and a file being PRESENT doesn't
+      # prove it loads (wrong platform/duckdb version would also fail
+      # only at runtime). So load it, from the exact artifact about to
+      # ship, on every platform in the matrix.
+      - name: Verify bundled DuckDB sqlite extension loads (all platforms)
+        shell: bash
+        run: |
+          python - <<'EOF'
+          import pathlib, sys
+          import duckdb
+          ext = pathlib.Path("dist/chesswright/_internal/duckdb_extensions/sqlite_scanner.duckdb_extension")
+          if not ext.exists():
+              print("::error::sqlite_scanner.duckdb_extension missing from the frozen bundle -- first launch would need extensions.duckdb.org, the exact v0.1.19 pilot failure.")
+              sys.exit(1)
+          duckdb.connect().execute(f"LOAD '{ext.resolve().as_posix()}'")
+          print(f"OK: bundled sqlite_scanner loads in duckdb {duckdb.__version__}.")
+          EOF
+
       # Imports EVERY module the dashboard loads at runtime, inside the
       # FROZEN interpreter -- the direct guard against a backend module
       # dropped from chesswright.spec's BACKEND_MODULES, or an uncollected

@@ -32,6 +32,20 @@ datas += [(str(ROOT / "migrations"), "migrations")]
 datas += [(str(ROOT / "dashboard"), "dashboard")]
 datas += [(str(ROOT / ".streamlit"), ".streamlit")]
 
+# DuckDB's sqlite extension is downloaded from extensions.duckdb.org, NOT
+# shipped in the duckdb wheel -- so collect_all("duckdb") below can never
+# bundle it, and without this the packaged app's first launch needs the
+# network (a real Windows pilot failure: firewalled machine, IOException
+# at startup). Fetched here at build time -- through the build env's own
+# pinned duckdb, on the target platform's runner, so version and platform
+# always match the interpreter being frozen -- and loaded from
+# _internal/duckdb_extensions/ by dashboard/_common.py at runtime.
+import sys
+sys.path.insert(0, str(ROOT / "scripts"))
+from fetch_duckdb_extensions import fetch as _fetch_duckdb_ext
+_duck_ext = _fetch_duckdb_ext(ROOT / "build_assets" / "duckdb_extensions")
+datas += [(str(_duck_ext), "duckdb_extensions")]
+
 # streamlit needs its own DATA files bundled, not just its .py source --
 # confirmed by two separate live failures, not assumed from the research
 # alone: (1) PackageNotFoundError for streamlit's own version (it calls

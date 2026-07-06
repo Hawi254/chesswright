@@ -230,6 +230,51 @@ def _build_duck_snapshot(db_path) -> str:
     return str(snap)
 
 
+def _bundled_sqlite_extension_path():
+    # In the frozen bundle, dashboard/ and duckdb_extensions/ are sibling
+    # data directories under _internal/ (see chesswright.spec); in a
+    # source checkout the same relative location is the repo root, where
+    # the directory normally doesn't exist -- that's the INSTALL fallback.
+    return pathlib.Path(__file__).resolve().parent.parent \
+        / "duckdb_extensions" / "sqlite_scanner.duckdb_extension"
+
+
+def _load_duckdb_sqlite_extension(conn):
+    """DuckDB's sqlite extension is NOT part of the duckdb wheel --
+    `INSTALL sqlite` downloads it from extensions.duckdb.org on first
+    use. A Windows pilot tester whose machine couldn't reach that host
+    got an IOException before the app drew a single page, so packaged
+    builds now ship the extension file (fetched at build time by
+    scripts/fetch_duckdb_extensions.py, mapped by chesswright.spec to
+    _internal/duckdb_extensions/, i.e. this file's parent's parent) and
+    load it from disk -- first launch needs no network at all. The
+    INSTALL path survives only as the fallback for source checkouts
+    (where the bundled file doesn't exist) and as a rescue if the
+    bundled copy is somehow unloadable on a machine that does have
+    network."""
+    bundled = _bundled_sqlite_extension_path()
+    if bundled.exists():
+        # SQL-escape the quotes: a Windows install path can legitimately
+        # contain one (C:/Users/O'Brien/...).
+        quoted = bundled.as_posix().replace("'", "''")
+        try:
+            conn.execute(f"LOAD '{quoted}'")
+            return
+        except duckdb.Error:
+            pass
+    try:
+        conn.execute("INSTALL sqlite; LOAD sqlite;")
+    except duckdb.Error as e:
+        raise RuntimeError(
+            "Chesswright could not load DuckDB's sqlite extension. The "
+            "packaged app ships it built in; running from source needs "
+            "one-time internet access so DuckDB can download it "
+            "(`INSTALL sqlite`), or run "
+            "`python scripts/fetch_duckdb_extensions.py` once while "
+            "online."
+        ) from e
+
+
 def get_duckdb_connection(db_path):
     """Snapshots db_path (see the snapshot-isolation comment above) and
     attaches the snapshot read-only. Retried because the backup's read of
@@ -238,7 +283,7 @@ def get_duckdb_connection(db_path):
     to done" race the original live-file ATTACH retry was added for
     (caught live on the Opponent Prep page)."""
     conn = duckdb.connect()
-    conn.execute("INSTALL sqlite; LOAD sqlite;")
+    _load_duckdb_sqlite_extension(conn)
     _cleanup_stale_snapshots(db_path)
     for attempt in range(1, _ATTACH_RETRY_ATTEMPTS + 1):
         try:
