@@ -140,10 +140,21 @@ jobs:
       # v0.1.20 macOS build failure, Linux/Windows unaffected since they
       # have no codesign step). Copying it in here, entirely outside
       # PyInstaller's Analysis/COLLECT TOC, sidesteps that reclassification
-      # completely. macOS still needs its own ad-hoc signature -- Apple
-      # Silicon refuses to dlopen() an unsigned dylib -- just via a plain
-      # `codesign -s -` (no --all-architectures/--timestamp, the two
-      # extra flags PyInstaller's own signer used that failed here).
+      # completely.
+      #
+      # v0.1.21 then tried re-signing it ourselves on macOS with a plain
+      # `codesign -s - --force` (no --all-architectures/--timestamp) --
+      # SAME failure, "main executable failed strict validation", proving
+      # the flags were never the cause. The real signal was codesign's own
+      # first line of output: "replacing existing signature" -- the file
+      # DuckDB serves already carries a valid signature (applied by
+      # DuckDB's own build, presumably accounting for their footer
+      # correctly), and it's OUR re-sign attempt that breaks it by
+      # re-hashing under standard Mach-O assumptions that don't match
+      # DuckDB's footer layout. Fix: never touch its signature at all --
+      # `cp` alone preserves the original file bytes, signature included,
+      # so Apple Silicon's dlopen() requirement is already satisfied by
+      # DuckDB's own signing, not ours.
       - name: Bundle DuckDB sqlite extension (post-build, outside PyInstaller's TOC)
         shell: bash
         run: |
@@ -151,8 +162,8 @@ jobs:
           cp build_assets/duckdb_extensions/sqlite_scanner.duckdb_extension \
              dist/chesswright/_internal/duckdb_extensions/
           if [ "$RUNNER_OS" = "macOS" ]; then
-            codesign -s - --force dist/chesswright/_internal/duckdb_extensions/sqlite_scanner.duckdb_extension
-            echo "OK: ad-hoc signed sqlite_scanner.duckdb_extension for macOS."
+            codesign --verify --verbose dist/chesswright/_internal/duckdb_extensions/sqlite_scanner.duckdb_extension
+            echo "OK: sqlite_scanner.duckdb_extension carries a valid pre-existing signature, left untouched."
           fi
 
       # Confirmed live (the actual bug, not a hypothetical), not just
