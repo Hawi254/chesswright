@@ -73,6 +73,36 @@ class TestIngestPipeline:
             assert n > 0, f"Game {gid} has no moves"
         conn.close()
 
+    def test_legal_reply_count_only_set_for_zero_time_moves(self, tmp_path):
+        """legal_reply_count (migrations/0032) is populated exactly for the
+        instant-move (time_spent_seconds=0) population and NULL everywhere
+        else -- ply 1 of synthetic_games.pgn's first game is a natural
+        zero-time move (both colors' first %clk reading equals the base
+        clock, so last_clock - clock_seconds + increment == 0)."""
+        import chess
+        import ingest
+        db_path = _make_migrated_db_file(tmp_path)
+        pgn_path = FIXTURES / "synthetic_games.pgn"
+        ingest.ingest(pgn_path=str(pgn_path), db_path=db_path,
+                      player_name="TestPlayerWhite")
+        conn = sqlite3.connect(db_path)
+
+        zero_time_rows = conn.execute(
+            "SELECT fen_before, legal_reply_count FROM moves WHERE time_spent_seconds=0"
+        ).fetchall()
+        assert len(zero_time_rows) > 0, "Fixture expected to contain at least one zero-time move"
+        for fen_before, legal_reply_count in zero_time_rows:
+            assert legal_reply_count is not None
+            assert legal_reply_count == chess.Board(fen_before).legal_moves.count()
+
+        nonzero_count = conn.execute("""
+            SELECT COUNT(*) FROM moves
+            WHERE time_spent_seconds IS NOT NULL AND time_spent_seconds != 0
+              AND legal_reply_count IS NOT NULL
+        """).fetchone()[0]
+        assert nonzero_count == 0
+        conn.close()
+
     def test_time_control_category_parsed(self, tmp_path):
         import ingest
         db_path = _make_migrated_db_file(tmp_path)
@@ -98,6 +128,61 @@ class TestIngestPipeline:
         total = conn.execute("SELECT COUNT(*) FROM games").fetchone()[0]
         conn.close()
         assert total == r1[0], "Reingest should not duplicate games"
+
+
+@pytest.mark.integration
+class TestLegalReplyCountBackfill:
+    def test_backfill_fills_nulled_out_zero_time_rows(self, tmp_path):
+        """Simulates data ingested before migrations/0032 existed: NULL out
+        legal_reply_count on the zero-time rows ingest.py just populated,
+        then confirm backfill_legal_reply_count.py restores the exact same
+        values from fen_before alone."""
+        import chess
+        import ingest
+        import backfill_legal_reply_count as backfill_mod
+        db_path = _make_migrated_db_file(tmp_path)
+        pgn_path = FIXTURES / "synthetic_games.pgn"
+        ingest.ingest(pgn_path=str(pgn_path), db_path=db_path,
+                      player_name="TestPlayerWhite")
+
+        conn = sqlite3.connect(db_path)
+        conn.execute("UPDATE moves SET legal_reply_count=NULL WHERE time_spent_seconds=0")
+        conn.commit()
+        assert conn.execute(
+            "SELECT COUNT(*) FROM moves WHERE time_spent_seconds=0 AND legal_reply_count IS NULL"
+        ).fetchone()[0] > 0
+
+        backfill_mod.backfill(db_path)
+
+        rows = conn.execute(
+            "SELECT fen_before, legal_reply_count FROM moves WHERE time_spent_seconds=0"
+        ).fetchall()
+        assert len(rows) > 0
+        for fen_before, legal_reply_count in rows:
+            assert legal_reply_count == chess.Board(fen_before).legal_moves.count()
+        conn.close()
+
+    def test_backfill_is_idempotent(self, tmp_path):
+        import ingest
+        import backfill_legal_reply_count as backfill_mod
+        db_path = _make_migrated_db_file(tmp_path)
+        pgn_path = FIXTURES / "synthetic_games.pgn"
+        ingest.ingest(pgn_path=str(pgn_path), db_path=db_path,
+                      player_name="TestPlayerWhite")
+        conn = sqlite3.connect(db_path)
+        conn.execute("UPDATE moves SET legal_reply_count=NULL WHERE time_spent_seconds=0")
+        conn.commit()
+
+        backfill_mod.backfill(db_path)
+        first_pass = conn.execute(
+            "SELECT id, legal_reply_count FROM moves WHERE time_spent_seconds=0 ORDER BY id"
+        ).fetchall()
+        backfill_mod.backfill(db_path)  # second run should be a no-op (nothing left NULL)
+        second_pass = conn.execute(
+            "SELECT id, legal_reply_count FROM moves WHERE time_spent_seconds=0 ORDER BY id"
+        ).fetchall()
+        assert first_pass == second_pass
+        conn.close()
 
 
 @pytest.mark.integration

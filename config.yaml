@@ -200,6 +200,17 @@ analytics:
                                                              # both being low doesn't count, only
                                                              # a real time-pressure imbalance.
   structure_min_games_per_group: 5        # min games reaching a structure to include it at all.
+  instant_move_exclude_max_ply: 10        # instant-move (time_spent_seconds=0) analysis excludes
+                                            # plies at or below this -- opening book familiarity
+                                            # dominates the zero-time rate here (confirmed live:
+                                            # 41.9% of plies 1-10 vs 8.9% of plies 11-30), not
+                                            # premove-shaped behavior, so it would swamp any real
+                                            # signal if left in.
+  instant_move_low_legal_replies: 3        # legal_reply_count at or below this counts as
+                                             # "forced-ish" when bucketing instant moves -- fewer
+                                             # legal replies makes a pre-queued move more plausible
+                                             # (an instant move choosing among 30 legal options
+                                             # is a different, less explicable, thing).
   structure_top_n: 15                       # cap each structure report to the N most-frequent.
 
 interactive_engine:                  # settings for the on-demand engine used in the

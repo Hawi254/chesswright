@@ -38,6 +38,16 @@ def cached_thinking_time_blunder_correlation(_duck_conn):
     return data.get_thinking_time_blunder_correlation(_duck_conn)
 
 
+@st.cache_data(show_spinner="Computing instant-move rate by game phase…")
+def cached_instant_move_rate_by_phase(_duck_conn):
+    return data.get_instant_move_rate_by_phase(_duck_conn)
+
+
+@st.cache_data(show_spinner="Computing accuracy of instant moves…")
+def cached_instant_move_accuracy(_duck_conn):
+    return data.get_instant_move_accuracy_by_legal_replies(_duck_conn)
+
+
 @st.cache_data(show_spinner="Computing accuracy by game phase…")
 def cached_phase_accuracy(_sqlite_conn):
     return data.get_phase_accuracy(_sqlite_conn)
@@ -153,6 +163,36 @@ def _render_tab_clock(sqlite_conn, duck_conn):
         st.plotly_chart(charts.bar_chart(think_df, "bucket", "blunder_rate", theme.NEGATIVE,
                                           x_title="Time spent on the move", y_title="Blunder rate (% of moves)"),
                          theme=None)
+
+    with st.container(border=True):
+        st.subheader("Instant moves (0s recorded thinking time)")
+        st.caption(
+            "Lichess and chess.com clocks only resolve to the nearest second, so this can't "
+            "tell a genuinely pre-queued premove apart from an instantly-recognized recapture "
+            "or book move -- there's no way to know which for sure. What it CAN show: how often "
+            "this happens by game phase, and whether it correlates with worse moves once the "
+            "opening (book-move familiarity, not fast-play behavior) is excluded.")
+        rate_df = cached_instant_move_rate_by_phase(duck_conn)
+        if rate_df.empty:
+            st.info(theme.thin_data_message(0, 1))
+        else:
+            st.plotly_chart(charts.bar_chart(rate_df, "bucket", "instant_pct", theme.NEGATIVE,
+                                              x_title="Game phase", y_title="Instant moves (% of moves)"),
+                             theme=None)
+
+        st.markdown("**Accuracy of instant moves, opening excluded**")
+        result_df, n_analyzed, n_total_in_scope = cached_instant_move_accuracy(duck_conn)
+        if n_total_in_scope == 0 or result_df.empty:
+            st.info(theme.thin_data_message(n_analyzed, 1))
+        else:
+            coverage_pct = 100.0 * n_analyzed / n_total_in_scope
+            st.caption(
+                f"Based on {n_analyzed} analyzed instant move(s) out of {n_total_in_scope} "
+                f"total ({coverage_pct:.1f}% analyzed) -- a small, backlog-skewed sample right "
+                f"now, not a settled finding. Fills in as more games are analyzed.")
+            st.plotly_chart(charts.bar_chart(result_df, "bucket", "blunder_rate", theme.NEGATIVE,
+                                              x_title="Legal replies available", y_title="Blunder rate (% of moves)"),
+                             theme=None)
 
 
 @st.fragment

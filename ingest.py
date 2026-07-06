@@ -241,6 +241,13 @@ def process_one_game(game, game_id, white, black, player_name, variant_policy, c
         if clock_seconds is not None:
             last_clock[color] = clock_seconds
 
+        # legal_reply_count: only worth computing for the exact-zero-time
+        # "instant move" population (see migrations/0032) -- the negative-
+        # time rows are clock-tick rounding noise, not signal (confirmed
+        # live: 96 of 312,336 zero-or-negative rows), and every other move
+        # doesn't need this at all.
+        legal_reply_count = board.legal_moves.count() if time_spent == 0 else None
+
         move_rows.append((
             game_id, ply, move_number, color, san, move.uci(),
             chess.square_name(move.from_square), chess.square_name(move.to_square),
@@ -248,6 +255,7 @@ def process_one_game(game, game_id, white, black, player_name, variant_policy, c
             int(is_capture), int(is_check), int(is_castle), int(is_promotion),
             clock_seconds, time_spent,
             fen_before, zobrist_hash, material_sig, is_player_move, material_delta,
+            legal_reply_count,
         ))
         board.push(move)
 
@@ -342,8 +350,9 @@ def process_one_game(game, game_id, white, black, player_name, variant_policy, c
             game_id, ply, move_number, color, san, uci, from_square, to_square,
             piece, is_capture, is_check, is_castle, is_promotion,
             clock_seconds, time_spent_seconds,
-            fen_before, zobrist_hash, material_sig, is_player_move, material_delta
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            fen_before, zobrist_hash, material_sig, is_player_move, material_delta,
+            legal_reply_count
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, move_rows)
 
     return "inserted", (year, suspicious_zero_ply)

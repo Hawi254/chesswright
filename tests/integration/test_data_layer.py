@@ -187,6 +187,58 @@ class TestTacticalData:
 
 
 @pytest.mark.integration
+class TestPatternsData:
+    def test_get_instant_move_rate_by_phase_on_empty_db(self, migrated_db):
+        from data.patterns import get_instant_move_rate_by_phase
+        duck, disk, tmp = _duck_from_conn(migrated_db)
+        try:
+            df = get_instant_move_rate_by_phase(duck)
+            assert df is not None
+            assert len(df) == 0
+        finally:
+            duck.close(); disk.close(); os.unlink(tmp)
+
+    def test_get_instant_move_rate_by_phase_with_populated_db(self, populated_db):
+        """synthetic_games.pgn's first game has a natural zero-time move at
+        ply 1 (both colors' first %clk reading equals the base clock) --
+        confirms the opening (1-10) bucket picks it up."""
+        from data.patterns import get_instant_move_rate_by_phase
+        duck, disk, tmp = _duck_from_conn(populated_db)
+        try:
+            df = get_instant_move_rate_by_phase(duck)
+            assert df is not None
+            opening = df[df.bucket == "opening (1-10)"]
+            assert len(opening) == 1
+            assert opening.iloc[0]["n_instant"] > 0
+        finally:
+            duck.close(); disk.close(); os.unlink(tmp)
+
+    def test_get_instant_move_accuracy_by_legal_replies_on_empty_db(self, migrated_db):
+        from data.patterns import get_instant_move_accuracy_by_legal_replies
+        duck, disk, tmp = _duck_from_conn(migrated_db)
+        try:
+            result_df, n_analyzed, n_total = get_instant_move_accuracy_by_legal_replies(duck)
+            assert len(result_df) == 0
+            assert n_analyzed == 0
+            assert n_total == 0
+        finally:
+            duck.close(); disk.close(); os.unlink(tmp)
+
+    def test_get_instant_move_accuracy_by_legal_replies_excludes_opening(self, populated_db):
+        """The only zero-time move in the populated fixture is at ply 1
+        (opening) -- past the default instant_move_exclude_max_ply=10, no
+        candidate moves exist, so this must return safely empty, not raise."""
+        from data.patterns import get_instant_move_accuracy_by_legal_replies
+        duck, disk, tmp = _duck_from_conn(populated_db)
+        try:
+            result_df, n_analyzed, n_total = get_instant_move_accuracy_by_legal_replies(duck)
+            assert result_df is not None
+            assert n_total == 0
+        finally:
+            duck.close(); disk.close(); os.unlink(tmp)
+
+
+@pytest.mark.integration
 class TestVariationsData:
     def test_save_list_roundtrip(self, migrated_db):
         from data.variations import save_variation, list_variations
