@@ -5,10 +5,12 @@
 # don't have to repeat flags on every invocation.
 
 database:
-  path: /home/jasper/Desktop/wider_release/chess_app/chess.db
+  path: chess.db          # relative default; the packaged desktop app rewrites this
+                            # to an absolute path in the per-user data directory on
+                            # first launch (see config.py's set_database_path()).
 
 player:
-  name: "L3-37"          # your lichess username, exactly as it appears
+  name: "CHANGE_ME"      # your lichess username, exactly as it appears
                                # in your profile URL (lichess.org/@/CHANGE_ME).
                                # Every script reads this -- nothing else in
                                # the pipeline is hardcoded to a specific player.
