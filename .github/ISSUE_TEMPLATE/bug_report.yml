@@ -1,0 +1,44 @@
+name: Bug report
+description: Something broke, looked wrong, or wasn't what you expected.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting this — for a pilot build, no detail is too small.
+        No need to have a fix in mind, just what happened and what you expected instead.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What were you doing, what did you expect, and what happened instead?
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Chesswright version
+      description: Shown on the Settings page, or in the zip filename you downloaded.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows
+        - macOS
+        - Linux
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Anything else useful
+      description: Error text, a screenshot, or anything from the terminal/console if you have it. Please don't paste your Claude API key if one appears anywhere.
+    validations:
+      required: false

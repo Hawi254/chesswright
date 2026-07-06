@@ -1,5 +1,8 @@
 # Chesswright
 
+[![License: MIT](https://img.shields.io/github/license/Hawi254/chesswright)](LICENSE)
+[![Latest release](https://img.shields.io/github/v/release/Hawi254/chesswright)](https://github.com/Hawi254/chesswright/releases/latest)
+
 Run real Stockfish-engine analysis of your own lichess games, on your own
 computer. Chesswright finds patterns in how you actually play — openings,
 time pressure, blunder rates, tactical highlights — the same way a chess
