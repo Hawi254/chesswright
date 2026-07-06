@@ -83,6 +83,8 @@ def run_for_opponent(
         parse_duration(cfg["worker"]["max_duration"]),
         cfg["worker"]["consecutive_failure_limit"],
         cfg["worker"]["commit_every_n_moves"],
+        backlog_quota=cfg["ingestion"]["backlog_quota"],
+        backlog_quota_window=cfg["ingestion"]["backlog_quota_window"],
         stop_event=stop_event,
     )
 

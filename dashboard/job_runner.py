@@ -37,7 +37,8 @@ def get_state() -> dict:
 
 
 def start(db_path, depth, multipv, threads, hash_mb, pv_max_len, engine_path,
-          max_games, max_duration_s, consecutive_failure_limit, commit_every_n_moves):
+          max_games, max_duration_s, consecutive_failure_limit, commit_every_n_moves,
+          backlog_quota=0.0, backlog_quota_window=20):
     """Raises RuntimeError synchronously (before spawning anything) if
     either guard is already held -- this process's own registry (Q3's
     cheap in-process layer) or joblock's cross-process PID lock (e.g. a
@@ -72,6 +73,7 @@ def start(db_path, depth, multipv, threads, hash_mb, pv_max_len, engine_path,
         try:
             run_id = worker.run(db_path, depth, multipv, threads, hash_mb, pv_max_len, engine_path,
                                 max_games, max_duration_s, consecutive_failure_limit, commit_every_n_moves,
+                                backlog_quota=backlog_quota, backlog_quota_window=backlog_quota_window,
                                 on_game_done=on_game_done, stop_event=stop_event)
             with _lock:
                 _state.update(status="done", completed_run_id=run_id)

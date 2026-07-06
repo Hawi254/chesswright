@@ -101,7 +101,49 @@ def validate_engine_path(path: str) -> str:
         engine.quit()
 
 
-def fetch_next_game(conn):
+def fetch_next_game(conn, backlog_quota=0.0, backlog_quota_window=20):
+    """Picks the next game to analyze. Plain `ORDER BY queue_order ASC` would
+    always hand back a recency-bumped game (queue_order < 0, set by
+    sync.py's bump_new_games_to_front_of_queue) over a historical-backlog
+    game (queue_order >= 0), for as long as any recency game is pending --
+    which starves the backlog indefinitely, since syncs keep adding new
+    recency games faster than the backlog drains. backlog_quota forces a
+    backlog pick whenever the backlog's share of the last
+    backlog_quota_window completed games is below the configured target.
+
+    Deliberately a ROLLING window, not an all-time cumulative ratio: this
+    codebase's real chess.db has a severe existing skew (recency 87.6% done
+    vs backlog 12.4% done at the time this was written). An all-time ratio
+    would need ~1125 consecutive backlog-only picks before recency-bumped
+    games got touched again at all -- days of real analysis throughput with
+    zero feedback on newly-synced games, which directly defeats the point
+    of bumping them in the first place. A rolling window bounds that
+    starvation to at most backlog_quota_window picks: once the window is
+    saturated with backlog picks, its share hits 100% and the very next
+    pick falls through to the natural (recency-first) order, even if the
+    all-time debt is nowhere near repaid. 0.0 preserves the old
+    always-recency-first behavior."""
+    if backlog_quota > 0:
+        window_rows = conn.execute("""
+            SELECT queue_order FROM games
+            WHERE analysis_status = 'done'
+            ORDER BY analysis_completed_at DESC
+            LIMIT ?
+        """, (backlog_quota_window,)).fetchall()
+        if window_rows:
+            backlog_in_window = sum(1 for (qo,) in window_rows if qo is not None and qo >= 0)
+            if backlog_in_window / len(window_rows) < backlog_quota:
+                row = conn.execute("""
+                    SELECT id, num_plies, last_analyzed_ply
+                    FROM games
+                    WHERE analysis_status IN ('pending', 'in_progress') AND queue_order >= 0
+                    ORDER BY queue_order ASC
+                    LIMIT 1
+                """).fetchone()
+                if row is not None:
+                    return row
+                # no pending backlog game available -- fall through to the overall pick below
+
     row = conn.execute("""
         SELECT id, num_plies, last_analyzed_ply
         FROM games
@@ -330,7 +372,7 @@ def calibrate(db_path, depth, multipv, threads, hash_mb, pv_max_len, engine_path
 
 def run(db_path, depth, multipv, threads, hash_mb, pv_max_len, engine_path,
          max_games, max_duration_s, consecutive_failure_limit, commit_every_n_moves,
-         on_game_done=None, stop_event=None):
+         backlog_quota=0.0, backlog_quota_window=20, on_game_done=None, stop_event=None):
     """on_game_done(games_done, n_plies, finished): optional callback fired
     after each game, used by the packaged app's onboarding wizard to drive
     a live progress bar in-process (BRIEF.md Phase C found that launching
@@ -369,7 +411,8 @@ def run(db_path, depth, multipv, threads, hash_mb, pv_max_len, engine_path,
     configure_supported(engine, {"Threads": threads, "Hash": hash_mb})
     engine_version = engine.id.get("name", "unknown")
     print(f"Engine: {engine_version} | depth={depth} multipv={multipv} threads={threads} hash={hash_mb}MB "
-          f"| max_games={max_games} max_duration={max_duration_s}")
+          f"| max_games={max_games} max_duration={max_duration_s} "
+          f"backlog_quota={backlog_quota} (window={backlog_quota_window})")
 
     cur = conn.execute("""
         INSERT INTO analysis_runs (started_at, engine_version, depth, multipv, threads, hash_mb,
@@ -398,7 +441,7 @@ def run(db_path, depth, multipv, threads, hash_mb, pv_max_len, engine_path,
                 print("Stopping: cancelled.")
                 break
 
-            game_row = fetch_next_game(conn)
+            game_row = fetch_next_game(conn, backlog_quota, backlog_quota_window)
             if game_row is None:
                 print("Queue empty -- all games analyzed.")
                 break
@@ -473,6 +516,12 @@ if __name__ == "__main__":
     ap.add_argument("--max-duration", default=None, help="e.g. 2h, 90m, 5400s")
     ap.add_argument("--consecutive-failure-limit", type=int, default=None)
     ap.add_argument("--commit-every-n-moves", type=int, default=None)
+    ap.add_argument("--backlog-quota", type=float, default=None,
+                     help="0.0-1.0: minimum share of the last --backlog-quota-window analyzed "
+                          "games guaranteed to the historical backlog, even while recency-bumped "
+                          "games are pending.")
+    ap.add_argument("--backlog-quota-window", type=int, default=None,
+                     help="How many of the most recently analyzed games backlog-quota looks at.")
     ap.add_argument("--config", default=None, help="Path to config.yaml (default: ./config.yaml)")
     args = ap.parse_args()
 
@@ -488,6 +537,9 @@ if __name__ == "__main__":
     max_duration_s = parse_duration(pick(args.max_duration, cfg["worker"]["max_duration"]))
     consecutive_failure_limit = pick(args.consecutive_failure_limit, cfg["worker"]["consecutive_failure_limit"])
     commit_every_n_moves = pick(args.commit_every_n_moves, cfg["worker"]["commit_every_n_moves"])
+    backlog_quota = pick(args.backlog_quota, cfg["ingestion"]["backlog_quota"])
+    backlog_quota_window = pick(args.backlog_quota_window, cfg["ingestion"]["backlog_quota_window"])
 
     run(db_path, depth, multipv, threads, hash_mb, pv_max_len, engine_path,
-        max_games, max_duration_s, consecutive_failure_limit, commit_every_n_moves)
+        max_games, max_duration_s, consecutive_failure_limit, commit_every_n_moves,
+        backlog_quota=backlog_quota, backlog_quota_window=backlog_quota_window)

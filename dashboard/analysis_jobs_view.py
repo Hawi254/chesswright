@@ -186,7 +186,9 @@ def render(batch_impact_page=None):
                     cfg["engine"]["threads"], cfg["engine"]["hash_mb"], cfg["engine"]["pv_max_len"],
                     cfg["engine"]["path"], cfg["worker"]["max_games"],
                     parse_duration(cfg["worker"]["max_duration"]),
-                    cfg["worker"]["consecutive_failure_limit"], cfg["worker"]["commit_every_n_moves"])
+                    cfg["worker"]["consecutive_failure_limit"], cfg["worker"]["commit_every_n_moves"],
+                    backlog_quota=cfg["ingestion"]["backlog_quota"],
+                    backlog_quota_window=cfg["ingestion"]["backlog_quota_window"])
             except (RuntimeError, joblock.LockHeldError) as e:
                 st.error(str(e))
             else:

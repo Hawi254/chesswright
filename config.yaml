@@ -71,6 +71,29 @@ ingestion:
                                            # 0.75 sits midway between a normal clock (1.0x)
                                            # and a berserked one (0.5x); not a sensitive
                                            # tuning knob.
+  backlog_quota: 0.5              # 0.0-1.0: minimum share of the last backlog_quota_window
+                                    # analyzed games that must come from the historical backlog
+                                    # (queue_order >= 0), even while sync.py's newly-synced games
+                                    # (queue_order < 0, always sorted first) are still pending.
+                                    # Every sync jumps its new games to the front of the queue --
+                                    # great for fast feedback on recent play, but left unchecked
+                                    # it starves the backlog indefinitely, since new games keep
+                                    # arriving faster than the backlog is processed.
+                                    # worker.py's fetch_next_game forces a backlog pick whenever
+                                    # the backlog's share of recent completions is under this
+                                    # fraction, self-correcting any existing skew and then
+                                    # roughly interleaving thereafter. 0.0 = old behavior (recent
+                                    # games always win). 1.0 = backlog only, recent games wait
+                                    # until the entire backlog is done.
+  backlog_quota_window: 20        # How many of the most recently analyzed games backlog_quota
+                                    # looks at. Deliberately a ROLLING window, not an all-time
+                                    # ratio: an all-time ratio would need to fully repay any
+                                    # existing skew (in this app's real dev database, ~1125
+                                    # consecutive backlog-only picks) before recent games got
+                                    # touched again at all -- days of zero feedback on newly-
+                                    # synced games. A rolling window bounds that worst case to at
+                                    # most this many picks, even when the all-time debt is nowhere
+                                    # near repaid.
 
 annotation:
   mate_score_cap_cp: 1000   # any value >=~800 already saturates the win% sigmoid past 97%,

@@ -486,6 +486,8 @@ def _render_running(db_path):
                    cfg["engine"]["path"], max_games=batch_size, max_duration_s=None,
                    consecutive_failure_limit=cfg["worker"]["consecutive_failure_limit"],
                    commit_every_n_moves=cfg["worker"]["commit_every_n_moves"],
+                   backlog_quota=cfg["ingestion"]["backlog_quota"],
+                   backlog_quota_window=cfg["ingestion"]["backlog_quota_window"],
                    on_game_done=on_game_done)
     except Exception as e:
         error = e
