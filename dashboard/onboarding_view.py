@@ -15,10 +15,13 @@ games, player.name is set) skips straight to a small "add more games"
 shortcut into the fetch/plan/running steps, rather than forcing the
 whole wizard again.
 """
+import datetime
+import json
 import pathlib
 import platform
 import shutil
 import stat
+import time
 
 import requests
 import streamlit as st
@@ -393,6 +396,22 @@ def _render_calibrate(db_path):
         _set_step("plan")
 
 
+def _record_first_run_timing(db_path, record):
+    """Persist the first-run estimate-vs-actual timing next to the user's
+    database, for Phase D's go/no-go signal #5: the live-calibrated
+    estimate (Step 5) must land within 2x of the real measured time. This
+    turns that signal into a real number a pilot tester (or we) can read
+    out of a file, rather than the tester eyeballing "it said ~20 min."
+    Best-effort: written once on a clean completed starter batch, and
+    never allowed to crash or block onboarding if the file can't be
+    written."""
+    try:
+        path = pathlib.Path(db_path).parent / "first_run_timing.json"
+        path.write_text(json.dumps(record, indent=2))
+    except Exception:
+        pass
+
+
 def _render_plan(db_path, overview_page):
     st.subheader("Step 5 of 5: pick your starter batch")
     avg_seconds = st.session_state.get("onboard_avg_seconds_per_move")
@@ -428,6 +447,10 @@ def _render_plan(db_path, overview_page):
                "dashboard already works on whatever's been analyzed so far.")
     if st.button("Start analyzing", type="primary"):
         st.session_state["onboard_batch_size"] = batch_size
+        # Carried into _render_running so the estimate shown here can be
+        # compared against the actual measured run time (go/no-go #5).
+        st.session_state["onboard_est_minutes"] = est_minutes
+        st.session_state["onboard_avg_plies_per_game"] = avg_plies_per_game
         _set_step("running")
 
 
@@ -453,6 +476,10 @@ def _render_running(db_path):
         status_text.text(f"{games_done} of {batch_size} games analyzed so far...")
 
     error = None
+    # Timed to just the analysis run (worker.run), matching the scope of
+    # Step 5's estimate (batch x plies x s/move) -- annotate below is not
+    # part of what was estimated, so it's deliberately outside this span.
+    run_started = time.monotonic()
     try:
         worker.run(db_path, cfg["engine"]["depth"], cfg["engine"]["multipv"],
                    cfg["engine"]["threads"], cfg["engine"]["hash_mb"], cfg["engine"]["pv_max_len"],
@@ -462,6 +489,7 @@ def _render_running(db_path):
                    on_game_done=on_game_done)
     except Exception as e:
         error = e
+    run_elapsed_s = time.monotonic() - run_started
 
     progress_bar.progress(1.0)
     if error is not None:
@@ -488,6 +516,26 @@ def _render_running(db_path):
     status_text.text("Refreshing dashboard data...")
     _refresh_duck_snapshot()
     status_text.success(f"Done -- {completed['games_done']} games analyzed.")
+
+    # Phase D go/no-go signal #5: record estimate-vs-actual, but only for a
+    # clean, complete batch -- a partial/interrupted run isn't a fair test
+    # of the estimate. Surfaced on the done step and saved to disk.
+    est_minutes = st.session_state.get("onboard_est_minutes")
+    if error is None and completed["games_done"] == batch_size and est_minutes:
+        actual_minutes = run_elapsed_s / 60
+        record = {
+            "recorded_at": datetime.datetime.now().isoformat(timespec="seconds"),
+            "platform": platform.platform(),
+            "batch_size": batch_size,
+            "avg_seconds_per_move": st.session_state.get("onboard_avg_seconds_per_move"),
+            "avg_plies_per_game": st.session_state.get("onboard_avg_plies_per_game"),
+            "estimate_minutes": round(est_minutes, 2),
+            "actual_minutes": round(actual_minutes, 2),
+            "ratio_actual_over_estimate": round(actual_minutes / est_minutes, 2),
+        }
+        _record_first_run_timing(db_path, record)
+        st.session_state["onboard_timing_record"] = record
+
     _set_step("done")
 
 
@@ -502,6 +550,13 @@ def _render_fetch_done(overview_page):
 def _render_done(overview_page):
     st.success("Your starter batch is ready -- accuracy numbers are computed and the "
                "dashboard is up to date.")
+    record = st.session_state.get("onboard_timing_record")
+    if record:
+        st.caption(
+            f"Timing check (useful pilot feedback): the estimate was "
+            f"~{record['estimate_minutes']:.0f} min and it actually took "
+            f"~{record['actual_minutes']:.0f} min for {record['batch_size']} games. "
+            "Saved to `first_run_timing.json` next to your database.")
     st.info("To run more analysis batches in the future, use **Analysis Jobs** in the sidebar.")
     if st.button("Go to dashboard", type="primary"):
         st.session_state["just_completed_onboarding"] = True
