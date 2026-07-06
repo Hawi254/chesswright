@@ -1,0 +1,100 @@
+# Full transitive lock for CI bundle builds (BRIEF S6aa). requirements.txt
+# pins DIRECT deps only; before this file existed, every transitive dep
+# was re-resolved fresh by each CI build -- how an untested numpy 2.x
+# (x86-64-v2 CPU baseline) reached a pilot tester's bundle in v0.1.16.
+# CI installs with:  pip install -r requirements.txt -c constraints.txt
+#
+# Covers all three build platforms in one file: pip only applies a
+# constraint when that package is actually being installed, so the
+# Windows-only (pythonnet, pywin32-ctypes, clr_loader) and macOS-only
+# (pyobjc-*) pins are inert elsewhere. Generated from real pip resolves
+# (Linux venv + --platform win_amd64 / macosx_12_0_arm64 dry-runs) on
+# Python 3.12, 2026-07-06, and verified by running the full test suite
+# against this exact set. To bump deliberately: regenerate, re-test,
+# commit -- never let CI resolve fresh again.
+altair==6.2.2
+annotated-types==0.7.0
+anthropic==0.111.0
+anyio==4.14.1
+attrs==26.1.0
+blinker==1.9.0
+bottle==0.13.4
+cachetools==7.1.4
+certifi==2026.6.17
+cffi==2.0.0
+charset-normalizer==3.4.7
+chess==1.11.2
+click==8.4.2
+clr_loader==0.3.1
+contourpy==1.3.3
+cryptography==49.0.0
+cycler==0.12.1
+distro==1.9.0
+docstring_parser==0.18.0
+duckdb==1.5.4
+fonttools==4.63.0
+gitdb==4.0.12
+GitPython==3.1.50
+h11==0.16.0
+httpcore==1.0.9
+httptools==0.8.0
+httpx==0.28.1
+idna==3.18
+itsdangerous==2.2.0
+jaraco.classes==3.4.0
+jaraco.context==6.1.2
+jaraco.functools==4.5.0
+jeepney==0.9.0
+Jinja2==3.1.6
+jiter==0.16.0
+jsonschema==4.26.0
+jsonschema-specifications==2025.9.1
+keyring==25.6.0
+kiwisolver==1.5.0
+MarkupSafe==3.0.3
+matplotlib==3.11.0
+more-itertools==11.1.0
+narwhals==2.23.0
+numpy==1.26.4
+packaging==26.2
+pandas==3.0.3
+pillow==12.3.0
+plotly==6.8.0
+protobuf==7.35.1
+proxy_tools==0.1.0
+pyarrow==24.0.0
+pycparser==3.0
+pydantic==2.13.4
+pydantic_core==2.46.4
+pydeck==0.9.3
+pyobjc-core==12.2.1
+pyobjc-framework-Cocoa==12.2.1
+pyobjc-framework-Quartz==12.2.1
+pyobjc-framework-Security==12.2.1
+pyobjc-framework-WebKit==12.2.1
+pyparsing==3.3.2
+python-dateutil==2.9.0.post0
+python-multipart==0.0.32
+pythonnet==3.1.0
+pywebview==5.4
+pywin32-ctypes==0.2.3
+PyYAML==6.0.3
+referencing==0.37.0
+requests==2.34.2
+rpds-py==2026.6.3
+SecretStorage==3.5.0
+six==1.17.0
+smmap==5.0.3
+sniffio==1.3.1
+starlette==1.3.1
+streamlit==1.58.0
+tenacity==9.1.4
+toml==0.10.2
+typing-inspection==0.4.2
+typing_extensions==4.16.0
+urllib3==2.7.0
+uvicorn==0.50.2
+watchdog==6.0.0
+websockets==16.0
+# build tool itself -- an unpinned PyInstaller major is the same class of risk
+pyinstaller==6.21.0

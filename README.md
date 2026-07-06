@@ -45,6 +45,26 @@ you commit to anything. You don't have to wait for a full analysis to
 get value — the dashboard works on whatever's been analyzed so far,
 starting from your very first batch.
 
+## System requirements
+
+- **Windows**: 64-bit Windows 10 or 11, with Microsoft's WebView2
+  runtime (already present on any Windows 10/11 that gets updates — if
+  yours somehow lacks it, Chesswright will tell you and open the
+  download page rather than showing a broken window).
+- **macOS**: an **Apple Silicon** Mac (M1 or newer) on macOS 12 or
+  later. **Intel Macs are not currently supported** — the published
+  build is arm64-only; an Intel Mac will refuse to run it ("Bad CPU
+  type in executable"). Tell us if this blocks you, it's a solvable
+  gap we've deliberately deferred.
+- **Linux**: 64-bit, a reasonably current distro (the build is made on
+  Ubuntu 24.04; distros of a similar vintage or newer work — an older
+  base like Ubuntu 22.04 may fail with glibc version errors), plus the
+  GTK/WebKit packages noted in the run instructions below.
+- **Processor**: roughly 2009-or-newer Intel / 2011-or-newer AMD
+  (SSE4.2 support). On older hardware Chesswright either starts in a
+  slower compatibility mode or tells you plainly it can't run —
+  instead of crashing with no explanation.
+
 ## 1. Install Stockfish first
 
 Chesswright never bundles or auto-installs the chess engine itself (it's
@@ -100,10 +120,17 @@ Open the unzipped folder and double-click `chesswright`.
 
 **macOS will almost certainly refuse to open it the first time**,
 saying it's from an unidentified developer (same root cause as the
-Windows warning above — this build isn't notarized/signed). To get past
-this: **right-click (or Control-click) the `chesswright` app → Open**,
-then confirm in the dialog that appears. After this first time, double-
-clicking normally will work.
+Windows warning above — this build isn't notarized/signed). How to get
+past it depends on your macOS version:
+
+- **macOS 15 (Sequoia) or newer** — the old right-click trick no longer
+  works. Double-click it once and let macOS block it, then open
+  **System Settings → Privacy & Security**, scroll to the bottom, find
+  the message that `chesswright` was blocked, and click **Open Anyway**.
+  Confirm, and from then on it opens normally.
+- **macOS 14 or older** — **right-click (or Control-click) the
+  `chesswright` app → Open**, then confirm in the dialog. After this
+  first time, double-clicking normally will work.
 
 ### Linux
 

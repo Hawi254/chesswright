@@ -51,6 +51,7 @@ Usage:
 """
 import json
 import os
+import platform
 import shutil
 import socket
 import subprocess
@@ -62,6 +63,19 @@ import webbrowser
 USER_DATA_DIR = pathlib.Path.home() / ".chesswright"
 
 RELEASES_URL = "https://github.com/Hawi254/chesswright/releases/latest"
+
+WEBVIEW2_URL = "https://developer.microsoft.com/en-us/microsoft-edge/webview2/"
+
+ISSUES_URL = "https://github.com/Hawi254/chesswright/issues"
+
+# Every compiled dependency whose import can hard-crash (not raise) on a
+# CPU below the SSE4.2/x86-64-v2 baseline. pyarrow is the known offender
+# (Arrow's official wheels require SSE4.2 and die with SIGILL, which an
+# in-process try/except can NEVER catch -- the process just dies); duckdb's
+# floor is undocumented, so it's probed rather than assumed safe. numpy
+# first: its failure mode is a readable RuntimeError, so if the whole
+# baseline is missing the probe's stderr says so in plain words.
+PREFLIGHT_MODULES = ("numpy", "pyarrow", "duckdb", "pandas")
 
 
 def resource_dir():
@@ -233,20 +247,70 @@ def run_check_imports():
     sys.exit(0)
 
 
-def check_cpu_compat():
-    """Preflight for the v0.1.16 Windows pilot crash: numpy 2.x wheels
-    are compiled against the x86-64-v2 CPU baseline and raise
-    RuntimeError at import on older machines. The import actually
-    happens deep in the server subprocess (app.py -> pandas -> numpy),
-    where it surfaces as a raw traceback and a dead "server did not
-    start in time" launcher. Importing numpy here, in the launcher,
-    turns that into one readable sentence before anything is spawned.
+def run_preflight_imports():
+    """Internal mode (--preflight-imports): imports each compiled dep the
+    dashboard needs, then exits 0. Run as a SUBPROCESS by
+    check_cpu_compat() -- an unsupported-CPU crash here is a SIGILL /
+    STATUS_ILLEGAL_INSTRUCTION that kills the whole process, which is
+    exactly why it must happen in a child the launcher can observe, not
+    in the launcher itself."""
+    for name in PREFLIGHT_MODULES:
+        __import__(name)
+    print("OK: compiled-dependency preflight imports succeeded.")
+    sys.exit(0)
 
-    numpy is pinned to 1.26.4 (old baseline) in requirements.txt, so
-    with the pin in place this should never fire on hardware newer than
-    ~2005 -- it exists so that if the pin is ever lifted, old-CPU users
-    get told what happened instead of a traceback. Costs one extra
-    numpy import (~100ms) at launch."""
+
+def _sse42_confirmed():
+    """Best-effort fast path: True only when this CPU DEFINITELY has
+    SSE4.2 (the load-bearing x86-64-v2 feature for pyarrow's wheels), so
+    the subprocess probe can be skipped on the ~every-modern-machine
+    case. Anything uncertain returns False and pays the probe instead --
+    a few seconds on launch beats a silent dead process."""
+    try:
+        if platform.machine().lower() not in ("x86_64", "amd64"):
+            return True  # arm64 etc.: the x86 baseline question doesn't apply
+        if sys.platform.startswith("linux"):
+            with open("/proc/cpuinfo") as fh:
+                for line in fh:
+                    if line.startswith("flags"):
+                        return " sse4_2" in line
+            return False
+        if sys.platform == "win32":
+            import ctypes
+            # PF_SSE4_2_INSTRUCTIONS_AVAILABLE = 38. Only recognized from
+            # Windows 10 20H1 on; older Windows returns FALSE for unknown
+            # feature ids, which lands on the safe run-the-probe path.
+            return bool(ctypes.windll.kernel32.IsProcessorFeaturePresent(38))
+        return False
+    except Exception:
+        return False
+
+
+def _preflight_cmd():
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "--preflight-imports"]
+    return [sys.executable, str(pathlib.Path(__file__).resolve()),
+            "--preflight-imports"]
+
+
+def check_cpu_compat():
+    """Preflight for the v0.1.16 Windows pilot crash class: compiled deps
+    built against a CPU baseline (x86-64-v2 / SSE4.2) the machine lacks.
+
+    Two layers, because the failure modes differ:
+    - numpy raises a readable RuntimeError at import -- catchable
+      in-process, checked directly below. Pinned to 1.26.4 (old
+      baseline) in requirements.txt, so this should never fire unless
+      the pin is lifted.
+    - pyarrow (required by pandas 3, imported at pandas import time) and
+      possibly duckdb hard-crash with an ILLEGAL INSTRUCTION on a
+      pre-SSE4.2 CPU -- that kills the process outright, so it can only
+      be observed from OUTSIDE: a --preflight-imports subprocess, run
+      only when the fast CPU-flag check can't confirm SSE4.2. If the
+      probe dies, one retry with ARROW_USER_SIMD_LEVEL=NONE (pyarrow's
+      documented no-SIMD mode) -- if that survives, the app runs in
+      compatibility mode instead of refusing; if not, one readable
+      message instead of a vanishing window."""
     try:
         import numpy  # noqa: F401
     except RuntimeError as exc:
@@ -256,12 +320,90 @@ def check_cpu_compat():
             "Chesswright cannot run on this computer: its processor does "
             "not support the CPU instructions this build was compiled "
             f"with.\n(Details: {exc})\n"
-            "Please report this at "
-            "https://github.com/Hawi254/chesswright/issues so we know "
+            f"Please report this at {ISSUES_URL} so we know "
             "which hardware to support.",
             file=sys.stderr,
         )
         sys.exit(1)
+
+    if _sse42_confirmed():
+        return
+
+    cmd = _preflight_cmd()
+    try:
+        probe = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+    except Exception:
+        return  # the probe mechanism itself failing is not a verdict on the CPU
+    if probe.returncode == 0:
+        return
+
+    retry = subprocess.run(
+        cmd, capture_output=True, text=True, timeout=180,
+        env=dict(os.environ, ARROW_USER_SIMD_LEVEL="NONE"),
+    )
+    if retry.returncode == 0:
+        # Inherited by the server subprocess via launch_server_subprocess.
+        os.environ["ARROW_USER_SIMD_LEVEL"] = "NONE"
+        print(
+            "Note: this processor predates some CPU features this build "
+            "was compiled with; running in a slower compatibility mode."
+        )
+        return
+
+    stderr_tail = "\n".join((retry.stderr or probe.stderr or "").splitlines()[-4:])
+    print(
+        "Chesswright cannot run on this computer: its processor does not "
+        "support the CPU instructions (SSE4.2 / x86-64-v2) some of this "
+        "build's components were compiled with.\n"
+        f"(Details: preflight import check failed; {stderr_tail})\n"
+        f"Please report this at {ISSUES_URL} so we know "
+        "which hardware to support.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+
+def check_webview2():
+    """Windows-only preflight: pywebview needs the Edge WebView2 runtime,
+    and when it's absent it does NOT error -- it silently falls back to
+    MSHTML (the Internet Explorer engine, confirmed in webview/platforms/
+    winforms.py's own renderer selection), which renders a modern
+    Streamlit app as a broken blank window. Present by default on
+    up-to-date Windows 10/11, but a pre-2020 Windows 10 install may lack
+    it. Mirrors the same EdgeUpdate registry keys pywebview's
+    _is_chromium() reads; on any unexpected detection failure this
+    deliberately does nothing (fail-open) rather than blocking a machine
+    that might actually work."""
+    if sys.platform != "win32":
+        return
+    try:
+        import winreg
+        key_id = r"{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
+        for hive in ("HKEY_LOCAL_MACHINE", "HKEY_CURRENT_USER"):
+            for prefix in (r"SOFTWARE\WOW6432Node", "SOFTWARE"):
+                try:
+                    with winreg.OpenKey(
+                        getattr(winreg, hive),
+                        rf"{prefix}\Microsoft\EdgeUpdate\Clients\{key_id}",
+                    ) as k:
+                        pv, _ = winreg.QueryValueEx(k, "pv")
+                        if str(pv) not in ("", "0.0.0.0"):
+                            return
+                except OSError:
+                    continue
+    except Exception:
+        return
+    print(
+        "Chesswright needs Microsoft's WebView2 runtime, which this "
+        "Windows machine doesn't have yet (without it the app window "
+        "would open blank). It's a small, free, one-time install from "
+        f"Microsoft -- opening the download page now:\n  {WEBVIEW2_URL}\n"
+        "Install the \"Evergreen Bootstrapper\", then start Chesswright "
+        "again.",
+        file=sys.stderr,
+    )
+    webbrowser.open(WEBVIEW2_URL)
+    sys.exit(1)
 
 
 def launch_server_subprocess(port, config_path):
@@ -282,6 +424,9 @@ def main():
     if "--check-imports" in sys.argv:
         run_check_imports()
         return
+    if "--preflight-imports" in sys.argv:
+        run_preflight_imports()
+        return
     if "--server-mode" in sys.argv:
         port = int(sys.argv[sys.argv.index("--port") + 1])
         config_path = sys.argv[sys.argv.index("--config") + 1]
@@ -289,6 +434,7 @@ def main():
         return
 
     check_cpu_compat()
+    check_webview2()
     user_config = ensure_user_data()
     port = free_port()
     url = f"http://127.0.0.1:{port}"

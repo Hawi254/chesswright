@@ -11,6 +11,10 @@ node_modules/
 *.db
 *.db-wal
 *.db-shm
+# per-PID DuckDB snapshot copies (dashboard/_common.py, BRIEF S6k) --
+# left behind if the dev server is killed; the *.db rule above doesn't
+# match their .duck-snapshot-<pid> suffix
+*.duck-snapshot-*
 # sample.pgn was copied from the original chess-analyzer project during
 # Phase A for local testing convenience and contains real personal game
 # data (the original author's real lichess username plus real opponent

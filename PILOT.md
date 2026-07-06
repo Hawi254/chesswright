@@ -9,9 +9,11 @@ single most valuable thing to write down. Struggle a little, then report it.
 
 ## What to do
 
-1. Follow the [README](README.md) top to bottom: install Stockfish, download
-   the build for your OS, run it, and complete the first-run setup wizard
-   through to your **starter analysis batch** finishing.
+1. Follow the [README](README.md) top to bottom: check the **System
+   requirements** first (notably: Intel Macs aren't supported yet), install
+   Stockfish, download the build for your OS, run it, and complete the
+   first-run setup wizard through to your **starter analysis batch**
+   finishing.
 2. Poke around the dashboard afterward for as long as you feel like.
 
 That's it. You don't need to analyze your whole history — the starter batch
