@@ -99,12 +99,18 @@ def get_nemesis_opponents(duck_conn, min_games=5):
     misread as losses. Real finding: 17.1% score against a specific
     41-game opponent, one of the largest single-opponent samples in the
     dataset -- never previously surfaced in the dashboard."""
+    # all_lichess gates the Opponent Prep deep link: prep's fetch pipeline
+    # (sync.py) is lichess-only, so a chess.com opponent's name pre-filled
+    # into it would scout the wrong (or a nonexistent) player. Names are
+    # grouped across sources, so require every game vs. this opponent to
+    # be a lichess game before treating the name as a lichess username.
     df = duck_conn.execute("""
         SELECT opponent_name,
                COUNT(*) AS n,
                SUM(CASE WHEN outcome_for_player='win' THEN 1 ELSE 0 END) AS wins,
                SUM(CASE WHEN outcome_for_player='draw' THEN 1 ELSE 0 END) AS draws,
-               SUM(CASE WHEN outcome_for_player='loss' THEN 1 ELSE 0 END) AS losses
+               SUM(CASE WHEN outcome_for_player='loss' THEN 1 ELSE 0 END) AS losses,
+               MIN(CASE WHEN site LIKE 'https://lichess.org/%' THEN 1 ELSE 0 END) AS all_lichess
         FROM db.games
         WHERE opponent_name IS NOT NULL AND outcome_for_player IS NOT NULL
         GROUP BY opponent_name

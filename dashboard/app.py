@@ -248,7 +248,8 @@ openings_page = st.Page(
     lambda: openings_view.render(drill_export_page=drill_export_page),
     title="Openings & Repertoire", url_path="openings",
 )
-matchups_page = st.Page(lambda: matchups_view.render(matchups_page, detail_page),
+matchups_page = st.Page(lambda: matchups_view.render(matchups_page, detail_page,
+                                                     prep_page=prep_page),
                          title="Matchups & Opponents", url_path="matchups")
 endings_page = st.Page(game_endings_view.render, title="Game Endings",
                         url_path="game-endings")

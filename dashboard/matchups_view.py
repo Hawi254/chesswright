@@ -60,7 +60,7 @@ def _clickable_game_ids(game_ids, key, detail_page, self_page):
                           column_config={"game_id": "Game"})
 
 
-def render(self_page, detail_page):
+def render(self_page, detail_page, prep_page=None):
     sqlite_conn, duck_conn = get_connections()
     st.title("Matchups & Opponents")
 
@@ -128,19 +128,48 @@ def render(self_page, detail_page):
             _clickable_game_ids(cc["collapse_game_ids"], "collapse_games", detail_page, self_page)
 
     with st.container(border=True):
-        _render_nemesis_section(sqlite_conn, duck_conn)
+        _render_nemesis_section(sqlite_conn, duck_conn, prep_page)
+
+
+def _scout_on_row_click(nem_subset, key, prep_page, col_order, col_config):
+    """Renders one nemesis table with single-row selection; ticking a row
+    deep-links to Opponent Prep with that opponent's username pre-filled
+    (the same _prep_username handoff insights_view's "Scout this opponent"
+    button already uses -- prep_view pops it into its form). Selection is
+    offered on every row, but only all-lichess opponents navigate: prep's
+    fetch is lichess-only, and st.dataframe can't disable individual rows,
+    so a chess.com opponent's row explains instead of silently scouting a
+    wrong-platform username."""
+    display_df = nem_subset.drop(columns=["all_lichess"]).reset_index(drop=True)
+    selection = st.dataframe(display_df, width='stretch', on_select="rerun",
+                             selection_mode="single-row", key=key,
+                             hide_index=True, column_order=col_order,
+                             column_config=col_config)
+    rows = selection.selection.rows if selection and selection.selection else []
+    if rows:
+        picked = nem_subset.iloc[rows[0]]
+        if picked.all_lichess:
+            st.session_state["_prep_username"] = picked.opponent_name
+            st.switch_page(prep_page)
+        else:
+            st.info(f"Opponent Prep scouts lichess players only, and your games "
+                    f"against **{picked.opponent_name}** aren't on lichess.")
 
 
 @st.fragment
-def _render_nemesis_section(sqlite_conn, duck_conn):
+def _render_nemesis_section(sqlite_conn, duck_conn, prep_page=None):
     """Its own fragment: the min-games slider, the commentary selectbox,
     and the Claude-commentary button all only affect this one section --
     nothing else on the page reads nem_df or these session_state keys --
     so none of that needs to re-run the rest of Matchups & Opponents."""
     st.subheader("Nemesis and favorite opponents")
-    st.caption("Ranked by score% (win + 0.5*draw, standard tournament scoring) so repeated "
+    caption = ("Ranked by score% (win + 0.5*draw, standard tournament scoring) so repeated "
                "draws aren't misread as losses. Look for opponents you've played many times "
                "with a consistently lopsided record.")
+    if prep_page:
+        caption += (" Tick the checkbox at the left of a row to scout that player "
+                    "in Opponent Prep.")
+    st.caption(caption)
     nem_min_games = st.slider("Minimum games against this opponent", 3, 50, 5)
     nem_df = cached_nemesis_opponents(duck_conn, nem_min_games)
 
@@ -158,28 +187,36 @@ def _render_nemesis_section(sqlite_conn, duck_conn):
         "n": st.column_config.NumberColumn("Games", width="small"),
         "record": st.column_config.TextColumn(
             "W-D-L", width="small", help="Wins-Draws-Losses against this opponent."),
+        # width="small": the row-selection checkbox column (Opponent Prep
+        # deep link) eats the slack the §6r W-D-L collapse freed up -- without
+        # a fixed width, Score % clips off the right edge of the side-by-side
+        # tables again at a normal window width.
         "score_pct": st.column_config.NumberColumn(
-            "Score %", format="%.1f",
+            "Score %", format="%.1f", width="small",
             help="Tournament scoring: a win = 100%, a draw = 50%. 0% means you have "
                  "never taken a point off this opponent."),
     }
     _nem_col_order = ["opponent_name", "n", "record", "score_pct"]
+
+    def _nem_table(subset, key):
+        if prep_page:
+            _scout_on_row_click(subset, key, prep_page, _nem_col_order, _nem_col_config)
+        else:
+            st.dataframe(subset.drop(columns=["all_lichess"]), width='stretch',
+                         hide_index=True, column_order=_nem_col_order,
+                         column_config=_nem_col_config)
+
     col1, col2 = st.columns(2)
     with col1:
         st.write("Toughest opponents (lowest score%)")
-        st.dataframe(nem_display.sort_values("score_pct").head(10), width='stretch',
-                     hide_index=True, column_order=_nem_col_order,
-                     column_config=_nem_col_config)
+        _nem_table(nem_display.sort_values("score_pct").head(10), "nem_toughest")
     with col2:
         st.write("Favorite opponents (highest score%)")
-        st.dataframe(nem_display.sort_values("score_pct", ascending=False).head(10),
-                     width='stretch', hide_index=True, column_order=_nem_col_order,
-                     column_config=_nem_col_config)
+        _nem_table(nem_display.sort_values("score_pct", ascending=False).head(10),
+                   "nem_favorite")
 
     st.write("Most-played opponents overall")
-    st.dataframe(nem_display.sort_values("n", ascending=False).head(10), width='stretch',
-                 hide_index=True, column_order=_nem_col_order,
-                 column_config=_nem_col_config)
+    _nem_table(nem_display.sort_values("n", ascending=False).head(10), "nem_most_played")
 
     if not nem_df.empty:
         opponent_names = nem_df.opponent_name.tolist()

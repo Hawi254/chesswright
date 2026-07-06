@@ -178,6 +178,9 @@ def _nemesis(duck_conn):
         "headline": f"{toughest.score_pct:.1f}% score against {toughest.opponent_name}",
         "detail": f"Over {int(toughest.n)} games (win + 0.5 x draw, standard tournament scoring).",
         "opponent_name": toughest.opponent_name,
+        # Gates the "Scout this opponent" deep link -- see the all_lichess
+        # comment in matchups.get_nemesis_opponents.
+        "opponent_on_lichess": bool(toughest.all_lichess),
     }
 
 

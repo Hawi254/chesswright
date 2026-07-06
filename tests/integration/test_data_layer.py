@@ -136,6 +136,37 @@ class TestMatchupsData:
         finally:
             duck.close(); disk.close(); os.unlink(tmp)
 
+    def test_get_nemesis_opponents_all_lichess_gate(self, migrated_db):
+        """all_lichess must be 1 only when EVERY game vs an opponent is a
+        lichess game -- it gates the Opponent Prep deep link, which scouts
+        lichess usernames only (see get_nemesis_opponents' comment)."""
+        from data.matchups import get_nemesis_opponents
+        rows = [
+            # ("all_lichess_foe": every game on lichess -> gate open)
+            ("g1", "all_lichess_foe", "loss", "https://lichess.org/aaa"),
+            ("g2", "all_lichess_foe", "loss", "https://lichess.org/bbb"),
+            ("g3", "all_lichess_foe", "win",  "https://lichess.org/ccc"),
+            # ("mixed_foe": one chess.com game -> gate closed even though
+            #  the other two are lichess)
+            ("g4", "mixed_foe", "loss", "https://lichess.org/ddd"),
+            ("g5", "mixed_foe", "draw", "https://lichess.org/eee"),
+            ("g6", "mixed_foe", "loss", "https://www.chess.com/game/live/123"),
+        ]
+        for gid, opp, outcome, site in rows:
+            migrated_db.execute(
+                "INSERT INTO games (id, white, black, opponent_name, "
+                "outcome_for_player, site) VALUES (?, 'W', 'B', ?, ?, ?)",
+                (gid, opp, outcome, site))
+        migrated_db.commit()
+        duck, disk, tmp = _duck_from_conn(migrated_db)
+        try:
+            df = get_nemesis_opponents(duck, min_games=3)
+            gate = dict(zip(df.opponent_name, df.all_lichess))
+            assert gate["all_lichess_foe"] == 1
+            assert gate["mixed_foe"] == 0
+        finally:
+            duck.close(); disk.close(); os.unlink(tmp)
+
 
 @pytest.mark.integration
 class TestTacticalData:

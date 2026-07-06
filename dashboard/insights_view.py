@@ -93,7 +93,10 @@ def render(drill_export_page=None, prep_page=None):
 
             if (finding["title"] == "Toughest opponent"
                     and prep_page
-                    and finding.get("opponent_name")):
+                    and finding.get("opponent_name")
+                    # Opponent Prep's fetch is lichess-only -- don't offer to
+                    # scout a chess.com username (see get_nemesis_opponents).
+                    and finding.get("opponent_on_lichess", True)):
                 if st.button("→ Scout this opponent",
                              key="scout_nemesis",
                              help="Open Opponent Prep with this player's username pre-filled."):
