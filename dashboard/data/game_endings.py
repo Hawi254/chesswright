@@ -4,7 +4,29 @@ import collections
 import pandas as pd
 
 import analytics
+from chess_utils import material_balance_cp
 from _common import get_config
+
+
+def _quarterly_zero_fill(df, count_cols):
+    """Expand a (year, quarter, counts...) frame to one row per quarter
+    from the first to the last observed, zero-filling the given count
+    columns -- so a quarter with no qualifying games at all renders as an
+    honest gap rather than being silently skipped (same convention as
+    evolution.period_shares). Adds period (sortable int) and label
+    ("2019 Q1") columns; callers compute their own pct columns on top,
+    using NaN (not 0) where a denominator is 0 -- 0/0 is "no data," not
+    "0%." Shared by both calendar trends in this module, which used to be
+    on track to restate this merge/fill dance independently."""
+    df["period"] = df["year"].astype(int) * 4 + (df["quarter"].astype(int) - 1)
+    all_periods = pd.DataFrame({"period": range(int(df["period"].min()), int(df["period"].max()) + 1)})
+    df = all_periods.merge(df, on="period", how="left")
+    df["year"] = df["period"] // 4
+    df["quarter"] = df["period"] % 4 + 1
+    for col in count_cols:
+        df[col] = df[col].fillna(0).astype(int)
+    df["label"] = df["year"].astype(str) + " Q" + df["quarter"].astype(str)
+    return df
 
 
 def _classify_endgame_type(endgame_sig: str) -> str | None:
@@ -360,16 +382,149 @@ def get_resignation_time_pressure_trend(duck_conn, config_path=None):
         return pd.DataFrame(columns=["year", "quarter", "period", "label",
                                      "n_total", "n_time_pressure", "pct"])
 
-    df["period"] = df["year"].astype(int) * 4 + (df["quarter"].astype(int) - 1)
-    all_periods = pd.DataFrame({"period": range(int(df["period"].min()), int(df["period"].max()) + 1)})
-    df = all_periods.merge(df, on="period", how="left")
-    df["year"] = df["period"] // 4
-    df["quarter"] = df["period"] % 4 + 1
-    df["n_total"] = df["n_total"].fillna(0).astype(int)
-    df["n_time_pressure"] = df["n_time_pressure"].fillna(0).astype(int)
-    df["label"] = df["year"].astype(str) + " Q" + df["quarter"].astype(str)
+    df = _quarterly_zero_fill(df, ["n_total", "n_time_pressure"])
     df["pct"] = (100.0 * df["n_time_pressure"] / df["n_total"].where(df["n_total"] > 0))
     return df[["year", "quarter", "period", "label", "n_total", "n_time_pressure", "pct"]]
+
+
+def get_time_forfeit_loss_breakdown(duck_conn, config_path=None):
+    """Decomposes every time-forfeit ("flagged") loss along two
+    independent, board/clock-derived axes, plus a quarterly trend --
+    the time-forfeit counterpart to get_resignation_loss_causes.
+
+    Unlike the resignation causes, NOTHING here needs engine analysis:
+    material_sig/material_delta are computed at ingest for every move
+    (confirmed live: populated on all 2,294,341 rows of the dev database,
+    vs ~3% of these games analyzed), and clock_seconds reads straight off
+    the PGN's %clk comments. So there is no not_analyzed bucket at all,
+    coverage is effectively total (3,319 of 3,320 time-forfeit losses on
+    the dev DB had clock data), and -- unlike the resignation cause mix --
+    BOTH axes are honest to trend over calendar time despite the analysis
+    backlog being skewed toward recent games.
+
+    Axis 1 -- material balance at the flag: the player-relative material
+    balance after the game's final recorded move. material_sig is stored
+    pre-move (ingest.py computes it before board.push), so the final
+    position's balance is the last row's sig adjusted by that move's own
+    material_delta (the mover always gains exactly material_delta, in the
+    same cp-like x100 units). Bucketed at +/-
+    time_forfeit_material_imbalance into ahead / roughly level / behind.
+    "Ahead on material" is deliberately NOT labeled "winning" -- a
+    material count knows nothing about compensation, attacks, or
+    fortresses. It's a confidence signal, not ground truth, same naming
+    honesty as the instant-move ("premove") work.
+
+    Axis 2 -- scramble context: the opponent's clock at their last
+    recorded move. Below time_forfeit_mutual_scramble_max_seconds both
+    sides were nearly out (the player just flagged first); at or above
+    time_forfeit_one_sided_min_seconds the opponent was comfortable and
+    the flag was one-sided; in between is its own middle bucket.
+
+    Returns (material_df, scramble_df, trend_df):
+      material_df: bucket, n, pct -- pct of time-forfeit losses with a
+        material signature on record (games with zero recorded moves are
+        excluded rather than guessed at).
+      scramble_df: bucket, n, pct -- pct of time-forfeit losses where the
+        opponent has at least one recorded clock reading.
+      trend_df: year, quarter, period, label, n_total, n_ahead, n_mutual,
+        pct_ahead, pct_mutual -- quarterly, zero-filled like
+        get_resignation_time_pressure_trend, pct NaN (not 0) on empty
+        quarters. Games with no year/month are in the two aggregate
+        frames but not the trend.
+    All three empty (not None) when there are no time-forfeit losses yet.
+    """
+    cfg = get_config(config_path)
+    imbalance = cfg["analytics"]["time_forfeit_material_imbalance"]
+    scramble_max = cfg["analytics"]["time_forfeit_mutual_scramble_max_seconds"]
+    one_sided_min = cfg["analytics"]["time_forfeit_one_sided_min_seconds"]
+
+    df = duck_conn.execute("""
+        WITH tf AS (
+            SELECT id AS game_id, player_color, year, month
+            FROM db.games
+            WHERE outcome_for_player = 'loss' AND game_end_type = 'time_forfeit'
+        ),
+        last_move AS (
+            SELECT t.game_id, m.material_sig, m.material_delta, m.color,
+                   ROW_NUMBER() OVER (PARTITION BY t.game_id ORDER BY m.ply DESC) AS rn
+            FROM db.moves m JOIN tf t ON t.game_id = m.game_id
+            QUALIFY rn = 1
+        ),
+        last_opponent_clock AS (
+            SELECT t.game_id, m.clock_seconds AS opponent_clock,
+                   ROW_NUMBER() OVER (PARTITION BY t.game_id ORDER BY m.ply DESC) AS rn
+            FROM db.moves m JOIN tf t ON t.game_id = m.game_id
+            WHERE m.is_player_move = 0 AND m.clock_seconds IS NOT NULL
+            QUALIFY rn = 1
+        )
+        SELECT t.game_id, t.player_color, t.year, t.month,
+               lm.material_sig, lm.material_delta, lm.color AS last_move_color,
+               oc.opponent_clock
+        FROM tf t
+        LEFT JOIN last_move lm ON lm.game_id = t.game_id
+        LEFT JOIN last_opponent_clock oc ON oc.game_id = t.game_id
+    """).fetchdf()
+
+    material_cols = ["bucket", "n", "pct"]
+    if df.empty:
+        empty = pd.DataFrame(columns=material_cols)
+        empty_trend = pd.DataFrame(columns=["year", "quarter", "period", "label",
+                                            "n_total", "n_ahead", "n_mutual",
+                                            "pct_ahead", "pct_mutual"])
+        return empty, empty.copy(), empty_trend
+
+    points = imbalance / 100.0
+    material_labels = [f"ahead by {points:g}+ points", "roughly level",
+                       f"behind by {points:g}+ points"]
+    scramble_labels = [f"mutual scramble (opponent under {scramble_max}s)",
+                       f"opponent at {scramble_max}-{one_sided_min}s",
+                       f"opponent comfortable ({one_sided_min}s+)"]
+
+    with_sig = df[df.material_sig.notna()].copy()
+    balance = with_sig.material_sig.map(material_balance_cp)
+    delta = with_sig.material_delta.fillna(0)
+    balance = balance + delta.where(with_sig.last_move_color == "w", -delta)
+    player_balance = balance.where(with_sig.player_color == "white", -balance)
+    with_sig["material_bucket"] = pd.cut(
+        player_balance, bins=[-float("inf"), -imbalance, imbalance - 1, float("inf")],
+        labels=list(reversed(material_labels))).astype(str)
+
+    def share_frame(series, labels):
+        counts = series.value_counts()
+        n_denominator = int(counts.sum())
+        rows = [(label, int(counts.get(label, 0)),
+                 100.0 * counts.get(label, 0) / n_denominator if n_denominator else 0.0)
+                for label in labels]
+        return pd.DataFrame(rows, columns=material_cols)
+
+    material_df = share_frame(with_sig["material_bucket"], material_labels)
+
+    with_clock = df[df.opponent_clock.notna()].copy()
+    with_clock["scramble_bucket"] = pd.cut(
+        with_clock.opponent_clock, bins=[-float("inf"), scramble_max - 1, one_sided_min - 1, float("inf")],
+        labels=scramble_labels).astype(str)
+    scramble_df = share_frame(with_clock["scramble_bucket"], scramble_labels)
+
+    dated = with_sig[with_sig.year.notna() & with_sig.month.notna()].copy()
+    if dated.empty:
+        trend_df = pd.DataFrame(columns=["year", "quarter", "period", "label",
+                                         "n_total", "n_ahead", "n_mutual",
+                                         "pct_ahead", "pct_mutual"])
+    else:
+        dated["quarter"] = (dated.month.astype(int) - 1) // 3 + 1
+        dated["is_ahead"] = dated["material_bucket"] == material_labels[0]
+        dated["is_mutual"] = dated.opponent_clock.notna() & (dated.opponent_clock < scramble_max)
+        trend_df = dated.groupby(["year", "quarter"], as_index=False).agg(
+            n_total=("game_id", "size"), n_ahead=("is_ahead", "sum"),
+            n_mutual=("is_mutual", "sum"))
+        trend_df = _quarterly_zero_fill(trend_df, ["n_total", "n_ahead", "n_mutual"])
+        denom = trend_df["n_total"].where(trend_df["n_total"] > 0)
+        trend_df["pct_ahead"] = 100.0 * trend_df["n_ahead"] / denom
+        trend_df["pct_mutual"] = 100.0 * trend_df["n_mutual"] / denom
+        trend_df = trend_df[["year", "quarter", "period", "label",
+                             "n_total", "n_ahead", "n_mutual", "pct_ahead", "pct_mutual"]]
+
+    return material_df, scramble_df, trend_df
 
 
 def get_game_end_type_breakdown(duck_conn):

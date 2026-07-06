@@ -144,8 +144,23 @@ def render(self_page, detail_page, *, patterns_page=None, matchups_page=None,
         st.caption(f"ACPL (average centipawn loss -- lower is more accurate play) trend, "
                     f"analyzed games only: based on {acpl_df.n_games.sum()} analyzed games "
                     f"across {len(acpl_df)} years, treat as preliminary given the small sample.")
+        if len(acpl_df) >= 2:
+            min_row = acpl_df.loc[acpl_df.coverage_pct.idxmin()]
+            max_row = acpl_df.loc[acpl_df.coverage_pct.idxmax()]
+            if max_row.coverage_pct >= 2 * max(min_row.coverage_pct, 0.1):
+                st.caption(f"⚠️ Analysis coverage varies sharply by year -- from "
+                           f"{min_row.coverage_pct:.1f}% in {int(min_row.year)} to "
+                           f"{max_row.coverage_pct:.1f}% in {int(max_row.year)} (analysis "
+                           "prioritizes recently-synced games, so older years lean on far "
+                           "fewer analyzed games per point). Hover a point for its own "
+                           "coverage before reading a shift as a real accuracy change.")
+        acpl_df = acpl_df.assign(
+            hover_coverage=acpl_df.apply(
+                lambda r: f"{int(r.n_games)} of {int(r.n_total_games)} games ({r.coverage_pct:.1f}%)",
+                axis=1))
         st.plotly_chart(charts.line_chart(acpl_df, "year", "acpl", theme.NEGATIVE,
-                                          x_title="Year", y_title="ACPL (lower = more accurate)"), theme=None)
+                                          x_title="Year", y_title="ACPL (lower = more accurate)",
+                                          hover_extra=("hover_coverage", "Analyzed")), theme=None)
 
     with st.container(border=True):
         st.subheader("Win rate by color")
@@ -160,16 +175,28 @@ def render(self_page, detail_page, *, patterns_page=None, matchups_page=None,
             st.subheader("Progress over time")
             st.caption("Monthly averages across analyzed games — months with fewer than 3 analyzed "
                        "games are excluded to avoid single-game noise.")
+            min_row = progress_df.loc[progress_df.coverage_pct.idxmin()]
+            max_row = progress_df.loc[progress_df.coverage_pct.idxmax()]
+            if max_row.coverage_pct >= 2 * max(min_row.coverage_pct, 0.1):
+                st.caption(f"⚠️ Coverage still varies by month -- from {min_row.coverage_pct:.1f}% "
+                           f"in {min_row.period} to {max_row.coverage_pct:.1f}% in {max_row.period}. "
+                           "Hover a point for its own coverage before reading a shift as a real change.")
+            progress_df = progress_df.assign(
+                hover_coverage=progress_df.apply(
+                    lambda r: f"{int(r.n_analyzed)} of {int(r.n_total_games)} games ({r.coverage_pct:.1f}%)",
+                    axis=1))
             acpl_col, win_col = st.columns(2)
             with acpl_col:
                 st.caption("ACPL by month (lower = more accurate)")
                 st.plotly_chart(
                     charts.line_chart(progress_df, "period", "acpl", theme.NEGATIVE, height=240,
-                                      x_title="Month", y_title="ACPL"),
+                                      x_title="Month", y_title="ACPL",
+                                      hover_extra=("hover_coverage", "Analyzed")),
                     theme=None, width='stretch')
             with win_col:
                 st.caption("Win rate % by month")
                 st.plotly_chart(
                     charts.line_chart(progress_df, "period", "win_pct", theme.POSITIVE, height=240,
-                                      x_title="Month", y_title="Win rate (%)"),
+                                      x_title="Month", y_title="Win rate (%)",
+                                      hover_extra=("hover_coverage", "Analyzed")),
                     theme=None, width='stretch')

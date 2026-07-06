@@ -94,6 +94,27 @@ class TestNonPawnPieceCount:
 
 
 @pytest.mark.unit
+class TestMaterialBalanceCp:
+    def test_start_position_is_level(self):
+        assert cu.material_balance_cp("Q1R2B2N2P8vQ1R2B2N2P8") == 0
+
+    def test_white_up_a_rook_and_pawn(self):
+        # White: Q+2R+7P, Black: 2R+6P -> +900 (queen) +100 (pawn) = +1000
+        assert cu.material_balance_cp("Q1R2P7vR2P6") == 1000
+
+    def test_black_ahead_is_negative(self):
+        assert cu.material_balance_cp("P8vN1P8") == -300
+
+    def test_bare_kings(self):
+        # Kings never appear in the signature, so both sides can be empty.
+        assert cu.material_balance_cp("v") == 0
+
+    def test_multi_digit_counts(self):
+        # 10 pawns of promotion-feedstock shape still parses (two digits).
+        assert cu.material_balance_cp("P10vP8") == 200
+
+
+@pytest.mark.unit
 class TestMaterialDeltaForMove:
     def test_quiet_move_is_zero(self):
         board = chess.Board()

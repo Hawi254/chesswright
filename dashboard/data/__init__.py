@@ -66,7 +66,7 @@ from .matchups import (
 )
 from .game_endings import (
     get_game_end_type_breakdown, get_endgame_type_performance, get_resignation_loss_causes,
-    get_resignation_time_pressure_trend,
+    get_resignation_time_pressure_trend, get_time_forfeit_loss_breakdown,
 )
 from .tactical import (
     RIM_SQL,

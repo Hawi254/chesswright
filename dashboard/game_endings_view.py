@@ -51,6 +51,11 @@ def cached_resignation_time_pressure_trend(_duck_conn):
     return data.get_resignation_time_pressure_trend(_duck_conn)
 
 
+@st.cache_data(show_spinner="Working out how your time-forfeit losses happened…")
+def cached_time_forfeit_loss_breakdown(_duck_conn):
+    return data.get_time_forfeit_loss_breakdown(_duck_conn)
+
+
 def render():
     sqlite_conn, duck_conn = get_connections()
     st.title("Game Endings")
@@ -212,4 +217,61 @@ def render():
                 charts.line_chart(trend_df, "label", "pct", theme.NEGATIVE,
                                    x_title="Quarter",
                                    y_title="% of resignation losses"),
+                theme=None)
+
+    material_df, scramble_df, tf_trend_df = cached_time_forfeit_loss_breakdown(duck_conn)
+
+    with st.container(border=True):
+        st.subheader("How time-forfeit losses happen")
+        st.caption("Of your losses on time: what the board and the clocks looked like when "
+                   "you flagged. Both reads come straight from the game record (the material "
+                   "count at the final recorded move, and the opponent's clock at their last "
+                   "recorded move), so unlike the resignation causes above, every synced game "
+                   "counts -- no engine analysis needed. One honest caveat: \"ahead on "
+                   "material\" is a piece count, not an engine verdict -- it can't see "
+                   "compensation, attacks, or fortresses, so it's a strong hint you flagged "
+                   "in a winnable position, not proof.")
+        if material_df.empty or int(material_df.n.sum()) == 0:
+            st.info(theme.thin_data_message(0, 1))
+        else:
+            n_ahead = int(material_df.iloc[0].n)
+            pct_ahead = float(material_df.iloc[0].pct)
+            st.caption(f"{n_ahead} of {int(material_df.n.sum())} time-forfeit losses "
+                       f"({pct_ahead:.0f}%) came while you were ahead on material -- games "
+                       "where better clock handling alone might have banked the point.")
+            col1, col2 = st.columns(2)
+            with col1:
+                st.write("**Material at the flag**")
+                st.plotly_chart(
+                    charts.bar_chart(material_df, "bucket", "pct", theme.NEGATIVE,
+                                      x_title="Material balance when you flagged",
+                                      y_title="% of time-forfeit losses"),
+                    theme=None)
+            with col2:
+                st.write("**Opponent's clock when you flagged**")
+                if scramble_df.empty or int(scramble_df.n.sum()) == 0:
+                    st.info(theme.thin_data_message(0, 1))
+                else:
+                    st.plotly_chart(
+                        charts.bar_chart(scramble_df, "bucket", "pct", theme.ACCENT_GOLD,
+                                          x_title="Opponent's remaining time",
+                                          y_title="% of time-forfeit losses"),
+                        theme=None)
+
+    with st.container(border=True):
+        st.subheader("Time-forfeit losses over time")
+        st.caption("Quarterly share of time-forfeit losses where you flagged while ahead "
+                   "on material, and where it was a mutual scramble (opponent also nearly "
+                   "out). Unlike the engine-derived resignation causes, both signals exist "
+                   "for every synced game regardless of the analysis backlog, so this trend "
+                   "genuinely reflects when the games were played.")
+        if tf_trend_df.empty or tf_trend_df["period"].nunique() < 2:
+            st.info(theme.thin_data_message(0, 1))
+        else:
+            st.plotly_chart(
+                charts.multi_line_chart(
+                    tf_trend_df, "label",
+                    [("pct_ahead", "flagged while ahead on material", theme.NEGATIVE),
+                     ("pct_mutual", "mutual scramble", theme.ACCENT_GOLD)],
+                    x_title="Quarter", y_title="% of time-forfeit losses"),
                 theme=None)

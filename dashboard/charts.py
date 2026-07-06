@@ -66,14 +66,24 @@ def grouped_bar_chart(df, x, group_col, y, colors=None, height=320,
     return theme.apply_plotly_theme(fig)
 
 
-def line_chart(df, x, y, color, height=320, x_title=None, y_title=None):
-    """x_title/y_title: see bar_chart."""
+def line_chart(df, x, y, color, height=320, x_title=None, y_title=None, hover_extra=None):
+    """x_title/y_title: see bar_chart. hover_extra: optional (column, label)
+    pair -- appends "label: <value>" to each point's hover text via
+    customdata, for a per-point caveat (e.g. sample size or coverage %)
+    that doesn't belong on the axis itself. Column values are used as-is,
+    so format them into display strings in the caller before passing."""
     x_title = x_title or _title_case(x)
     y_title = y_title or _title_case(y)
+    hovertemplate = f"%{{x}}<br>{y_title}: %{{y:.2f}}"
+    customdata = None
+    if hover_extra is not None:
+        extra_col, extra_label = hover_extra
+        customdata = df[extra_col]
+        hovertemplate += f"<br>{extra_label}: %{{customdata}}"
     fig = go.Figure(go.Scatter(
         x=df[x], y=df[y], mode="lines+markers", line=dict(color=color, width=2),
-        marker=dict(size=5),
-        hovertemplate=f"%{{x}}<br>{y_title}: %{{y:.2f}}<extra></extra>",
+        marker=dict(size=5), customdata=customdata,
+        hovertemplate=hovertemplate + "<extra></extra>",
     ))
     fig.update_layout(title_text="", height=height,
                        xaxis=dict(title=x_title, automargin=True),

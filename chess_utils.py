@@ -93,6 +93,19 @@ POINT_VALUE = {
     chess.ROOK: 500, chess.QUEEN: 900,
 }
 
+ALL_PIECE_RE = re.compile(r"([QRBNP])(\d+)")
+_SIG_POINT_VALUE = {letter: POINT_VALUE[pt] for pt, letter in PIECE_LETTER.items()}
+
+
+def material_balance_cp(material_sig: str) -> int:
+    """White-minus-black material balance in POINT_VALUE's cp-like x100
+    units, parsed from a material_sig string (e.g. "Q1R2P7vR2P6" -> 1000).
+    Kings are never in the signature, so they never enter the balance."""
+    white_sig, black_sig = material_sig.split("v")
+    def side_points(side):
+        return sum(_SIG_POINT_VALUE[p] * int(n) for p, n in ALL_PIECE_RE.findall(side))
+    return side_points(white_sig) - side_points(black_sig)
+
 
 def material_delta_for_move(board: chess.Board, move: chess.Move) -> int:
     """Material the MOVER gains by playing this move (captures/promotions),

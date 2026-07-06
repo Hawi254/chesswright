@@ -211,6 +211,23 @@ analytics:
                                              # legal replies makes a pre-queued move more plausible
                                              # (an instant move choosing among 30 legal options
                                              # is a different, less explicable, thing).
+  time_forfeit_material_imbalance: 300     # material balance at the final recorded move of a
+                                             # time-forfeit loss must reach this (cp-like x100
+                                             # units, same scale as hallucination_min_material_delta:
+                                             # 300 = a minor piece) to count as "ahead"/"behind" on
+                                             # material rather than "roughly level." Board-derived
+                                             # (parsed from the stored material signature), so it
+                                             # needs no engine analysis -- but material ahead is
+                                             # NOT the same claim as winning (no compensation,
+                                             # attack, or fortress awareness).
+  time_forfeit_mutual_scramble_max_seconds: 15   # opponent's clock (at their last recorded move)
+                                                   # strictly below this makes a time-forfeit loss a
+                                                   # "mutual scramble" -- both sides nearly out, you
+                                                   # just flagged first.
+  time_forfeit_one_sided_min_seconds: 60   # opponent's clock at or above this makes the flag
+                                             # "one-sided" -- they were comfortable while you ran
+                                             # out. Between the two thresholds is reported as its
+                                             # own middle bucket, neither scramble nor comfortable.
   structure_top_n: 15                       # cap each structure report to the N most-frequent.
 
 interactive_engine:                  # settings for the on-demand engine used in the
