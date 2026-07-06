@@ -38,13 +38,26 @@ datas += [(str(ROOT / ".streamlit"), ".streamlit")]
 # network (a real Windows pilot failure: firewalled machine, IOException
 # at startup). Fetched here at build time -- through the build env's own
 # pinned duckdb, on the target platform's runner, so version and platform
-# always match the interpreter being frozen -- and loaded from
-# _internal/duckdb_extensions/ by dashboard/_common.py at runtime.
+# always match the interpreter being frozen.
+#
+# Deliberately NOT added to `datas` (v0.1.20 shipped it that way and broke
+# the macOS build): PyInstaller inspects every datas/binaries file's
+# CONTENT and auto-reclassifies anything that looks like a real binary as
+# BINARY/EXTENSION, regardless of which list it came from (build_main.py's
+# "automatic binary vs. data reclassification" pass) -- and .duckdb_extension
+# files are genuine Mach-O dylibs with DuckDB's own metadata footer appended
+# after them. That reclassification puts the file through PyInstaller's
+# macOS codesign step (`codesign --force --all-architectures --timestamp`),
+# which chokes on the non-standard trailing footer and fails with "main
+# executable failed strict validation" -- a real v0.1.20 CI failure, not a
+# hypothetical. build.yml now copies + (on macOS) ad-hoc-signs this file
+# into dist/chesswright/_internal/duckdb_extensions/ as a POST-build step,
+# entirely outside PyInstaller's Analysis/COLLECT TOC, so it never enters
+# that reclassification path at all.
 import sys
 sys.path.insert(0, str(ROOT / "scripts"))
 from fetch_duckdb_extensions import fetch as _fetch_duckdb_ext
-_duck_ext = _fetch_duckdb_ext(ROOT / "build_assets" / "duckdb_extensions")
-datas += [(str(_duck_ext), "duckdb_extensions")]
+_fetch_duckdb_ext(ROOT / "build_assets" / "duckdb_extensions")
 
 # streamlit needs its own DATA files bundled, not just its .py source --
 # confirmed by two separate live failures, not assumed from the research

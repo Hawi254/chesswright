@@ -129,6 +129,32 @@ jobs:
       - name: Build with PyInstaller
         run: pyinstaller chesswright.spec --noconfirm
 
+      # v0.1.20 shipped this file via chesswright.spec's `datas`, which
+      # put it through PyInstaller's automatic binary-vs-data
+      # reclassification (build_main.py inspects every datas/binaries
+      # file's actual content) -- .duckdb_extension files are genuine
+      # Mach-O dylibs with DuckDB's own metadata footer appended after
+      # them, so they get reclassified as BINARY and run through
+      # PyInstaller's macOS codesign step, which fails on that trailing
+      # footer with "main executable failed strict validation" (the real
+      # v0.1.20 macOS build failure, Linux/Windows unaffected since they
+      # have no codesign step). Copying it in here, entirely outside
+      # PyInstaller's Analysis/COLLECT TOC, sidesteps that reclassification
+      # completely. macOS still needs its own ad-hoc signature -- Apple
+      # Silicon refuses to dlopen() an unsigned dylib -- just via a plain
+      # `codesign -s -` (no --all-architectures/--timestamp, the two
+      # extra flags PyInstaller's own signer used that failed here).
+      - name: Bundle DuckDB sqlite extension (post-build, outside PyInstaller's TOC)
+        shell: bash
+        run: |
+          mkdir -p dist/chesswright/_internal/duckdb_extensions
+          cp build_assets/duckdb_extensions/sqlite_scanner.duckdb_extension \
+             dist/chesswright/_internal/duckdb_extensions/
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            codesign -s - --force dist/chesswright/_internal/duckdb_extensions/sqlite_scanner.duckdb_extension
+            echo "OK: ad-hoc signed sqlite_scanner.duckdb_extension for macOS."
+          fi
+
       # Confirmed live (the actual bug, not a hypothetical), not just
       # building and hoping: the build succeeding does not mean `gi` was
       # actually bundled -- v0.1.1's Linux build "succeeded" and still
