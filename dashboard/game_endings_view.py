@@ -46,6 +46,11 @@ def cached_resignation_loss_causes(_duck_conn):
     return data.get_resignation_loss_causes(_duck_conn)
 
 
+@st.cache_data(show_spinner="Tracking your time-pressure resignations over time…")
+def cached_resignation_time_pressure_trend(_duck_conn):
+    return data.get_resignation_time_pressure_trend(_duck_conn)
+
+
 def render():
     sqlite_conn, duck_conn = get_connections()
     st.title("Game Endings")
@@ -187,3 +192,24 @@ def render():
                                               x_title="Forced mate distance",
                                               y_title="% of faced-mate resignation losses"),
                             theme=None)
+
+    with st.container(border=True):
+        st.subheader("Time pressure over time")
+        st.caption("Share of each quarter's resignation losses where you were "
+                   "critically low on the clock against an opponent with a real time "
+                   "lead. This is the only cause above that's honest to trend by "
+                   "calendar date right now -- it reads straight off clock times "
+                   "already in every synced game, unlike the hung-piece/forced-mate/"
+                   "other split, which depends on how much of your history the engine "
+                   "has analyzed so far, and that coverage is heavily skewed toward "
+                   "your most recent games (analysis prioritizes them), not spread "
+                   "evenly across your career.")
+        trend_df = cached_resignation_time_pressure_trend(duck_conn)
+        if trend_df.empty or trend_df["period"].nunique() < 2:
+            st.info(theme.thin_data_message(0, 1))
+        else:
+            st.plotly_chart(
+                charts.line_chart(trend_df, "label", "pct", theme.NEGATIVE,
+                                   x_title="Quarter",
+                                   y_title="% of resignation losses"),
+                theme=None)

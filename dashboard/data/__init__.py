@@ -65,6 +65,7 @@ from .matchups import (
 )
 from .game_endings import (
     get_game_end_type_breakdown, get_endgame_type_performance, get_resignation_loss_causes,
+    get_resignation_time_pressure_trend,
 )
 from .tactical import (
     RIM_SQL,
@@ -137,6 +138,7 @@ __all__ = [
     "get_color_performance_by_rating", "get_giant_killing_counts",
     "get_nemesis_opponents",
     "get_game_end_type_breakdown", "get_endgame_type_performance", "get_resignation_loss_causes",
+    "get_resignation_time_pressure_trend",
     "RIM_SQL",
     "get_puzzle_sequences", "get_brilliant_candidates", "get_best_move_streaks",
     "get_blown_mates", "get_knight_rim_performance", "get_hallucination_blunders",

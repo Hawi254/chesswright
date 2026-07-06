@@ -279,6 +279,99 @@ def get_resignation_loss_causes(duck_conn, config_path=None):
     return reason_df, piece_df, mate_df
 
 
+def get_resignation_time_pressure_trend(duck_conn, config_path=None):
+    """Quarterly trend of time_pressure's share of resignation losses --
+    the ONE cause from get_resignation_loss_causes that's honest to trend
+    over calendar time right now.
+
+    hung_piece/faced_mate/other all depend on Stockfish analysis having
+    reached a given game, and analysis coverage is NOT evenly spread
+    across calendar time: ingest.py gives freshly-synced games negative
+    queue_order to jump the analysis queue ahead of the historical
+    backlog ("prioritize how am I playing now"), so recent years are
+    analyzed far more than old ones (confirmed live: 2025 is ~39%
+    analyzed, 2026 ~10%, but every year 2018-2024 is under 1%). A
+    reason-mix-by-year chart built on that data wouldn't show how this
+    player's chess changed -- it would show which years the analysis
+    worker happened to reach, and read as "hung-piece losses appeared in
+    2025" when nothing of the kind actually happened.
+
+    time_pressure has no such problem: clock_seconds comes straight off
+    the ingested PGN's %clk comments at sync time, so every resignation
+    loss ever ingested already has this signal available, independent of
+    the analysis backlog. Same thresholds and closest-to-the-end pick as
+    get_resignation_loss_causes's clock check, just grouped by quarter of
+    the game's own date instead of collapsed to one all-time number.
+
+    Quarterly grain matches Repertoire Evolution's convention (this
+    dashboard's other calendar-time trend); real per-quarter resignation
+    loss counts here run ~120-780, plenty for a share estimate even
+    though the qualifying-game counts within each are sometimes single
+    digits (same order of thinness already accepted by
+    bucket_acpl_blunder_rate elsewhere in this package).
+
+    Returns a DataFrame with one row per quarter from the first to the
+    last resignation loss (gaps zero-filled the same way
+    evolution.period_shares does it, so a quarter with no resignation
+    losses at all renders as an honest gap rather than being silently
+    skipped): year, quarter, period (sortable int), label ("2019 Q1"),
+    n_total, n_time_pressure, pct (NaN, not 0, when n_total is 0 -- 0/0
+    is "no data," not "0% time pressure"). Empty (not None) when there
+    are no resignation losses yet.
+    """
+    cfg = get_config(config_path)
+    max_own_seconds = cfg["analytics"]["resignation_time_pressure_max_own_seconds"]
+    min_opponent_lead_seconds = cfg["analytics"]["resignation_time_pressure_min_opponent_lead_seconds"]
+
+    df = duck_conn.execute(f"""
+        WITH resignations AS (
+            SELECT id AS game_id, year, ((month - 1) // 3) + 1 AS quarter
+            FROM db.games
+            WHERE outcome_for_player = 'loss' AND game_end_type = 'resignation'
+              AND year IS NOT NULL AND month IS NOT NULL
+        ),
+        last_player_clock AS (
+            SELECT r.game_id, m.clock_seconds AS player_clock,
+                   ROW_NUMBER() OVER (PARTITION BY r.game_id ORDER BY m.ply DESC) AS rn
+            FROM db.moves m JOIN resignations r ON r.game_id = m.game_id
+            WHERE m.is_player_move = 1 AND m.clock_seconds IS NOT NULL
+            QUALIFY rn = 1
+        ),
+        last_opponent_clock AS (
+            SELECT r.game_id, m.clock_seconds AS opponent_clock,
+                   ROW_NUMBER() OVER (PARTITION BY r.game_id ORDER BY m.ply DESC) AS rn
+            FROM db.moves m JOIN resignations r ON r.game_id = m.game_id
+            WHERE m.is_player_move = 0 AND m.clock_seconds IS NOT NULL
+            QUALIFY rn = 1
+        )
+        SELECT r.year, r.quarter,
+               COUNT(*) AS n_total,
+               SUM(CASE WHEN pc.player_clock IS NOT NULL AND oc.opponent_clock IS NOT NULL
+                             AND pc.player_clock < {max_own_seconds}
+                             AND oc.opponent_clock - pc.player_clock >= {min_opponent_lead_seconds}
+                        THEN 1 ELSE 0 END) AS n_time_pressure
+        FROM resignations r
+        LEFT JOIN last_player_clock pc ON pc.game_id = r.game_id
+        LEFT JOIN last_opponent_clock oc ON oc.game_id = r.game_id
+        GROUP BY r.year, r.quarter
+    """).fetchdf()
+
+    if df.empty:
+        return pd.DataFrame(columns=["year", "quarter", "period", "label",
+                                     "n_total", "n_time_pressure", "pct"])
+
+    df["period"] = df["year"].astype(int) * 4 + (df["quarter"].astype(int) - 1)
+    all_periods = pd.DataFrame({"period": range(int(df["period"].min()), int(df["period"].max()) + 1)})
+    df = all_periods.merge(df, on="period", how="left")
+    df["year"] = df["period"] // 4
+    df["quarter"] = df["period"] % 4 + 1
+    df["n_total"] = df["n_total"].fillna(0).astype(int)
+    df["n_time_pressure"] = df["n_time_pressure"].fillna(0).astype(int)
+    df["label"] = df["year"].astype(str) + " Q" + df["quarter"].astype(str)
+    df["pct"] = (100.0 * df["n_time_pressure"] / df["n_total"].where(df["n_total"] > 0))
+    return df[["year", "quarter", "period", "label", "n_total", "n_time_pressure", "pct"]]
+
+
 def get_game_end_type_breakdown(duck_conn):
     overall = duck_conn.execute("""
         SELECT game_end_type, COUNT(*) AS n FROM db.games GROUP BY game_end_type ORDER BY n DESC
