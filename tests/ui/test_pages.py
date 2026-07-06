@@ -60,6 +60,7 @@ class TestAllCareerPagesRender:
         "points_view",  # render(self_page=None, detail_page=None) defaults
         "srs_drill_view",  # renders upsell when pro_gate inactive, full tabs when active
         "evolution_view",
+        "batch_impact_view",  # render(self_page=None, detail_page=None) defaults
     ])
     def test_no_arg_page_renders(self, module_name):
         at = _page_apptest(module_name)

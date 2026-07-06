@@ -41,6 +41,7 @@ import evolution_view
 import settings_view
 import onboarding_view
 import analysis_jobs_view
+import batch_impact_view
 import ask_view
 import drill_export_view
 import srs_drill_view
@@ -276,7 +277,14 @@ opening_tree_page = st.Page(opening_tree_view.render, title="Opening Tree ✦",
 prep_page = st.Page(prep_view.render, title="Opponent Prep", url_path="opponent-prep")
 ask_page = st.Page(ask_view.render, title="Ask", url_path="ask")
 settings_page = st.Page(settings_view.render, title="Settings", url_path="settings")
-analysis_jobs_page = st.Page(analysis_jobs_view.render, title="Analysis Jobs", url_path="analysis-jobs")
+analysis_jobs_page = st.Page(
+    lambda: analysis_jobs_view.render(batch_impact_page=batch_impact_page),
+    title="Analysis Jobs", url_path="analysis-jobs",
+)
+batch_impact_page = st.Page(
+    lambda: batch_impact_view.render(batch_impact_page, detail_page),
+    title="Batch Impact", url_path="batch-impact",
+)
 # BRIEF.md Phase B: defaults to first when the database has no games yet
 # or player.name is still the placeholder -- a fresh install should never
 # land on Overview with nothing to show before walking through setup.
@@ -290,7 +298,7 @@ pg = st.navigation({
                evolution_page],
     "Explore": [explorer_page, drill_export_page, srs_drill_page, opening_tree_page,
                 prep_page, ask_page, detail_page],
-    "App": [settings_page, analysis_jobs_page, onboarding_page],
+    "App": [settings_page, analysis_jobs_page, batch_impact_page, onboarding_page],
     **_pro_nav_groups,
 })
 pg.run()

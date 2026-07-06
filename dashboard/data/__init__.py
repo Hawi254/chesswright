@@ -87,6 +87,10 @@ from .evolution import (
     get_family_period_counts, filter_counts, period_shares,
     classify_evolution, family_win_trend, get_family_acpl_by_period,
 )
+from .analysis_batches import (
+    list_analysis_runs, get_batch_headline_delta, get_phase_accuracy_batch_delta,
+    get_endgame_type_batch_delta, get_motif_batch_delta, get_new_blunders_this_run,
+)
 from .drills import (
     get_motif_drill_positions, get_decisive_moment_positions, build_drill_cards,
 )
@@ -146,6 +150,8 @@ __all__ = [
     "MIN_FAMILY_GAMES", "ECO_SECTION_NAMES", "STATUS_ORDER",
     "get_family_period_counts", "filter_counts", "period_shares",
     "classify_evolution", "family_win_trend", "get_family_acpl_by_period",
+    "list_analysis_runs", "get_batch_headline_delta", "get_phase_accuracy_batch_delta",
+    "get_endgame_type_batch_delta", "get_motif_batch_delta", "get_new_blunders_this_run",
     "get_motif_drill_positions", "get_decisive_moment_positions", "build_drill_cards",
     "SrsCard", "get_due_cards", "get_card_counts", "add_cards", "apply_rating", "delete_card",
     "TRANSFER_MIN_MOVES_AFTER",
