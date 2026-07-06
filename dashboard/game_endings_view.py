@@ -23,6 +23,13 @@ _END_TYPE_LABELS = {
     "unknown":               "Unknown",
 }
 
+_RESIGN_REASON_LABELS = {
+    "hung_piece":     "Hung a piece",
+    "faced_mate":     "Faced a forced mate",
+    "time_pressure":  "Time pressure",
+    "other":          "Other / gradual decline",
+}
+
 
 @st.cache_data(show_spinner="Loading how your games end…")
 def cached_game_end_type_breakdown(_duck_conn):
@@ -32,6 +39,11 @@ def cached_game_end_type_breakdown(_duck_conn):
 @st.cache_data(show_spinner="Computing your endgame results…")
 def cached_endgame_type_performance(_sqlite_conn):
     return data.get_endgame_type_performance(_sqlite_conn)
+
+
+@st.cache_data(show_spinner="Working out why your resignation losses happened…")
+def cached_resignation_loss_causes(_duck_conn):
+    return data.get_resignation_loss_causes(_duck_conn)
 
 
 def render():
@@ -104,3 +116,74 @@ def render():
                 "blunder_rate": st.column_config.Column(
                     "Blunder rate", help="Share of your endgame moves classified as blunders."),
             })
+
+    with st.container(border=True):
+        st.subheader("Why resignation losses happen")
+        st.caption("Of your losses that ended in resignation: how many followed a "
+                   "hanging-piece blunder (the same detection Tactical Highlights' "
+                   "hallucination section uses) close to the end, vs. a forced mate "
+                   "already on the board with no such hang, vs. resigning while "
+                   "critically low on the clock against an opponent with a real time "
+                   "advantage, vs. neither -- a gradual decline with no single hang, "
+                   "detected forced mate, or clock imbalance. The first two need engine "
+                   "analysis to exist at all; the clock check doesn't (it reads straight "
+                   "off the game's move times), so games that still have no explanation "
+                   "of any kind are tracked and excluded separately rather than being "
+                   "silently counted as \"gradual decline.\"")
+        reason_df, piece_df, mate_df = cached_resignation_loss_causes(duck_conn)
+        if reason_df.empty:
+            st.info(theme.thin_data_message(0, 1))
+        else:
+            n_total = int(reason_df.n.sum())
+            n_not_analyzed = int(reason_df.loc[reason_df.reason == "not_analyzed", "n"].sum())
+            n_explained = n_total - n_not_analyzed
+            st.caption(f"{n_explained} of {n_total} resignation losses "
+                       f"({100.0 * n_explained / n_total:.0f}%) have some explanation found "
+                       "below -- the rest have neither been analyzed by the engine nor show "
+                       "a clock-pressure signal, so no cause could be determined yet.")
+            if n_explained == 0:
+                st.info(theme.thin_data_message(0, 1))
+            else:
+                explained_df = reason_df[reason_df.reason != "not_analyzed"].copy()
+                explained_df["pct"] = 100.0 * explained_df.n / n_explained
+                other_pct = explained_df.loc[explained_df.reason == "other", "pct"].sum()
+                if other_pct >= 50:
+                    st.caption(f"Of explained resignation losses, {other_pct:.0f}% show "
+                               "neither signal near the end -- more often a longer material "
+                               "or positional squeeze than one clean hanging piece, forced "
+                               "mate, or clock imbalance.")
+                explained_df["reason"] = explained_df["reason"].map(
+                    lambda x: _RESIGN_REASON_LABELS.get(x, x))
+                st.plotly_chart(
+                    charts.bar_chart(explained_df, "reason", "pct", theme.ACCENT_GOLD,
+                                      x_title="Cause",
+                                      y_title="% of explained resignation losses"),
+                    theme=None)
+
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.write("**Which piece hung**")
+                    if piece_df.empty:
+                        st.info(theme.thin_data_message(0, 1))
+                    else:
+                        piece_plot = piece_df.copy()
+                        piece_plot["piece_name"] = piece_plot["hung_piece"].map(
+                            lambda p: str(data.PIECE_NAME.get(p, p)).title())
+                        order = {p: i for i, p in enumerate(data.PIECE_ORDER)}
+                        piece_plot = piece_plot.sort_values(
+                            by="hung_piece", key=lambda s: s.map(order))
+                        st.plotly_chart(
+                            charts.bar_chart(piece_plot, "piece_name", "pct", theme.NEGATIVE,
+                                              x_title="Piece hung",
+                                              y_title="% of hung-piece resignation losses"),
+                            theme=None)
+                with col2:
+                    st.write("**How many moves to mate**")
+                    if mate_df.empty:
+                        st.info(theme.thin_data_message(0, 1))
+                    else:
+                        st.plotly_chart(
+                            charts.bar_chart(mate_df, "bucket", "pct", theme.NEGATIVE,
+                                              x_title="Forced mate distance",
+                                              y_title="% of faced-mate resignation losses"),
+                            theme=None)

@@ -168,6 +168,14 @@ analytics:
                                                   # blunder still counts as "resigned right away
                                                   # or shortly after" -- converted to plies (x2)
                                                   # since either side may move in between.
+  resignation_time_pressure_max_own_seconds: 20        # own clock (at your last recorded move
+                                                         # before resigning) strictly below this
+                                                         # counts as "critically low on time."
+  resignation_time_pressure_min_opponent_lead_seconds: 60  # opponent's clock (at their last
+                                                             # recorded move) must lead your own
+                                                             # by at least this many seconds --
+                                                             # both being low doesn't count, only
+                                                             # a real time-pressure imbalance.
   structure_min_games_per_group: 5        # min games reaching a structure to include it at all.
   structure_top_n: 15                       # cap each structure report to the N most-frequent.
 
