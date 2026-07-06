@@ -238,6 +238,9 @@ def render():
     st.divider()
     _render_pro_section()
 
+    st.divider()
+    _render_support_section()
+
 
 def _render_chesscom_section():
     """Additive-only chess.com sync (see BRIEF.md's chess.com integration
@@ -345,3 +348,12 @@ def _render_pro_section():
                     st.rerun()
                 else:
                     st.error(msg)
+
+
+def _render_support_section():
+    st.subheader("Support this project")
+    st.caption(
+        "The core app is free and stays free — this isn't a paywall. If "
+        "you'd like to support ongoing development anyway: "
+        "[GitHub Sponsors](https://github.com/sponsors/Hawi254) · "
+        "[Open Collective](https://opencollective.com/chesswright).")
