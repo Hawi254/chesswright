@@ -80,6 +80,7 @@ from .game_explorer import (
 )
 from .insights import get_career_findings
 from .points import (
+    get_failed_conversion_causes,
     WINNING_WP, LOST_WP, SWINDLE_CHANCE_WP, EVEN_WP, HOLD_EVEN_MIN_MOVE,
     CONVERSION_BANDS, BUCKET_LABEL,
     get_points_ledger, classify_points_ledger, summarize_buckets,
@@ -151,7 +152,7 @@ __all__ = [
     "WINNING_WP", "LOST_WP", "SWINDLE_CHANCE_WP", "EVEN_WP", "HOLD_EVEN_MIN_MOVE",
     "CONVERSION_BANDS", "BUCKET_LABEL",
     "get_points_ledger", "classify_points_ledger", "summarize_buckets",
-    "monthly_points", "conversion_breakdown",
+    "monthly_points", "conversion_breakdown", "get_failed_conversion_causes",
     "QUARTERS_WINDOW", "MAJOR_SHARE_PCT", "MINOR_SHARE_PCT", "TREND_RATIO",
     "MIN_FAMILY_GAMES", "ECO_SECTION_NAMES", "STATUS_ORDER",
     "get_family_period_counts", "filter_counts", "period_shares",

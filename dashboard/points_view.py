@@ -43,6 +43,19 @@ def cached_points_ledger(_duck_conn):
     return data.classify_points_ledger(data.get_points_ledger(_duck_conn))
 
 
+@st.cache_data(show_spinner="Working out why conversions failed…")
+def cached_failed_conversion_causes(_duck_conn, classified):
+    return data.get_failed_conversion_causes(_duck_conn, classified)
+
+
+_CONVERSION_REASON_LABELS = {
+    "hung_piece":     "Hung a piece",
+    "blown_mate":     "Blew a forced mate",
+    "time_pressure":  "Time pressure",
+    "other":          "Other / gradual give-back",
+}
+
+
 def _headline(summary, classified):
     """One concrete sentence naming the biggest leak -- the whole point
     of the page, so it leads. Returns None when there are no leaks."""
@@ -176,6 +189,63 @@ def render(self_page=None, detail_page=None):
                     data.conversion_breakdown(view, "conv_clock"),
                     "conv_clock", "leaked", theme.NEGATIVE, height=280,
                     x_title="Clock remaining", y_title="Points leaked"), theme=None)
+
+    if len(conv_leak):
+        reason_df, piece_df, mate_df = cached_failed_conversion_causes(duck_conn, view)
+        with st.container(border=True):
+            st.subheader("Why conversions failed")
+            st.caption("Of your failed conversions: what happened, at the move level, "
+                       "after the position first became winning. Both the hanging-piece "
+                       "check (same detection Tactical Highlights' hallucination section "
+                       "uses) and the blown-forced-mate check (same as Tactical "
+                       "Highlights' blown-mates list) need engine analysis -- but since "
+                       "this ledger only ever contains fully analyzed games to begin "
+                       "with, every failed conversion already has as much engine coverage "
+                       "as it will ever get, unlike the resignation-cause breakdown on "
+                       "Game Endings. This is an all-time picture, not a calendar trend: "
+                       "the ledger itself only covers analyzed games, and analysis "
+                       "coverage is heavily skewed toward recently-synced games, so a "
+                       "by-year cut of these causes would read as \"this started "
+                       "happening recently\" when it's really \"this is when the engine "
+                       "got there.\"")
+            if reason_df.empty:
+                st.info(theme.thin_data_message(0, 1))
+            else:
+                reason_plot = reason_df.copy()
+                reason_plot["reason"] = reason_plot["reason"].map(
+                    lambda x: _CONVERSION_REASON_LABELS.get(x, x))
+                st.plotly_chart(
+                    charts.bar_chart(reason_plot, "reason", "pct", theme.ACCENT_GOLD,
+                                      x_title="Cause", y_title="% of failed conversions"),
+                    theme=None)
+
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.write("**Which piece hung**")
+                    if piece_df.empty:
+                        st.info(theme.thin_data_message(0, 1))
+                    else:
+                        piece_plot = piece_df.copy()
+                        piece_plot["piece_name"] = piece_plot["hung_piece"].map(
+                            lambda p: str(data.PIECE_NAME.get(p, p)).title())
+                        order = {p: i for i, p in enumerate(data.PIECE_ORDER)}
+                        piece_plot = piece_plot.sort_values(
+                            by="hung_piece", key=lambda s: s.map(order))
+                        st.plotly_chart(
+                            charts.bar_chart(piece_plot, "piece_name", "pct", theme.NEGATIVE,
+                                              x_title="Piece hung",
+                                              y_title="% of hung-piece failed conversions"),
+                            theme=None)
+                with col2:
+                    st.write("**How deep the blown mate was**")
+                    if mate_df.empty:
+                        st.info(theme.thin_data_message(0, 1))
+                    else:
+                        st.plotly_chart(
+                            charts.bar_chart(mate_df, "bucket", "pct", theme.NEGATIVE,
+                                              x_title="Forced mate distance",
+                                              y_title="% of blown-mate failed conversions"),
+                            theme=None)
 
     with st.container(border=True):
         st.subheader("Costliest games")
