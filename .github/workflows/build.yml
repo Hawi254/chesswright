@@ -144,27 +144,30 @@ jobs:
       #
       # v0.1.21 then tried re-signing it ourselves on macOS with a plain
       # `codesign -s - --force` (no --all-architectures/--timestamp) --
-      # SAME failure, "main executable failed strict validation", proving
-      # the flags were never the cause. The real signal was codesign's own
-      # first line of output: "replacing existing signature" -- the file
-      # DuckDB serves already carries a valid signature (applied by
-      # DuckDB's own build, presumably accounting for their footer
-      # correctly), and it's OUR re-sign attempt that breaks it by
-      # re-hashing under standard Mach-O assumptions that don't match
-      # DuckDB's footer layout. Fix: never touch its signature at all --
-      # `cp` alone preserves the original file bytes, signature included,
-      # so Apple Silicon's dlopen() requirement is already satisfied by
-      # DuckDB's own signing, not ours.
+      # SAME failure, "main executable failed strict validation". v0.1.22
+      # tried a non-mutating `codesign --verify` instead, on the theory
+      # that our own re-signing (not the file itself) was the problem --
+      # WRONG: `codesign --verify` fails on this file even completely
+      # untouched, freshly copied, never signed by us at all. That proves
+      # the failure has nothing to do with anything we do -- `codesign
+      # --verify`'s app-bundle-oriented strict validation simply doesn't
+      # understand DuckDB's appended metadata footer, full stop. Plain
+      # `dlopen()` (what DuckDB's own `LOAD` actually does, and what
+      # every macOS DuckDB user relies on daily, Apple Silicon included)
+      # uses a different, more lenient runtime code-signing check (AMFI)
+      # that this file demonstrably satisfies in normal DuckDB use --
+      # `codesign --verify` was simply the wrong test for this file's
+      # actual purpose. So: no codesign involvement at all, just copy the
+      # bytes untouched, and let the ALREADY-EXISTING "Verify bundled
+      # DuckDB sqlite extension loads" step below -- which does a real
+      # `duckdb...LOAD` on this exact file on every platform -- be the
+      # real, meaningful check.
       - name: Bundle DuckDB sqlite extension (post-build, outside PyInstaller's TOC)
         shell: bash
         run: |
           mkdir -p dist/chesswright/_internal/duckdb_extensions
           cp build_assets/duckdb_extensions/sqlite_scanner.duckdb_extension \
              dist/chesswright/_internal/duckdb_extensions/
-          if [ "$RUNNER_OS" = "macOS" ]; then
-            codesign --verify --verbose dist/chesswright/_internal/duckdb_extensions/sqlite_scanner.duckdb_extension
-            echo "OK: sqlite_scanner.duckdb_extension carries a valid pre-existing signature, left untouched."
-          fi
 
       # Confirmed live (the actual bug, not a hypothetical), not just
       # building and hoping: the build succeeding does not mean `gi` was
