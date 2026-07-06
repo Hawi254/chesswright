@@ -1,0 +1,74 @@
+name: Pilot feedback
+description: For pilot testers — how the install and first analysis went.
+labels: [pilot-feedback]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for testing Chesswright. This form is the fields from
+        [PILOT.md](../blob/main/PILOT.md) — fill in what you can, skip what
+        you can't. No detail is too small for a pilot build.
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows
+        - macOS
+        - Linux
+    validations:
+      required: true
+
+  - type: input
+    id: machine
+    attributes:
+      label: Roughly what machine?
+      description: e.g. "Windows 11 laptop, 2021" — just enough to place the OS version and vintage.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: got-through
+    attributes:
+      label: Did you get all the way through install → first analysis?
+      description: "\"Blocked\" = you genuinely couldn't install, launch, or finish the first batch without editing a config file."
+      options:
+        - "Yes — no blocking problems"
+        - "Yes, but only after a real struggle (tell us below)"
+        - "No — something blocked me completely"
+    validations:
+      required: true
+
+  - type: textarea
+    id: blocking
+    attributes:
+      label: If anything blocked or nearly blocked you, what?
+      description: Where it happened, what you saw, what you tried. This is the most useful field on the form.
+    validations:
+      required: false
+
+  - type: input
+    id: timing
+    attributes:
+      label: Time estimate vs. actual
+      description: The two numbers from the last setup step (or paste the contents of first_run_timing.json next to your database).
+      placeholder: "estimate ~20 min, actual ~28 min"
+    validations:
+      required: false
+
+  - type: input
+    id: account-size
+    attributes:
+      label: Roughly how many games does the account you tested with have?
+      placeholder: "~1,500"
+    validations:
+      required: false
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything that surprised you, annoyed you, or looked wrong
+      description: "Cosmetic, confusing, slow-but-working — all welcome. Please don't paste your Claude API key if it appears anywhere."
+    validations:
+      required: false
