@@ -30,6 +30,7 @@ that preceded this file):
 import streamlit as st
 
 import annotate
+import backfill_batch_eval_cache
 import config as config_module
 import joblock
 import job_runner
@@ -234,3 +235,32 @@ def render(batch_impact_page=None):
 
     if running:
         st.caption("Settings are read-only while a batch is running -- stop it first to change them.")
+
+    # ---------- Eval-reuse cache backfill ----------
+    # Deliberately its own st.divider()/st.subheader() block here, NOT
+    # folded into _render_status()'s @st.fragment(run_every="2s") above --
+    # that fragment polls every 2s for exactly the "leave the page and come
+    # back" live-progress use case, and count_pending_groups()'s query
+    # would be wasted work at that frequency for a one-time, rarely-pending
+    # operation like this one. Same "explain, don't clutter when there's
+    # nothing to do" posture as the annotation-pass-now section above:
+    # nothing renders at all once every eligible historical position is
+    # already cached.
+    conn = get_sqlite_connection(db_path)
+    pending = backfill_batch_eval_cache.count_pending_groups(conn)
+    if pending > 0:
+        st.divider()
+        st.subheader("Eval-reuse cache backfill")
+        st.info(
+            f"{pending:,} position group(s) analyzed before the eval-reuse cache existed "
+            "haven't been backfilled yet. Backfilling lets future analysis batches instantly "
+            "reuse these positions instead of re-running the engine on exact repeats. "
+            "One-time and safe to repeat -- already-backfilled positions are skipped "
+            "automatically.")
+        if st.button("Backfill eval-reuse cache now", disabled=running):
+            with st.spinner("Backfilling eval-reuse cache..."):
+                stats = backfill_batch_eval_cache.backfill(db_path)
+            st.success(
+                f"Backfilled {stats.inserted:,} cache entries from "
+                f"{stats.groups_seen:,} historical position(s).")
+            st.rerun()

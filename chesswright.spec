@@ -23,7 +23,7 @@ BACKEND_MODULES = [
     "ingest.py", "worker.py", "annotate.py", "analytics.py", "db.py",
     "config.py", "chess_utils.py", "migrate.py", "sync.py", "opening_explorer.py",
     "db_import.py", "joblock.py", "motif.py", "opponent_analysis.py",
-    "sync_chesscom.py", "chesscom_pgn.py",
+    "sync_chesscom.py", "chesscom_pgn.py", "backfill_batch_eval_cache.py",
 ]
 
 datas = [(str(ROOT / "config.yaml"), ".")]

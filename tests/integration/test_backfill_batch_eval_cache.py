@@ -79,7 +79,7 @@ class TestBackfillIdempotency:
                              reuse_evals=False)
         conn.close()
 
-        backfill_mod.backfill(migrated_db_path)
+        first_stats = backfill_mod.backfill(migrated_db_path)
         conn = sqlite3.connect(migrated_db_path)
         first_pass = conn.execute(
             "SELECT fen_before, engine_version, requested_depth, multipv, lines_json "
@@ -89,7 +89,14 @@ class TestBackfillIdempotency:
         assert first_count > 0
         conn.close()
 
-        backfill_mod.backfill(migrated_db_path)
+        # Returned stats must match what backfill() actually did on this
+        # first (non-idempotent) pass: every group seen was newly inserted.
+        assert first_stats.groups_seen == first_count
+        assert first_stats.inserted == first_count
+        assert first_stats.already_present == 0
+        assert first_stats.candidates_seen > 0
+
+        second_stats = backfill_mod.backfill(migrated_db_path)
         conn = sqlite3.connect(migrated_db_path)
         second_pass = conn.execute(
             "SELECT fen_before, engine_version, requested_depth, multipv, lines_json "
@@ -98,6 +105,13 @@ class TestBackfillIdempotency:
         conn.close()
         assert second_pass == first_pass
         assert len(second_pass) == first_count
+
+        # Second (idempotent) pass: same groups seen, but nothing new
+        # inserted -- all already present from the first pass.
+        assert second_stats.groups_seen == first_stats.groups_seen
+        assert second_stats.candidates_seen == first_stats.candidates_seen
+        assert second_stats.inserted == 0
+        assert second_stats.already_present == second_stats.groups_seen
 
 
 @pytest.mark.integration
@@ -296,4 +310,56 @@ class TestLiveProofViaFakeEngine:
         sources = [r[0] for r in conn.execute(
             "SELECT eval_source FROM moves WHERE game_id='g2' ORDER BY ply")]
         assert sources == ["reuse", "reuse", "reuse"]
+        conn.close()
+
+
+@pytest.mark.integration
+class TestCountPendingGroups:
+    """count_pending_groups() is the cheap existence-check the dashboard
+    (analysis_jobs_view.py) polls on every render to decide whether to show
+    the backfill banner -- it must agree with backfill()'s own notion of
+    "groups seen" without doing the full move_lines join/reshape."""
+
+    def test_empty_db_has_no_pending_groups(self, migrated_db_path):
+        conn = sqlite3.connect(migrated_db_path)
+        conn.execute("PRAGMA foreign_keys = ON")
+        assert backfill_mod.count_pending_groups(conn) == 0
+        conn.close()
+
+    def test_eligible_uncached_rows_are_counted(self, migrated_db_path):
+        conn = sqlite3.connect(migrated_db_path)
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn = _with_runs(conn)
+        conn.execute("UPDATE analysis_runs SET depth=6, multipv=1 WHERE id=1")
+        conn.commit()
+        _insert_game_with_moves(conn, "g1", ["e4", "e5", "Nf3"])
+        _populate_fen_before(conn, "g1")
+        engine = FakeAnalysisEngine()
+        worker.analyze_game(conn, engine, _game_row(conn, "g1"), depth=6, multipv=1, pv_max_len=10,
+                             commit_every_n_moves=1, engine_version="FakeEngine", run_id=1,
+                             reuse_evals=False)
+        pending = backfill_mod.count_pending_groups(conn)
+        assert pending > 0
+        conn.close()
+
+    def test_zero_again_after_backfill_runs(self, migrated_db_path):
+        conn = sqlite3.connect(migrated_db_path)
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn = _with_runs(conn)
+        conn.execute("UPDATE analysis_runs SET depth=6, multipv=1 WHERE id=1")
+        conn.commit()
+        _insert_game_with_moves(conn, "g1", ["e4", "e5", "Nf3"])
+        _populate_fen_before(conn, "g1")
+        engine = FakeAnalysisEngine()
+        worker.analyze_game(conn, engine, _game_row(conn, "g1"), depth=6, multipv=1, pv_max_len=10,
+                             commit_every_n_moves=1, engine_version="FakeEngine", run_id=1,
+                             reuse_evals=False)
+        assert backfill_mod.count_pending_groups(conn) > 0
+        conn.close()
+
+        backfill_mod.backfill(migrated_db_path)
+
+        conn = sqlite3.connect(migrated_db_path)
+        conn.execute("PRAGMA foreign_keys = ON")
+        assert backfill_mod.count_pending_groups(conn) == 0
         conn.close()
