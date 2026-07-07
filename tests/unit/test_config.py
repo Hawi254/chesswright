@@ -76,6 +76,51 @@ class TestLoadConfig:
 
 
 @pytest.mark.unit
+class TestBackfillMissingKeys:
+    """config_yaml is a minimal fixture missing most of the real
+    config.yaml's keys -- exactly the "user config created before a key
+    was added to the template" shape this function exists to fix."""
+
+    def test_backfills_missing_key_in_existing_section(self, config_yaml):
+        cfg = config.load_config(config_yaml)
+        assert "multipv" not in cfg["engine"]
+
+        config.backfill_missing_keys(path=config_yaml)
+
+        cfg = config.load_config(config_yaml)
+        assert cfg["engine"]["multipv"] == 3
+
+    def test_preserves_existing_values(self, config_yaml):
+        config.backfill_missing_keys(path=config_yaml)
+        cfg = config.load_config(config_yaml)
+        # depth was already set in the fixture -- must not be clobbered
+        # with the template's own default.
+        assert cfg["engine"]["depth"] == 20
+
+    def test_does_not_add_new_top_level_section(self, config_yaml):
+        cfg = config.load_config(config_yaml)
+        assert "analytics" not in cfg
+
+        config.backfill_missing_keys(path=config_yaml)
+
+        cfg = config.load_config(config_yaml)
+        assert "analytics" not in cfg
+
+    def test_idempotent(self, config_yaml):
+        config.backfill_missing_keys(path=config_yaml)
+        text_once = config_yaml.read_text()
+        config.backfill_missing_keys(path=config_yaml)
+        text_twice = config_yaml.read_text()
+        assert text_once == text_twice
+
+    def test_result_still_parses(self, config_yaml):
+        config.backfill_missing_keys(path=config_yaml)
+        text = config_yaml.read_text()
+        import yaml
+        yaml.safe_load(text)  # raises if malformed
+
+
+@pytest.mark.unit
 class TestPick:
     def test_cli_value_wins_over_config(self):
         assert config.pick("cli_val", "config_val") == "cli_val"

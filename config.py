@@ -30,6 +30,75 @@ def pick(cli_value, config_value):
     return cli_value if cli_value is not None else config_value
 
 
+def backfill_missing_keys(path=None) -> None:
+    """Forward-migrates an already-created user config.yaml to pick up
+    keys added to the shipped template since that user's copy was made.
+
+    ensure_user_data() only copies the bundled template into
+    USER_DATA_DIR on first launch, deliberately -- overwriting it on
+    every launch would clobber a user's real settings. But that means
+    every key a later release adds to config.yaml (e.g. the
+    analytics.instant_move_* keys added in v0.1.2x) is invisible to an
+    existing install forever: load_config() returns a dict missing that
+    key, and the first view to read it hits a bare KeyError deep inside
+    a cached fragment, nowhere near this file. Call this on EVERY
+    launch (unlike ensure_user_data()'s one-time copy) so new keys
+    backfill automatically instead of needing a human to notice and
+    reinstall.
+
+    Only backfills keys within a section the user's config already has,
+    appending each missing key's own default line (with its trailing
+    comment, preserved verbatim from the template) to the end of that
+    section. A whole new top-level section is rare enough (none have
+    been added since v0.1.0) that it's left for a human to notice via
+    the changelog rather than guessed at here.
+    """
+    user_path = pathlib.Path(path) if path else DEFAULT_CONFIG_PATH
+    template_path = pathlib.Path(__file__).resolve().parent / "config.yaml"
+    if not user_path.exists() or user_path.resolve() == template_path.resolve():
+        return
+
+    template_cfg = load_config(template_path)
+    user_cfg = load_config(user_path)
+    template_text = template_path.read_text()
+    text = user_path.read_text()
+    changed = False
+
+    for section, template_section in template_cfg.items():
+        if not isinstance(template_section, dict):
+            continue
+        user_section = user_cfg.get(section)
+        if not isinstance(user_section, dict):
+            continue
+        missing_keys = [k for k in template_section if k not in user_section]
+        if not missing_keys:
+            continue
+
+        section_re = rf'(?m)^{re.escape(section)}:\n((?:[ \t]+.*\n|[ \t]*\n)*)'
+        template_section_match = re.search(section_re, template_text)
+        user_section_match = re.search(section_re, text)
+        if not template_section_match or not user_section_match:
+            continue
+        template_body = template_section_match.group(1)
+
+        new_lines = []
+        for key in missing_keys:
+            key_match = re.search(
+                rf'(?m)^[ \t]+{re.escape(key)}:\s*\S.*\n(?:[ \t]*#.*\n)*',
+                template_body)
+            if key_match:
+                new_lines.append(key_match.group(0))
+        if not new_lines:
+            continue
+
+        insertion_point = user_section_match.end(1)
+        text = text[:insertion_point] + "".join(new_lines) + text[insertion_point:]
+        changed = True
+
+    if changed:
+        user_path.write_text(text)
+
+
 def set_player_name(username, path=None):
     """Persists the onboarding wizard's chosen lichess username into
     config.yaml -- a targeted text substitution of just the `player.name`

@@ -90,16 +90,20 @@ def resource_dir():
 def ensure_user_data():
     """First-launch setup: copies the bundled config.yaml template into
     USER_DATA_DIR and points its database.path at that same directory.
-    A no-op on every later launch (config.yaml already exists -- never
-    overwritten, since it may hold a real configured username/settings
-    by then)."""
+    The copy itself is a no-op on every later launch (config.yaml already
+    exists -- never overwritten, since it may hold a real configured
+    username/settings by then), but backfill_missing_keys() still runs
+    every launch to pick up any config key a later release added to the
+    template after this user's config.yaml was first created -- see its
+    own docstring for why that's necessary even though the copy isn't."""
     USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
     user_config = USER_DATA_DIR / "config.yaml"
+    sys.path.insert(0, str(resource_dir()))
+    import config as config_module
     if not user_config.exists():
         shutil.copy(resource_dir() / "config.yaml", user_config)
-        sys.path.insert(0, str(resource_dir()))
-        import config as config_module
         config_module.set_database_path(str(USER_DATA_DIR / "chess.db"), path=user_config)
+    config_module.backfill_missing_keys(path=user_config)
     return user_config
 
 
