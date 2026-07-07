@@ -66,12 +66,18 @@ def grouped_bar_chart(df, x, group_col, y, colors=None, height=320,
     return theme.apply_plotly_theme(fig)
 
 
-def line_chart(df, x, y, color, height=320, x_title=None, y_title=None, hover_extra=None):
+def line_chart(df, x, y, color, height=320, x_title=None, y_title=None, hover_extra=None,
+               integer_x=False):
     """x_title/y_title: see bar_chart. hover_extra: optional (column, label)
     pair -- appends "label: <value>" to each point's hover text via
     customdata, for a per-point caveat (e.g. sample size or coverage %)
     that doesn't belong on the axis itself. Column values are used as-is,
-    so format them into display strings in the caller before passing."""
+    so format them into display strings in the caller before passing.
+    integer_x=True: same fix as stacked_bar_chart's own integer_x -- forces
+    plain-integer, dtick=1 ticks. Matters just as much here: a small,
+    bounded x range (e.g. a handful of analysis-run ids) is exactly what
+    Plotly's default numeric axis will otherwise split into half-integer
+    ticks (1, 1.5, 2, ...), which don't correspond to any real data point."""
     x_title = x_title or _title_case(x)
     y_title = y_title or _title_case(y)
     hovertemplate = f"%{{x}}<br>{y_title}: %{{y:.2f}}"
@@ -85,8 +91,11 @@ def line_chart(df, x, y, color, height=320, x_title=None, y_title=None, hover_ex
         marker=dict(size=5), customdata=customdata,
         hovertemplate=hovertemplate + "<extra></extra>",
     ))
+    xaxis: dict = dict(title=x_title, automargin=True)
+    if integer_x:
+        xaxis.update(tickformat="d", dtick=1)
     fig.update_layout(title_text="", height=height,
-                       xaxis=dict(title=x_title, automargin=True),
+                       xaxis=xaxis,
                        yaxis=dict(title=y_title, automargin=True))
     return theme.apply_plotly_theme(fig)
 

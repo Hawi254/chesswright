@@ -98,6 +98,7 @@ from .evolution import (
 from .analysis_batches import (
     list_analysis_runs, get_batch_headline_delta, get_phase_accuracy_batch_delta,
     get_endgame_type_batch_delta, get_motif_batch_delta, get_new_blunders_this_run,
+    get_batch_trend, get_batch_record_flags, get_batch_counter,
 )
 from .drills import (
     get_motif_drill_positions, get_decisive_moment_positions, build_drill_cards,
@@ -165,6 +166,7 @@ __all__ = [
     "classify_evolution", "family_win_trend", "get_family_acpl_by_period",
     "list_analysis_runs", "get_batch_headline_delta", "get_phase_accuracy_batch_delta",
     "get_endgame_type_batch_delta", "get_motif_batch_delta", "get_new_blunders_this_run",
+    "get_batch_trend", "get_batch_record_flags", "get_batch_counter",
     "get_motif_drill_positions", "get_decisive_moment_positions", "build_drill_cards",
     "SrsCard", "get_due_cards", "get_card_counts", "add_cards", "apply_rating", "delete_card",
     "TRANSFER_MIN_MOVES_AFTER",

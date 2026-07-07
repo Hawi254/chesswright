@@ -20,13 +20,30 @@ deliberately left out and why.
 import pandas as pd
 import streamlit as st
 
+import charts
 import data
+import theme
 from _common import get_connections, navigate_on_row_click
 
 
 @st.cache_data(show_spinner=False)
 def _cached_runs(_sqlite_conn):
     return data.list_analysis_runs(_sqlite_conn)
+
+
+@st.cache_data(show_spinner=False)
+def _cached_trend(_sqlite_conn):
+    return data.get_batch_trend(_sqlite_conn)
+
+
+@st.cache_data(show_spinner=False)
+def _cached_record_flags(_sqlite_conn, run_id):
+    return data.get_batch_record_flags(_sqlite_conn, run_id)
+
+
+@st.cache_data(show_spinner=False)
+def _cached_batch_counter(_sqlite_conn):
+    return data.get_batch_counter(_sqlite_conn)
 
 
 # run_id is a bounded, discrete value drawn from the run picker below (one
@@ -98,6 +115,12 @@ def render(self_page=None, detail_page=None):
              "Jobs session — see that page to start a new one.",
     )
 
+    counter = _cached_batch_counter(sqlite_conn)
+    st.caption(
+        f"{counter['total_batches']} batch{'es' if counter['total_batches'] != 1 else ''} run "
+        f"in total — {counter['total_games_analyzed']:,} games analyzed across all of them."
+    )
+
     headline = _cached_headline(sqlite_conn, run_id)
     if headline is None or headline["games_analyzed"] == 0:
         st.info("This run analyzed no games with recorded moves — nothing to compare.")
@@ -117,6 +140,9 @@ def render(self_page=None, detail_page=None):
         return
 
     _render_headline(headline)
+    _render_records(sqlite_conn, run_id)
+    st.divider()
+    _render_trend_section(sqlite_conn)
     st.divider()
     _render_phase_section(sqlite_conn, run_id)
     _render_motif_section(sqlite_conn, run_id)
@@ -162,6 +188,64 @@ def _render_headline(headline: dict) -> None:
             f"Most common missed tactic this run: **{headline['top_motif']}** "
             f"({n_m} instance{'s' if n_m != 1 else ''})."
         )
+
+
+def _render_records(sqlite_conn, run_id) -> None:
+    """Personal-record callout on this run's OWN isolated ACPL/blunder rate
+    (not the cumulative before/after the headline already shows) -- see
+    data.get_batch_record_flags's docstring for why isolated, not cumulative,
+    is the fair per-batch comparison. Silent (renders nothing) unless this
+    run actually set a record: most batches won't, and a callout on every
+    single batch would read as noise rather than a real signal."""
+    flags = _cached_record_flags(sqlite_conn, run_id)
+    if flags["is_best_acpl"]:
+        st.success(
+            f"🏆 Cleanest batch yet — {flags['this_run_acpl']:.1f} ACPL this run, "
+            f"previous best {flags['prior_best_acpl']:.1f} (Run #{flags['prior_best_acpl_run_id']})."
+        )
+    if flags["is_best_blunder_rate"]:
+        st.success(
+            f"🏆 Lowest blunder rate yet — {flags['this_run_blunder_rate']:.1f}% this run, "
+            f"previous best {flags['prior_best_blunder_rate']:.1f}%."
+        )
+
+
+def _render_trend_section(sqlite_conn) -> None:
+    """The cumulative ACPL/blunder-rate trend across EVERY batch, not just
+    this one -- the same before/after boundary the headline already computes
+    for a single run_id, extended to every checkpoint (data.get_batch_trend).
+    Two separate charts, not one dual-axis chart: centipawns and percent
+    aren't comparable on one axis, and dual-axis charts are easy to misread."""
+    trend = _cached_trend(sqlite_conn)
+    plotted = trend.dropna(subset=["cumulative_acpl"])
+    if len(plotted) < 2:
+        st.caption("Not enough analyzed batches yet for a trend line.")
+        return
+    # or-"in progress" not None: hover_extra's customdata is used as-is with
+    # no format spec (see charts.line_chart's docstring) -- an unfinished
+    # run's ended_at is genuinely NULL, and would otherwise render the
+    # literal text "None" in the tooltip (the same class of bug BRIEF §6n/
+    # §6r already fixed repeatedly for rendered table cells).
+    plotted = plotted.assign(_date=plotted["ended_at"].fillna("in progress"))
+
+    st.subheader("Accuracy trend across all batches")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.plotly_chart(charts.line_chart(
+            plotted, x="run_id", y="cumulative_acpl", color=theme.ACCENT_GOLD,
+            x_title="Analysis batch (run #)", y_title="ACPL (cumulative)",
+            integer_x=True, hover_extra=("_date", "Date"),
+        ), use_container_width=True)
+    with col2:
+        st.plotly_chart(charts.line_chart(
+            plotted, x="run_id", y="cumulative_blunder_rate", color=theme.NEGATIVE,
+            x_title="Analysis batch (run #)", y_title="Blunder rate % (cumulative)",
+            integer_x=True, hover_extra=("_date", "Date"),
+        ), use_container_width=True)
+    st.caption(
+        "Cumulative ACPL/blunder rate as of each batch, across your whole history -- "
+        "not this run's own moves in isolation (see the record callout above for that)."
+    )
 
 
 def _render_phase_section(sqlite_conn, run_id) -> None:

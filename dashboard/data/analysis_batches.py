@@ -70,6 +70,23 @@ def list_analysis_runs(sqlite_conn) -> pd.DataFrame:
     """, sqlite_conn)
 
 
+def get_batch_counter(sqlite_conn) -> dict:
+    """Lifetime totals across every analysis_runs row -- how many batches
+    have ever been run and how many games they've analyzed in total.
+    Deliberately independent of any selected run_id: this is a running
+    tally of total effort, not a before/after split, so it reads the same
+    regardless of which run the page's picker has selected. No new
+    tracking needed -- both numbers are already sitting in analysis_runs,
+    same as everything else in this module."""
+    total_batches, total_games = sqlite_conn.execute(
+        "SELECT COUNT(*), SUM(games_analyzed) FROM analysis_runs"
+    ).fetchone()
+    return {
+        "total_batches": total_batches or 0,
+        "total_games_analyzed": total_games or 0,
+    }
+
+
 def get_batch_headline_delta(sqlite_conn, run_id: int) -> dict | None:
     """Same four headline numbers as the original ephemeral digest
     (games_analyzed, ACPL before/after, blunder rate before/after, new
@@ -265,3 +282,122 @@ def get_new_blunders_this_run(sqlite_conn, run_id: int) -> pd.DataFrame:
         WHERE is_player_move=1 AND classification='blunder' AND analysis_run_id=?
         ORDER BY cpl DESC
     """, sqlite_conn, params=[run_id])
+
+
+def get_batch_trend(sqlite_conn) -> pd.DataFrame:
+    """One row per analysis_runs row, chronological (ascending id) order,
+    with TWO distinct ACPL/blunder-rate series -- deliberately not one,
+    since they answer different questions and conflating them would make
+    neither trustworthy:
+      - cumulative_acpl/cumulative_blunder_rate: the running "as of this
+        run" average across every move analyzed so far -- the same
+        before/after boundary get_batch_headline_delta already computes for
+        one run_id, extended to every checkpoint. This is the big-picture
+        trend line.
+      - this_run_acpl/this_run_blunder_rate: the average/blunder-rate of
+        ONLY the moves analyzed in that specific run, independent of how
+        much prior history dilutes it -- the fair per-batch comparison
+        get_batch_record_flags needs. A cumulative delta mechanically
+        shrinks as history grows, so it would be a bad "personal record"
+        metric (later batches could almost never win); an isolated per-run
+        average doesn't have that bias.
+
+    Single GROUP BY over moves.analysis_run_id (idx_moves_run) rather than
+    calling get_batch_headline_delta once per run_id -- one full scan
+    instead of two range-filtered scans per run.
+
+    Runs with zero annotated moves yet (annotated_this_run==0 in
+    get_batch_headline_delta -- the real gap BRIEF §6u found live) get
+    this_run_acpl/this_run_blunder_rate = None, and their cumulative values
+    simply carry forward unchanged -- NOT zero, which would misread as
+    "this batch was flawless."
+    """
+    runs = list_analysis_runs(sqlite_conn)[
+        ["id", "started_at", "ended_at", "games_analyzed"]
+    ].sort_values("id")  # list_analysis_runs is DESC; trend needs ASC
+
+    per_run = pd.read_sql_query("""
+        SELECT analysis_run_id AS run_id, COUNT(*) AS n,
+               SUM(cpl) AS sum_cpl,
+               SUM(CASE WHEN classification='blunder' THEN 1 ELSE 0 END) AS n_blunders
+        FROM moves
+        WHERE is_player_move=1 AND cpl IS NOT NULL
+        GROUP BY analysis_run_id
+    """, sqlite_conn)
+
+    baseline = per_run[per_run["run_id"].isna()]
+    cum_n = int(baseline["n"].iloc[0]) if not baseline.empty else 0
+    cum_sum = float(baseline["sum_cpl"].iloc[0]) if not baseline.empty else 0.0
+    cum_bl = int(baseline["n_blunders"].iloc[0]) if not baseline.empty else 0
+
+    by_run = per_run.dropna(subset=["run_id"]).set_index("run_id")
+
+    rows = []
+    for r in runs.itertuples():
+        if r.id in by_run.index:
+            row = by_run.loc[r.id]
+            n, bl = int(row["n"]), int(row["n_blunders"])
+            s = float(row["sum_cpl"]) if row["sum_cpl"] is not None else 0.0
+        else:
+            n, s, bl = 0, 0.0, 0
+        this_run_acpl = (s / n) if n else None
+        this_run_blunder_rate = (100.0 * bl / n) if n else None
+        cum_n += n
+        cum_sum += s
+        cum_bl += bl
+        rows.append({
+            "run_id": r.id,
+            "ended_at": r.ended_at,
+            "games_analyzed": r.games_analyzed,
+            "this_run_acpl": this_run_acpl,
+            "this_run_blunder_rate": this_run_blunder_rate,
+            "cumulative_acpl": (cum_sum / cum_n) if cum_n else None,
+            "cumulative_blunder_rate": (100.0 * cum_bl / cum_n) if cum_n else None,
+        })
+    return pd.DataFrame(rows, columns=[
+        "run_id", "ended_at", "games_analyzed", "this_run_acpl",
+        "this_run_blunder_rate", "cumulative_acpl", "cumulative_blunder_rate",
+    ])
+
+
+def get_batch_record_flags(sqlite_conn, run_id: int) -> dict:
+    """Whether run_id set a personal record on its OWN isolated ACPL/blunder
+    rate (this_run_acpl/this_run_blunder_rate from get_batch_trend, not the
+    cumulative trend -- see that function's docstring for why) among every
+    *other* annotated run at or before it. Lower is better for both, same
+    convention as the headline's delta_color="inverse".
+
+    Only compares against runs <= run_id (same boundary discipline as every
+    before/after split in this module) -- reopening an old run must not get
+    credit or blame for records a LATER run set. Requires at least one
+    other annotated run to compare against, or every flag is False/None: a
+    first annotated batch is trivially "best" against nothing, and flagging
+    that as a record on every fresh install would be meaningless noise, not
+    a real signal.
+    """
+    trend = get_batch_trend(sqlite_conn)
+    eligible = trend[(trend["run_id"] <= run_id) & trend["this_run_acpl"].notna()]
+    no_record = {
+        "this_run_acpl": None, "this_run_blunder_rate": None,
+        "is_best_acpl": False, "is_best_blunder_rate": False,
+        "prior_best_acpl": None, "prior_best_blunder_rate": None,
+        "prior_best_acpl_run_id": None,
+    }
+    if len(eligible) < 2 or run_id not in eligible["run_id"].values:
+        return no_record
+
+    this = eligible[eligible["run_id"] == run_id].iloc[0]
+    prior = eligible[eligible["run_id"] != run_id]
+    prior_best_acpl = prior["this_run_acpl"].min()
+    prior_best_blunder_rate = prior["this_run_blunder_rate"].min()
+    prior_best_acpl_run_id = int(prior.loc[prior["this_run_acpl"].idxmin(), "run_id"])
+
+    return {
+        "this_run_acpl": this["this_run_acpl"],
+        "this_run_blunder_rate": this["this_run_blunder_rate"],
+        "is_best_acpl": bool(this["this_run_acpl"] < prior_best_acpl),
+        "is_best_blunder_rate": bool(this["this_run_blunder_rate"] < prior_best_blunder_rate),
+        "prior_best_acpl": prior_best_acpl,
+        "prior_best_blunder_rate": prior_best_blunder_rate,
+        "prior_best_acpl_run_id": prior_best_acpl_run_id,
+    }
