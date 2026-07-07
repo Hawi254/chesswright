@@ -99,6 +99,7 @@ def render():
         "ie_threads":         int(ie_cfg.get("threads", 1)),
         "ie_hash_mb":         int(ie_cfg.get("hash_mb", 32)),
         "ie_store_threshold": int(ie_cfg.get("store_threshold", 20)),
+        "ie_use_cloud_eval":  bool(ie_cfg.get("use_lichess_cloud_eval", True)),
     }
     for k, v in _ie_defaults.items():
         if k not in st.session_state:
@@ -142,6 +143,15 @@ def render():
             help="Only save the result to position_cache when the actual "
                  "search depth reached this value. Set higher than the depth "
                  "limit above to disable auto-storing entirely.")
+        use_cloud_eval = st.checkbox(
+            "Use Lichess cloud evaluations when available",
+            key="ie_use_cloud_eval",
+            help="Before spinning up the local engine on a position lookup, "
+                 "try Lichess's free cloud-eval database first (deep evals "
+                 "for popular/opening positions, from other players' prior "
+                 "analysis). Only the board position (FEN) is sent — no "
+                 "account or game data. Falls back to the local engine on a "
+                 "miss.")
         save_btn = st.form_submit_button("Save and restart engine", type="primary")
 
     if save_btn:
@@ -151,6 +161,7 @@ def render():
             "threads": int(threads),
             "hash_mb": int(hash_mb),
             "store_threshold": int(store_threshold),
+            "use_lichess_cloud_eval": bool(use_cloud_eval),
         }
         try:
             config.save_interactive_engine(new_settings)

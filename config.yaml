@@ -251,6 +251,11 @@ interactive_engine:                  # settings for the on-demand engine used in
   depth: 20                            # search depth cap (whichever of time/depth hits first)
   store_threshold: 20                  # only write to position_cache when actual depth
                                          # reached >= this value; set > depth to disable storing
+  use_lichess_cloud_eval: true         # before spinning up the local engine, try Lichess's
+                                         # free cloud-eval database (deep, crowd-sourced
+                                         # Stockfish evals for popular/opening positions) --
+                                         # only sends the bare FEN, no account/game data.
+                                         # Falls through to the local engine on a miss.
 
 sync:                                # incremental fetch of new games via lichess's public
                                        # games-export API. No separate username field --

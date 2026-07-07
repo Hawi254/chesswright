@@ -223,34 +223,9 @@ def _render_most_repeated_positions_section(sqlite_conn):
             fen = cached_position_fen(sqlite_conn, int(sel.ply), int(sel.zobrist_hash))
             if fen:
                 analysis = cached_position_analysis(sqlite_conn, fen)
-
-                if analysis is None:
-                    live_key = f"live_result__{fen}"
-                    live_result = st.session_state.get(live_key)
-                    if live_result is None:
-                        engine_svc = live_engine.get_engine_service()
-                        if engine_svc is None:
-                            st.caption("Stockfish not found — configure the engine "
-                                       "path in Settings.")
-                        elif live_engine.batch_running():
-                            st.caption("Batch analysis running — live engine paused "
-                                       "until it finishes.")
-                        else:
-                            with st.spinner("Analysing position..."):
-                                live_result = engine_svc.analyse(fen)
-                            if live_result:
-                                st.session_state[live_key] = live_result
-                                data.store_position_analysis(sqlite_conn, fen, live_result)
-                                cached_position_analysis.clear()
-                    if live_result:
-                        analysis = {
-                            "eval_cp": live_result.eval_cp,
-                            "eval_mate": live_result.eval_mate,
-                            "best_move_san": live_result.best_move_san,
-                            "pv_json": live_result.pv_json,
-                            "depth": live_result.depth,
-                            "source": "live",
-                        }
+                analysis = live_engine.get_or_analyse_position(
+                    sqlite_conn, fen, analysis, session_key=fen,
+                    on_fresh_result=cached_position_analysis.clear)
 
                 engine_san = analysis["best_move_san"] if analysis else None
                 flip = st.toggle("Flip board", key="most_repeated_flip")
@@ -278,6 +253,8 @@ def _render_most_repeated_positions_section(sqlite_conn):
                             st.caption(f"depth {depth}")
                         if analysis.get("source") == "live":
                             st.caption("Live engine result (not from batch).")
+                        elif analysis.get("source") == "lichess_cloud":
+                            st.caption("From Lichess's cloud evaluation database.")
                     else:
                         st.caption("No analysis available for this position.")
 
@@ -332,35 +309,9 @@ def _render_repertoire_holes_section(sqlite_conn, drill_export_page):
                 sel = holes_df.iloc[hole_rows[0]]
                 if sel.fen_before:
                     analysis = cached_position_analysis(sqlite_conn, sel.fen_before)
-
-                    if analysis is None:
-                        live_key = f"live_result__{sel.fen_before}"
-                        live_result = st.session_state.get(live_key)
-                        if live_result is None:
-                            engine_svc = live_engine.get_engine_service()
-                            if engine_svc is None:
-                                st.caption("Stockfish not found — configure the engine "
-                                           "path in Settings.")
-                            elif live_engine.batch_running():
-                                st.caption("Batch analysis running — live engine paused "
-                                           "until it finishes.")
-                            else:
-                                with st.spinner("Analysing position..."):
-                                    live_result = engine_svc.analyse(sel.fen_before)
-                                if live_result:
-                                    st.session_state[live_key] = live_result
-                                    data.store_position_analysis(
-                                        sqlite_conn, sel.fen_before, live_result)
-                                    cached_position_analysis.clear()
-                        if live_result:
-                            analysis = {
-                                "eval_cp": live_result.eval_cp,
-                                "eval_mate": live_result.eval_mate,
-                                "best_move_san": live_result.best_move_san,
-                                "pv_json": live_result.pv_json,
-                                "depth": live_result.depth,
-                                "source": "live",
-                            }
+                    analysis = live_engine.get_or_analyse_position(
+                        sqlite_conn, sel.fen_before, analysis, session_key=sel.fen_before,
+                        on_fresh_result=cached_position_analysis.clear)
 
                     engine_san = analysis["best_move_san"] if analysis else None
                     flip = st.toggle("Flip board", key="rep_holes_flip")
@@ -394,6 +345,8 @@ def _render_repertoire_holes_section(sqlite_conn, drill_export_page):
                                 st.caption(f"depth {depth}")
                             if analysis.get("source") == "live":
                                 st.caption("Live engine result (not from batch).")
+                            elif analysis.get("source") == "lichess_cloud":
+                                st.caption("From Lichess's cloud evaluation database.")
                         else:
                             st.caption("No analysis available for this position.")
 
