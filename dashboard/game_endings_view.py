@@ -9,6 +9,9 @@ import charts
 import data
 import theme
 from _common import get_connections
+from cached_queries import (
+    cached_resignation_loss_causes, cached_time_forfeit_loss_breakdown,
+)
 
 _END_TYPE_LABELS = {
     "resignation":           "Resignation",
@@ -41,19 +44,9 @@ def cached_endgame_type_performance(_sqlite_conn):
     return data.get_endgame_type_performance(_sqlite_conn)
 
 
-@st.cache_data(show_spinner="Working out why your resignation losses happened…")
-def cached_resignation_loss_causes(_duck_conn):
-    return data.get_resignation_loss_causes(_duck_conn)
-
-
 @st.cache_data(show_spinner="Tracking your time-pressure resignations over time…")
 def cached_resignation_time_pressure_trend(_duck_conn):
     return data.get_resignation_time_pressure_trend(_duck_conn)
-
-
-@st.cache_data(show_spinner="Working out how your time-forfeit losses happened…")
-def cached_time_forfeit_loss_breakdown(_duck_conn):
-    return data.get_time_forfeit_loss_breakdown(_duck_conn)
 
 
 def render():

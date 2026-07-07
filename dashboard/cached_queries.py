@@ -29,3 +29,23 @@ def cached_headline_stats(_duck_conn, _sqlite_conn):
 @st.cache_data(show_spinner="Scanning your games for career findings…")
 def cached_career_findings(_duck_conn, baseline_blunder_rate):
     return data.get_career_findings(_duck_conn, baseline_blunder_rate)
+
+
+@st.cache_data(show_spinner="Reading every game's win-probability curve…")
+def cached_points_ledger(_duck_conn):
+    return data.classify_points_ledger(data.get_points_ledger(_duck_conn))
+
+
+@st.cache_data(show_spinner="Working out why conversions failed…")
+def cached_failed_conversion_causes(_duck_conn, classified):
+    return data.get_failed_conversion_causes(_duck_conn, classified)
+
+
+@st.cache_data(show_spinner="Working out why your resignation losses happened…")
+def cached_resignation_loss_causes(_duck_conn):
+    return data.get_resignation_loss_causes(_duck_conn)
+
+
+@st.cache_data(show_spinner="Working out how your time-forfeit losses happened…")
+def cached_time_forfeit_loss_breakdown(_duck_conn):
+    return data.get_time_forfeit_loss_breakdown(_duck_conn)

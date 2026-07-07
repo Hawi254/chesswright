@@ -16,7 +16,20 @@ import claude_narrative
 import data
 import theme
 from _common import get_connections
-from cached_queries import cached_career_findings, cached_headline_stats
+from cached_queries import (
+    cached_career_findings, cached_failed_conversion_causes, cached_headline_stats,
+    cached_points_ledger, cached_resignation_loss_causes, cached_time_forfeit_loss_breakdown,
+)
+
+_CONVERSION_REASON_LABELS = {
+    "hung_piece": "hung a piece", "blown_mate": "blew a forced mate",
+    "time_pressure": "time pressure", "other": "other / gradual give-back",
+}
+_RESIGN_REASON_LABELS = {
+    "hung_piece": "hung a piece", "faced_mate": "faced a forced mate",
+    "time_pressure": "time pressure", "other": "other / gradual decline",
+    "not_analyzed": "not yet analyzed",
+}
 
 
 @st.cache_data(show_spinner="Gathering your stats…")
@@ -125,7 +138,80 @@ def _build_data_brief(_duck_conn, _sqlite_conn):
     except Exception:
         sections.append("MOST COMMON MISSED TACTICS: (unavailable)")
 
+    # Points ledger -- winning/even positions thrown away, and why
+    try:
+        classified = cached_points_ledger(_duck_conn)
+        summary = data.summarize_buckets(classified)
+        if not summary.empty:
+            lines = [
+                f"  {data.BUCKET_LABEL[row.bucket]}: {int(row.n_games)} games, "
+                f"{row.leaked:.1f} points leaked"
+                for row in summary.itertuples(index=False)
+            ]
+            reason_df, _, _ = cached_failed_conversion_causes(_duck_conn, classified)
+            if not reason_df.empty:
+                reason_lines = [
+                    f"    - {_CONVERSION_REASON_LABELS.get(row.reason, row.reason)}: {row.pct:.0f}%"
+                    for row in reason_df.itertuples(index=False)
+                ]
+                lines.append("  Failed-conversion causes:\n" + "\n".join(reason_lines))
+            sections.append("POINTS LEDGER (winning/even positions thrown away):\n" + "\n".join(lines))
+        else:
+            sections.append("POINTS LEDGER: (no leaked points found yet)")
+    except Exception:
+        sections.append("POINTS LEDGER: (unavailable)")
+
+    # Loss causes -- clock vs. blunders
+    try:
+        reason_df, _, _ = cached_resignation_loss_causes(_duck_conn)
+        _, scramble_df, _ = cached_time_forfeit_loss_breakdown(_duck_conn)
+        lines = []
+        if not reason_df.empty:
+            lines.append("  Resignation losses, by cause:")
+            lines += [
+                f"    - {_RESIGN_REASON_LABELS.get(row.reason, row.reason)}: {row.pct:.0f}%"
+                for row in reason_df.itertuples(index=False)
+            ]
+        if not scramble_df.empty:
+            lines.append("  Time-forfeit (flagged) losses, by clock context:")
+            lines += [
+                f"    - {row.bucket}: {row.pct:.0f}%"
+                for row in scramble_df.itertuples(index=False)
+            ]
+        if lines:
+            sections.append("LOSS CAUSES (clock vs. blunders):\n" + "\n".join(lines))
+        else:
+            sections.append("LOSS CAUSES: (no data yet)")
+    except Exception:
+        sections.append("LOSS CAUSES: (unavailable)")
+
     return "\n\n".join(sections)
+
+
+# (button label, full question) -- chosen to be answerable from every
+# section of the data brief that's reliably populated once a player has
+# any analyzed games.
+_PRESET_QUESTIONS = [
+    ("Blunder timing", "When do I blunder most — opening, middlegame, or endgame?"),
+    ("Openings to keep/drop", "Which opening should I drop, and which should I play more?"),
+    ("Missed tactics", "What's the one tactical motif I keep missing that's costing me the most rating points?"),
+    ("Biggest lever", "If I could fix just one habit, what would move my results the most?"),
+    ("This week's practice", "What's a realistic, specific thing I should practice this week based on my last batch of games?"),
+    ("Thrown-away points", "Where do I throw away winning positions, and why does it usually happen?"),
+    ("Clock vs. blunders", "Do I lose more games to the clock or to blunders?"),
+]
+
+
+def _ask(duck_conn, sqlite_conn, question: str, history: list[dict]) -> None:
+    with st.spinner("Thinking..."):
+        try:
+            brief = _build_data_brief(duck_conn, sqlite_conn)
+            answer = claude_narrative.answer_question(question, brief)
+            history.insert(0, {"question": question, "answer": answer})
+        except claude_narrative.MissingApiKeyError as e:
+            st.error(str(e))
+        except Exception as e:
+            st.error(f"Claude API call failed: {e}")
 
 
 def render():
@@ -149,6 +235,15 @@ def render():
 
     history: list[dict] = st.session_state.setdefault("ask_history", [])
 
+    st.caption("Try a preset question:")
+    row_size = 4
+    for i in range(0, len(_PRESET_QUESTIONS), row_size):
+        row = _PRESET_QUESTIONS[i:i + row_size]
+        for col, (label, preset_question) in zip(st.columns(row_size), row):
+            if col.button(label, key=f"ask_preset_{label}", use_container_width=True):
+                _ask(duck_conn, sqlite_conn, preset_question, history)
+                st.rerun()
+
     question = st.text_input(
         "Your question",
         placeholder="e.g. When do I blunder most — opening, middlegame, or endgame?",
@@ -157,15 +252,7 @@ def render():
     ask_clicked = st.button("Ask", type="primary", disabled=not question.strip())
 
     if ask_clicked and question.strip():
-        with st.spinner("Thinking..."):
-            try:
-                brief = _build_data_brief(duck_conn, sqlite_conn)
-                answer = claude_narrative.answer_question(question.strip(), brief)
-                history.insert(0, {"question": question.strip(), "answer": answer})
-            except claude_narrative.MissingApiKeyError as e:
-                st.error(str(e))
-            except Exception as e:
-                st.error(f"Claude API call failed: {e}")
+        _ask(duck_conn, sqlite_conn, question.strip(), history)
         st.rerun()
 
     if history:

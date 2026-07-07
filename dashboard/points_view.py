@@ -20,7 +20,9 @@ import chess_display
 import data
 import theme
 from _common import get_connections
-from cached_queries import cached_headline_stats
+from cached_queries import (
+    cached_failed_conversion_causes, cached_headline_stats, cached_points_ledger,
+)
 
 # One-line definition per bucket, shown under the bucket totals and
 # restated in the methodology expander -- the numbers are only honest if
@@ -36,16 +38,6 @@ _BUCKET_CAPTION = {
         f"Still even ({data.EVEN_WP:.0%}+) at move {data.HOLD_EVEN_MIN_MOVE} "
         f"or later, never winning, but lost.",
 }
-
-
-@st.cache_data(show_spinner="Reading every game's win-probability curve…")
-def cached_points_ledger(_duck_conn):
-    return data.classify_points_ledger(data.get_points_ledger(_duck_conn))
-
-
-@st.cache_data(show_spinner="Working out why conversions failed…")
-def cached_failed_conversion_causes(_duck_conn, classified):
-    return data.get_failed_conversion_causes(_duck_conn, classified)
 
 
 _CONVERSION_REASON_LABELS = {
