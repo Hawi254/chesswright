@@ -58,6 +58,8 @@ from .patterns import (
     get_castling_performance, get_sharpness_blunder_correlation,
     get_thinking_time_blunder_correlation, get_decisive_moments,
     get_instant_move_rate_by_phase, get_instant_move_accuracy_by_legal_replies,
+    get_position_character_performance, get_game_side_performance,
+    get_square_blunder_heatmap,
 )
 from .matchups import (
     get_win_rate_by_rating_diff, get_comeback_collapse_counts,
@@ -138,6 +140,8 @@ __all__ = [
     "get_castling_performance", "get_sharpness_blunder_correlation",
     "get_thinking_time_blunder_correlation", "get_decisive_moments",
     "get_instant_move_rate_by_phase", "get_instant_move_accuracy_by_legal_replies",
+    "get_position_character_performance", "get_game_side_performance",
+    "get_square_blunder_heatmap",
     "get_win_rate_by_rating_diff", "get_comeback_collapse_counts",
     "get_color_performance_by_rating", "get_giant_killing_counts",
     "get_nemesis_opponents", "get_giant_killing_collapse_causes",

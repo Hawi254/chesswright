@@ -108,6 +108,48 @@ def cached_decisive_moments(_duck_conn):
     return data.get_decisive_moments(_duck_conn)
 
 
+@st.cache_data(show_spinner="Classifying your games' pawn structure…")
+def cached_position_character_performance(_duck_conn):
+    return data.get_position_character_performance(_duck_conn)
+
+
+@st.cache_data(show_spinner="Analyzing castling side and where the fight happened…")
+def cached_game_side_performance(_duck_conn):
+    return data.get_game_side_performance(_duck_conn)
+
+
+@st.cache_data(show_spinner="Building your per-square blunder heatmap…")
+def cached_square_blunder_heatmap(_duck_conn):
+    return data.get_square_blunder_heatmap(_duck_conn)
+
+
+@st.cache_data(show_spinner=False)
+def cached_motif_backfill_needed(_duck_conn):
+    return data.motif_backfill_needed(_duck_conn)
+
+
+def _coverage_caption(win_df, acpl_df, key_col, label_map=None):
+    """Shared n_analyzed/coverage_pct disclosure for a win/ACPL table pair
+    keyed by the same category column -- same 'explain, don't hide'
+    posture as Instant Moves/Evolution/Game Explorer's coverage captions.
+    Returns None if there's nothing analyzed yet for any category."""
+    if acpl_df.empty:
+        return None
+    merged = win_df.merge(acpl_df[[key_col, "n_games"]], on=key_col, how="left",
+                           suffixes=("", "_analyzed"))
+    merged["n_games_analyzed"] = merged["n_games_analyzed"].fillna(0).astype(int)
+    parts = []
+    for _, r in merged.iterrows():
+        label = (label_map or {}).get(r[key_col], r[key_col])
+        pct = 100.0 * r["n_games_analyzed"] / r["n_games"] if r["n_games"] else 0.0
+        parts.append(f"{label}: {int(r['n_games_analyzed'])} of {int(r['n_games'])} ({pct:.1f}%)")
+    return ("ACPL/blunder-rate coverage is thin and backlog-skewed (only "
+            f"{int(merged['n_games_analyzed'].sum())} of {int(merged['n_games'].sum())} games "
+            "total have any engine analysis) -- win rate above is full-coverage and honest "
+            "from day one, but treat the accuracy numbers below as suggestive, not settled: "
+            + "; ".join(parts) + ".")
+
+
 def render():
     sqlite_conn, duck_conn = get_connections()
     st.title("Patterns & Tendencies")
@@ -299,6 +341,107 @@ def _render_tab_position(sqlite_conn, duck_conn):
                                        "ACPL only counts analyzed games."),
         })
 
+    with st.container(border=True):
+        st.subheader("Open, semi-open, or closed?")
+        st.caption("Classified from your pawn structure 12 full moves in (the same "
+                   "\"middlegame has plausibly started\" checkpoint used elsewhere on this "
+                   "page): closed = a locked pawn chain on the d- or e-file; open = the center "
+                   "is fully traded off; semi-open = everything in between (e.g. one central "
+                   "pawn traded, the other still there). A single snapshot, not a full-game "
+                   "tracker -- a game can still open up or lock later than this checkpoint.")
+        pc = cached_position_character_performance(duck_conn)
+        if pc["n_classified"] == 0:
+            st.info(theme.thin_data_message(0, 1))
+        else:
+            n_short = pc["n_total_games"] - pc["n_classified"]
+            if n_short:
+                st.caption(f"{n_short} of {pc['n_total_games']} games ended before this "
+                           "checkpoint and aren't classified here.")
+            col1, col2 = st.columns(2)
+            with col1:
+                st.plotly_chart(charts.bar_chart(pc["bucket_win"], "bucket", "win_pct", theme.POSITIVE,
+                                                  x_title="Position type", y_title="Win rate (%)"),
+                                 theme=None)
+            with col2:
+                st.plotly_chart(charts.bar_chart(pc["bucket_acpl"], "bucket", "acpl", theme.NEGATIVE,
+                                                  x_title="Position type", y_title="ACPL (lower = more accurate)"),
+                                 theme=None)
+            caption = _coverage_caption(pc["bucket_win"], pc["bucket_acpl"], "bucket")
+            if caption:
+                st.caption(caption)
+            if pc["central_tension_pct"] is not None:
+                st.caption(f"Within semi-open games, {pc['central_tension_pct']:.1f}% still had "
+                           "unresolved central pawn tension (adjacent pawns that could still "
+                           "capture each other) at the checkpoint -- a more \"live\" semi-open "
+                           "position than one that's just quietly half-open.")
+
+    with st.container(border=True):
+        st.subheader("Symmetric vs. asymmetric pawn structure")
+        st.caption("Same checkpoint as above -- symmetric means White and Black occupy the "
+                   "exact same set of pawn files (ignoring rank); asymmetric structures are "
+                   "the textbook \"sharper, more decisive\" case.")
+        if pc["n_classified"] == 0:
+            st.info(theme.thin_data_message(0, 1))
+        else:
+            col1, col2 = st.columns(2)
+            with col1:
+                st.plotly_chart(
+                    charts.bar_chart(pc["symmetric_win"], "symmetry_label", "win_pct", theme.POSITIVE,
+                                      x_title="Pawn structure", y_title="Win rate (%)"), theme=None)
+            with col2:
+                st.plotly_chart(
+                    charts.bar_chart(pc["symmetric_acpl"], "symmetry_label", "acpl", theme.NEGATIVE,
+                                      x_title="Pawn structure", y_title="ACPL (lower = more accurate)"),
+                    theme=None)
+            caption = _coverage_caption(pc["symmetric_win"], pc["symmetric_acpl"], "symmetry_label")
+            if caption:
+                st.caption(caption)
+
+    with st.container(border=True):
+        st.subheader("Castling configuration")
+        st.caption("Same-side castling is the common case; opposite-side castling is the "
+                   "classic \"race\" shape -- both kings attacked by pawn storms, usually "
+                   "sharper and more decisive either way.")
+        gs = cached_game_side_performance(duck_conn)
+        if gs["castling_win"].empty:
+            st.info(theme.thin_data_message(0, 1))
+        else:
+            col1, col2 = st.columns(2)
+            with col1:
+                st.plotly_chart(
+                    charts.bar_chart(gs["castling_win"], "castling_config", "win_pct", theme.POSITIVE,
+                                      x_title="Castling configuration", y_title="Win rate (%)"), theme=None)
+            with col2:
+                st.plotly_chart(
+                    charts.bar_chart(gs["castling_acpl"], "castling_config", "acpl", theme.NEGATIVE,
+                                      x_title="Castling configuration", y_title="ACPL (lower = more accurate)"),
+                    theme=None)
+            caption = _coverage_caption(gs["castling_win"], gs["castling_acpl"], "castling_config")
+            if caption:
+                st.caption(caption)
+
+    with st.container(border=True):
+        st.subheader("Where did the fight happen: queenside or kingside?")
+        st.caption("Classified by which side of the board (files a-d vs. e-h) most captures "
+                   "landed on in the game -- a proxy for where the action concentrated, "
+                   "distinct from castling side above.")
+        if gs["action_win"].empty:
+            st.info(theme.thin_data_message(0, 1))
+        else:
+            col1, col2 = st.columns(2)
+            with col1:
+                st.plotly_chart(
+                    charts.bar_chart(gs["action_win"], "action_side", "win_pct", theme.POSITIVE,
+                                      x_title="Where the fight happened", y_title="Win rate (%)"), theme=None)
+            with col2:
+                st.plotly_chart(
+                    charts.bar_chart(gs["action_acpl"], "action_side", "acpl", theme.NEGATIVE,
+                                      x_title="Where the fight happened", y_title="ACPL (lower = more accurate)"),
+                    theme=None)
+            caption = _coverage_caption(gs["action_win"], gs["action_acpl"], "action_side")
+            if caption:
+                st.caption(caption)
+
 
 @st.fragment
 def _render_tab_pieces(sqlite_conn, duck_conn):
@@ -355,6 +498,30 @@ def _render_tab_pieces(sqlite_conn, duck_conn):
                                              "elsewhere": theme.NEGATIVE},
                                      x_title="Piece", y_title="ACPL (lower = more accurate)"),
             theme=None)
+
+    with st.container(border=True):
+        st.subheader("Which squares see the most blunders?")
+        st.caption("Blunder rate by the square your move landed on -- a finer-grained cut of "
+                   "the back-rank pattern above, across the full board. Hover a cell to see "
+                   "how many analyzed moves it's based on.")
+        blunder_pivot, n_moves_pivot, n_analyzed, n_total_in_scope = cached_square_blunder_heatmap(duck_conn)
+        if blunder_pivot is None:
+            st.info(theme.thin_data_message(n_analyzed, 1))
+        else:
+            coverage_pct = 100.0 * n_analyzed / n_total_in_scope if n_total_in_scope else 0.0
+            st.caption(
+                f"Based on {n_analyzed} analyzed moves out of {n_total_in_scope} total "
+                f"({coverage_pct:.1f}% analyzed) -- like every accuracy cut on this page, "
+                "this is backlog-skewed toward recently-analyzed games, not a settled finding.")
+            n_moves_display = n_moves_pivot.map(lambda v: "--" if pd.isna(v) else f"{int(v)} moves")
+            st.plotly_chart(
+                charts.heatmap(blunder_pivot, theme.SEQUENTIAL_GOLD_COLORSCALE, value_suffix="%",
+                               x_title="File", y_title="Rank", colorbar_title="Blunder rate",
+                               hover_extra=(n_moves_display, "Sample size")),
+                theme=None)
+            if cached_motif_backfill_needed(duck_conn):
+                st.caption("Missed-tactic classification (fork/pin/skewer/etc. by square) isn't "
+                           "shown here yet -- see Tactical Highlights' motif backfill notice.")
 
     with st.container(border=True):
         st.subheader("Castling and king safety")

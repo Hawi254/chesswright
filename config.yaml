@@ -229,6 +229,15 @@ analytics:
                                              # out. Between the two thresholds is reported as its
                                              # own middle bucket, neither scramble nor comfortable.
   structure_top_n: 15                       # cap each structure report to the N most-frequent.
+  square_heatmap_min_moves: 20                # a to_square needs at least this many analyzed
+                                                # player moves landing on it to appear in the
+                                                # per-square blunder heatmap at all -- avoids a
+                                                # single fluke blunder on a rarely-visited square
+                                                # reading as a real hot spot.
+  action_side_capture_ratio: 1.5               # a game's queenside (a-d file) vs. kingside (e-h
+                                                 # file) capture count must lead by at least this
+                                                 # ratio to call the game "queenside-heavy" or
+                                                 # "kingside-heavy" -- otherwise it's "balanced."
 
 interactive_engine:                  # settings for the on-demand engine used in the
                                        # position browser and game detail panels.

@@ -153,3 +153,52 @@ class TestMaterialDeltaForMove:
         board = chess.Board("rnbqkbnr/ppp1pppp/8/3pP3/8/8/PPPP1PPP/RNBQKBNR w KQkq d6 0 3")
         move = chess.Move.from_uci("e5d6")
         assert cu.material_delta_for_move(board, move) == 100
+
+
+@pytest.mark.unit
+class TestClassifyPositionCharacter:
+    def test_starting_position_is_semi_open_and_symmetric(self):
+        # Untouched center (neither empty nor locked) falls into the
+        # 'semi-open' catch-all by design -- never actually reached in
+        # production (only queried at middlegame_ply, 12 full moves in),
+        # but the defined behavior for an untouched center is worth
+        # pinning down explicitly.
+        r = cu.classify_position_character(chess.Board().fen())
+        assert r["bucket"] == "semi-open"
+        assert r["symmetric"] is True
+        assert r["open_files"] == 0
+        assert r["central_tension"] is False
+
+    def test_bare_kings_is_open(self):
+        r = cu.classify_position_character("4k3/8/8/8/8/8/8/4K3 w - - 0 1")
+        assert r["bucket"] == "open"
+        assert r["open_files"] == 8
+        assert r["white_space"] == 0
+        assert r["black_space"] == 0
+
+    def test_locked_french_advance_center_is_closed(self):
+        # 1.e4 e6 2.d4 d5 3.e5 -- White d4/e5 vs Black d5/e6, both files
+        # locked (each side's pawn directly blocked one rank ahead).
+        r = cu.classify_position_character(
+            "rnbqkbnr/ppp2ppp/4p3/3pP3/3P4/8/PPP2PPP/RNBQKBNR b KQkq - 0 3")
+        assert r["bucket"] == "closed"
+
+    def test_asymmetric_missing_black_d_pawn(self):
+        r = cu.classify_position_character(
+            "rnbqkbnr/ppp1pppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")
+        assert r["symmetric"] is False
+
+    def test_central_tension_diagonal_unresolved(self):
+        # White pawn d4, Black pawn e5 -- diagonally capturable, neither
+        # file has a same-file locked pair.
+        r = cu.classify_position_character("4k3/8/8/4p3/3P4/8/8/4K3 w - - 0 1")
+        assert r["bucket"] == "semi-open"
+        assert r["central_tension"] is True
+        assert r["white_space"] == 4
+        assert r["black_space"] == 4
+
+    def test_no_tension_when_files_not_adjacent(self):
+        # White pawn on a4, Black pawn on e5 -- not adjacent files, so no
+        # tension despite both being "central-ish" in rank.
+        r = cu.classify_position_character("4k3/8/8/4p3/P7/8/8/4K3 w - - 0 1")
+        assert r["central_tension"] is False
