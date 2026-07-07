@@ -122,15 +122,21 @@ def _build_data_brief(_duck_conn, _sqlite_conn):
     except Exception:
         sections.append("TOUGHEST OPPONENTS: (unavailable)")
 
-    # Most common missed tactical motifs
+    # Most common missed tactical motifs -- framed as % of analyzed games
+    # (a raw "missed 927x" count is meaningless without knowing the sample
+    # size it's drawn from; % of games makes severity legible on its own).
     try:
         df = data.get_motif_breakdown(_sqlite_conn)
-        if df is not None and not df.empty:
+        analyzed = stats.get("analyzed_games", 0)
+        if df is not None and not df.empty and analyzed:
             lines = []
             for row in df.head(5).itertuples(index=False):
+                game_pct = 100.0 * row.n_games / analyzed
                 lines.append(
-                    f"  {row.motif}: missed {int(row.n_missed)}x across "
-                    f"{int(row.n_games)} games, avg CPL={row.avg_cpl:.1f}"
+                    f"  {row.motif}: missed in {game_pct:.1f}% of analyzed games "
+                    f"({int(row.n_games)} of {analyzed}), {row.blunder_pct:.0f}% of those "
+                    f"misses were outright blunders (rest were lesser mistakes), "
+                    f"avg CPL when missed={row.avg_cpl:.1f}"
                 )
             sections.append("MOST COMMON MISSED TACTICS:\n" + "\n".join(lines))
         else:
@@ -138,13 +144,17 @@ def _build_data_brief(_duck_conn, _sqlite_conn):
     except Exception:
         sections.append("MOST COMMON MISSED TACTICS: (unavailable)")
 
-    # Points ledger -- winning/even positions thrown away, and why
+    # Points ledger -- winning/even positions thrown away, and why. Bucket
+    # size framed as % of fully-analyzed games (the denominator this ledger
+    # is actually drawn from), not just a raw game count.
     try:
         classified = cached_points_ledger(_duck_conn)
         summary = data.summarize_buckets(classified)
-        if not summary.empty:
+        total_classified = len(classified)
+        if not summary.empty and total_classified:
             lines = [
-                f"  {data.BUCKET_LABEL[row.bucket]}: {int(row.n_games)} games, "
+                f"  {data.BUCKET_LABEL[row.bucket]}: {100.0 * row.n_games / total_classified:.1f}% "
+                f"of analyzed games ({int(row.n_games)} of {total_classified}), "
                 f"{row.leaked:.1f} points leaked"
                 for row in summary.itertuples(index=False)
             ]
