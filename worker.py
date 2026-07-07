@@ -162,8 +162,118 @@ def score_to_fields(score, mover_color):
     return pov.score(), None
 
 
+# Cache/consult batch_eval_cache only for plies at or below this cutoff. Dup
+# mass is front-loaded (measured ~70% exact-FEN repeat rate for ply<=20,
+# falling off sharply deeper into the game -- see migrations/0033 +
+# explore/batch-cloud-eval/DEDUP_CACHE_PLAN.md), so a shallow cutoff captures
+# almost all of the reuse benefit while keeping the table small. A constant,
+# not a config knob -- revisit by editing this, not config.yaml.
+REUSE_EVAL_MAX_PLY = 24
+
+
+def fetch_cached_eval(conn, fen_before, engine_version, depth, multipv):
+    """PK lookup into batch_eval_cache. Returns the parsed lines_json -- a
+    list of dicts, one per pv_rank ascending, shaped like
+    lines_payload_from_engine_lines()'s output -- on a hit, or None on a
+    miss. engine_version/depth/multipv are part of the key, so an engine
+    upgrade or a config change is a clean miss (falls through to a fresh
+    search) rather than mixing eval scales from a different search."""
+    row = conn.execute("""
+        SELECT lines_json FROM batch_eval_cache
+        WHERE fen_before=? AND engine_version=? AND requested_depth=? AND multipv=?
+    """, (fen_before, engine_version, depth, multipv)).fetchone()
+    if row is None:
+        return None
+    return json.loads(row[0])
+
+
+def store_cached_eval(conn, fen_before, engine_version, depth, multipv, lines_payload):
+    """INSERT OR IGNORE -- first-analysis-wins if this exact key is ever
+    raced (not possible with today's single-engine-process worker, but
+    cheap insurance against ever becoming one)."""
+    conn.execute("""
+        INSERT OR IGNORE INTO batch_eval_cache
+            (fen_before, engine_version, requested_depth, multipv, lines_json)
+        VALUES (?,?,?,?,?)
+    """, (fen_before, engine_version, depth, multipv, json.dumps(lines_payload)))
+
+
+def lines_payload_from_engine_lines(lines, board, mover_color, pv_max_len):
+    """Builds the JSON-able per-rank payload batch_eval_cache stores --
+    eval_cp/eval_mate/move_san/pv_san/score_is_exact for every multipv
+    rank, ascending. Excludes telemetry (seldepth, nodes, ...): that
+    describes THIS search call, not the position, so it has no business
+    being replayed onto a future cache hit (see migrations/0033)."""
+    payload = []
+    for rank, line in enumerate(lines, start=1):
+        line_cp, line_mate = score_to_fields(line["score"], mover_color)
+        line_exact = 0 if (line.get("upperbound") or line.get("lowerbound")) else 1
+        line_pv = line.get("pv", [])[:pv_max_len]
+        lb = board.copy()
+        line_san_list = []
+        line_best_san = None
+        for i, mv in enumerate(line_pv):
+            s = lb.san(mv)
+            if i == 0:
+                line_best_san = s
+            line_san_list.append(s)
+            lb.push(mv)
+        payload.append({
+            "pv_rank": rank, "eval_cp": line_cp, "eval_mate": line_mate,
+            "move_san": line_best_san, "pv_san": line_san_list,
+            "score_is_exact": line_exact,
+        })
+    return payload
+
+
+def write_move_and_lines(conn, move_id, lines_payload, run_id, engine_version, eval_source,
+                          nodes=None, engine_depth=None, seldepth_by_rank=None,
+                          search_time_ms=None, hashfull=None, tbhits=None, nps=None,
+                          engine_reported_time_ms=None):
+    """Writes the `moves` row (from the pv_rank=1 entry) and every
+    `move_lines` row from lines_payload -- shared by both the fresh-engine
+    path and the cache-hit path in analyze_game() below, so a cache hit is
+    structurally guaranteed to write the same shape a fresh engine run
+    would. Telemetry kwargs default to None -- the fresh-engine caller
+    passes real values; the cache-hit caller leaves them at the default,
+    which is the correct value (that search didn't happen this time).
+    Returns the pv_rank=1 entry, for the caller's own console log line."""
+    seldepth_by_rank = seldepth_by_rank or {}
+    rank1 = next(e for e in lines_payload if e["pv_rank"] == 1)
+    conn.execute("""
+        UPDATE moves SET
+            eval_cp=?, eval_mate=?, best_move_san=?, pv_json=?,
+            nodes=?, engine_depth=?, engine_version=?,
+            seldepth=?, search_time_ms=?, analysis_run_id=?,
+            hashfull=?, tbhits=?, nps=?, engine_reported_time_ms=?, score_is_exact=?,
+            eval_source=?
+        WHERE id=?
+    """, (
+        rank1["eval_cp"], rank1["eval_mate"], rank1["move_san"], json.dumps(rank1["pv_san"]),
+        nodes, engine_depth, engine_version,
+        seldepth_by_rank.get(1), search_time_ms, run_id,
+        hashfull, tbhits, nps, engine_reported_time_ms, rank1["score_is_exact"],
+        eval_source, move_id,
+    ))
+
+    # all ranks (including rank 1, stored redundantly for a uniform query shape).
+    # nodes/hashfull/tbhits/nps/time are global to the whole search call
+    # (confirmed identical across ranks), so they live on `moves` only,
+    # not duplicated here.
+    for entry in lines_payload:
+        conn.execute("""
+            INSERT OR REPLACE INTO move_lines
+                (move_id, pv_rank, eval_cp, eval_mate, move_san, pv_json, score_is_exact, seldepth)
+            VALUES (?,?,?,?,?,?,?,?)
+        """, (move_id, entry["pv_rank"], entry["eval_cp"], entry["eval_mate"], entry["move_san"],
+              json.dumps(entry["pv_san"]), entry["score_is_exact"],
+              seldepth_by_rank.get(entry["pv_rank"])))
+    return rank1
+
+
 def analyze_game(conn, engine, game_row, depth, multipv, pv_max_len, commit_every_n_moves,
-                  engine_version, run_id, deadline=None, max_plies=None, stop_event=None):
+                  engine_version, run_id, deadline=None, max_plies=None, stop_event=None,
+                  reuse_evals=True):
     game_id, num_plies, last_analyzed_ply = game_row
     if num_plies is None or num_plies == 0:
         conn.execute("UPDATE games SET analysis_status='done', analysis_completed_at=? WHERE id=?",
@@ -196,67 +306,49 @@ def analyze_game(conn, engine, game_row, depth, multipv, pv_max_len, commit_ever
             continue
 
         mover_color = board.turn
+        fen_before = board.fen()
 
-        t0 = time.monotonic()
-        lines = engine.analyse(board, chess.engine.Limit(depth=depth), multipv=multipv)
-        search_time_ms = int((time.monotonic() - t0) * 1000)
+        # Cache seam: consult batch_eval_cache for an exact-FEN repeat of a
+        # position this worker already analyzed (in this game or another),
+        # before spending engine time on it. Bounded to REUSE_EVAL_MAX_PLY
+        # and gated on the config knob -- reuse_evals=False (or ply past the
+        # cutoff) reproduces today's behavior exactly: always fall through
+        # to engine.analyse() below. See migrations/0033.
+        cache_eligible = reuse_evals and ply <= REUSE_EVAL_MAX_PLY
+        cached_lines = fetch_cached_eval(conn, fen_before, engine_version, depth, multipv) \
+            if cache_eligible else None
 
-        # lines is a list (one dict per PV rank), ordered best-first
-        rank1 = lines[0]
-        eval_cp, eval_mate = score_to_fields(rank1["score"], mover_color)
-        rank1_exact = 0 if (rank1.get("upperbound") or rank1.get("lowerbound")) else 1
-        engine_reported_time_ms = int(rank1["time"] * 1000) if "time" in rank1 else None
+        if cached_lines is not None:
+            search_time_ms = None  # no search happened -- see write_move_and_lines() docstring
+            rank1 = write_move_and_lines(
+                conn, move_id, cached_lines, run_id, engine_version, eval_source="reuse")
+        else:
+            t0 = time.monotonic()
+            lines = engine.analyse(board, chess.engine.Limit(depth=depth), multipv=multipv)
+            search_time_ms = int((time.monotonic() - t0) * 1000)
 
-        pv_moves = rank1.get("pv", [])[:pv_max_len]
-        pv_board = board.copy()
-        pv_san = []
-        best_move_san = None
-        for i, mv in enumerate(pv_moves):
-            san_mv = pv_board.san(mv)
-            if i == 0:
-                best_move_san = san_mv
-            pv_san.append(san_mv)
-            pv_board.push(mv)
+            # lines is a list (one dict per PV rank), ordered best-first
+            rank1_line = lines[0]
+            engine_reported_time_ms = int(rank1_line["time"] * 1000) if "time" in rank1_line else None
+            seldepth_by_rank = {rank: line.get("seldepth") for rank, line in enumerate(lines, start=1)}
 
-        conn.execute("""
-            UPDATE moves SET
-                eval_cp=?, eval_mate=?, best_move_san=?, pv_json=?,
-                nodes=?, engine_depth=?, engine_version=?,
-                seldepth=?, search_time_ms=?, analysis_run_id=?,
-                hashfull=?, tbhits=?, nps=?, engine_reported_time_ms=?, score_is_exact=?
-            WHERE id=?
-        """, (
-            eval_cp, eval_mate, best_move_san, json.dumps(pv_san),
-            rank1.get("nodes"), rank1.get("depth", depth), engine_version,
-            rank1.get("seldepth"), search_time_ms, run_id,
-            rank1.get("hashfull"), rank1.get("tbhits"), rank1.get("nps"),
-            engine_reported_time_ms, rank1_exact,
-            move_id,
-        ))
+            lines_payload = lines_payload_from_engine_lines(lines, board, mover_color, pv_max_len)
+            rank1 = write_move_and_lines(
+                conn, move_id, lines_payload, run_id, engine_version, eval_source="engine",
+                nodes=rank1_line.get("nodes"), engine_depth=rank1_line.get("depth", depth),
+                seldepth_by_rank=seldepth_by_rank, search_time_ms=search_time_ms,
+                hashfull=rank1_line.get("hashfull"), tbhits=rank1_line.get("tbhits"),
+                nps=rank1_line.get("nps"), engine_reported_time_ms=engine_reported_time_ms,
+            )
 
-        # all ranks (including rank 1, stored redundantly for a uniform query shape).
-        # nodes/hashfull/tbhits/nps/time are global to the whole search call
-        # (confirmed identical across ranks), so they live on `moves` only,
-        # not duplicated here.
-        for rank, line in enumerate(lines, start=1):
-            line_cp, line_mate = score_to_fields(line["score"], mover_color)
-            line_exact = 0 if (line.get("upperbound") or line.get("lowerbound")) else 1
-            line_pv = line.get("pv", [])[:pv_max_len]
-            lb = board.copy()
-            line_san_list = []
-            line_best_san = None
-            for i, mv in enumerate(line_pv):
-                s = lb.san(mv)
-                if i == 0:
-                    line_best_san = s
-                line_san_list.append(s)
-                lb.push(mv)
-            conn.execute("""
-                INSERT OR REPLACE INTO move_lines
-                    (move_id, pv_rank, eval_cp, eval_mate, move_san, pv_json, score_is_exact, seldepth)
-                VALUES (?,?,?,?,?,?,?,?)
-            """, (move_id, rank, line_cp, line_mate, line_best_san, json.dumps(line_san_list),
-                  line_exact, line.get("seldepth")))
+            if cache_eligible:
+                # INSERT OR IGNORE, in the same transaction as the moves/move_lines
+                # writes above (all three commit together at the moves_since_commit
+                # checkpoint below) -- an aborted write can't leave a cache row
+                # without its corresponding moves row.
+                store_cached_eval(conn, fen_before, engine_version, depth, multipv, lines_payload)
+
+        eval_cp, eval_mate, best_move_san = rank1["eval_cp"], rank1["eval_mate"], rank1["move_san"]
 
         conn.execute("UPDATE games SET last_analyzed_ply=? WHERE id=?", (ply, game_id))
         moves_since_commit += 1
@@ -268,8 +360,9 @@ def analyze_game(conn, engine, game_row, depth, multipv, pv_max_len, commit_ever
         analyzed_this_game += 1
 
         eval_str = f"M{eval_mate}" if eval_mate is not None else f"{eval_cp/100:+.2f}"
+        time_str = "cache" if search_time_ms is None else f"{search_time_ms/1000:.1f}s"
         print(f"    ply {ply}/{num_plies}  {san:<8} eval={eval_str:>7}  "
-              f"best={best_move_san or '-':<8} {search_time_ms/1000:.1f}s", flush=True)
+              f"best={best_move_san or '-':<8} {time_str}", flush=True)
 
         if deadline is not None and time.monotonic() >= deadline:
             conn.commit()
@@ -350,9 +443,15 @@ def calibrate(db_path, depth, multipv, threads, hash_mb, pv_max_len, engine_path
             if game_row is None:
                 break  # ran out of pending games before hitting max_plies -- use what we got
             remaining = max_plies - plies_measured
+            # reuse_evals=False here always, regardless of config: calibration exists
+            # to measure REAL per-move engine time on this hardware (BRIEF.md Phase B,
+            # CLAUDE.md's "state the real time cost honestly" rule) -- a cache hit
+            # would resolve a ply in ~0s and silently corrupt that measurement on any
+            # calibration run after the cache already has entries (e.g. a user
+            # re-running onboarding, or opponent_analysis.py calibrating mid-project).
             n_plies, _finished = analyze_game(conn, engine, game_row, depth, multipv, pv_max_len,
                                                commit_every_n_moves=1, engine_version=engine_version,
-                                               run_id=run_id, max_plies=remaining)
+                                               run_id=run_id, max_plies=remaining, reuse_evals=False)
             plies_measured += n_plies
             if n_plies == 0:
                 break  # a 0-ply game or similar edge case -- avoid spinning forever
@@ -372,8 +471,17 @@ def calibrate(db_path, depth, multipv, threads, hash_mb, pv_max_len, engine_path
 
 def run(db_path, depth, multipv, threads, hash_mb, pv_max_len, engine_path,
          max_games, max_duration_s, consecutive_failure_limit, commit_every_n_moves,
-         backlog_quota=0.0, backlog_quota_window=20, on_game_done=None, stop_event=None):
-    """on_game_done(games_done, n_plies, finished): optional callback fired
+         backlog_quota=0.0, backlog_quota_window=20, on_game_done=None, stop_event=None,
+         reuse_evals=None):
+    """reuse_evals: the batch_eval_cache knob (config.yaml engine.reuse_evals,
+    see migrations/0033). None -- the default, what every existing in-process
+    caller (job_runner.py, onboarding_view.py, opponent_analysis.py) passes
+    implicitly -- means "read it from config.yaml", so setting the knob false
+    restores the old always-re-analyze behavior for every entry point, not
+    just the CLI. An explicit True/False (the CLI __main__ below, tests)
+    wins over config, same precedence rule as pick().
+
+    on_game_done(games_done, n_plies, finished): optional callback fired
     after each game, used by the packaged app's onboarding wizard to drive
     a live progress bar in-process (BRIEF.md Phase C found that launching
     this as a `sys.executable worker.py` subprocess -- fine from a source
@@ -391,6 +499,13 @@ def run(db_path, depth, multipv, threads, hash_mb, pv_max_len, engine_path,
     gap named in BRIEF.md S6 -- a second `worker.py` (CLI or another
     dashboard instance) against the SAME database raises immediately
     instead of silently running two engine processes against one queue."""
+    if reuse_evals is None:
+        # .get() with a default, not a bare key lookup: a packaged install's
+        # user config.yaml is backfilled on launch (config.backfill_missing_keys),
+        # but this in-process path can also be reached with an older config in
+        # unusual sequences -- degrade to the shipped default, not a KeyError.
+        reuse_evals = load_config()["engine"].get("reuse_evals", True)
+
     joblock.acquire()
     migrate(db_path)
     conn = get_connection(db_path)
@@ -412,7 +527,8 @@ def run(db_path, depth, multipv, threads, hash_mb, pv_max_len, engine_path,
     engine_version = engine.id.get("name", "unknown")
     print(f"Engine: {engine_version} | depth={depth} multipv={multipv} threads={threads} hash={hash_mb}MB "
           f"| max_games={max_games} max_duration={max_duration_s} "
-          f"backlog_quota={backlog_quota} (window={backlog_quota_window})")
+          f"backlog_quota={backlog_quota} (window={backlog_quota_window}) "
+          f"reuse_evals={reuse_evals}")
 
     cur = conn.execute("""
         INSERT INTO analysis_runs (started_at, engine_version, depth, multipv, threads, hash_mb,
@@ -451,7 +567,7 @@ def run(db_path, depth, multipv, threads, hash_mb, pv_max_len, engine_path,
             try:
                 n_plies, finished = analyze_game(conn, engine, game_row, depth, multipv, pv_max_len,
                                                   commit_every_n_moves, engine_version, run_id, deadline,
-                                                  stop_event=stop_event)
+                                                  stop_event=stop_event, reuse_evals=reuse_evals)
                 consecutive_failures = 0
             except chess.engine.EngineTerminatedError:
                 raise  # engine itself died; not worth continuing the batch
@@ -539,7 +655,13 @@ if __name__ == "__main__":
     commit_every_n_moves = pick(args.commit_every_n_moves, cfg["worker"]["commit_every_n_moves"])
     backlog_quota = pick(args.backlog_quota, cfg["ingestion"]["backlog_quota"])
     backlog_quota_window = pick(args.backlog_quota_window, cfg["ingestion"]["backlog_quota_window"])
+    # No CLI override, matching the existing use_lichess_cloud_eval config knob
+    # (dashboard/live_engine.py) -- config-only, no flag on any root-module CLI
+    # today. Resolved here (not left to run()'s own None fallback) so a --config
+    # path is honored; .get() so an un-backfilled older config means the default.
+    reuse_evals = cfg["engine"].get("reuse_evals", True)
 
     run(db_path, depth, multipv, threads, hash_mb, pv_max_len, engine_path,
         max_games, max_duration_s, consecutive_failure_limit, commit_every_n_moves,
-        backlog_quota=backlog_quota, backlog_quota_window=backlog_quota_window)
+        backlog_quota=backlog_quota, backlog_quota_window=backlog_quota_window,
+        reuse_evals=reuse_evals)

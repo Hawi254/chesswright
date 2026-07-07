@@ -90,6 +90,19 @@ class TestBackfillMissingKeys:
         cfg = config.load_config(config_yaml)
         assert cfg["engine"]["multipv"] == 3
 
+    def test_backfills_engine_reuse_evals_default_true(self, config_yaml):
+        """engine.reuse_evals (the batch eval-reuse knob, migrations/0033)
+        must reach existing installs via this same mechanism -- an install
+        created before the knob existed gets the default (true) backfilled,
+        not a KeyError in worker.py's __main__ config read."""
+        cfg = config.load_config(config_yaml)
+        assert "reuse_evals" not in cfg["engine"]
+
+        config.backfill_missing_keys(path=config_yaml)
+
+        cfg = config.load_config(config_yaml)
+        assert cfg["engine"]["reuse_evals"] is True
+
     def test_preserves_existing_values(self, config_yaml):
         config.backfill_missing_keys(path=config_yaml)
         cfg = config.load_config(config_yaml)

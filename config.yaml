@@ -40,6 +40,12 @@ engine:
   threads: 4               # Stockfish search threads
   hash_mb: 256               # Stockfish transposition table size, in MB
   pv_max_len: 15              # plies of each line's continuation to store (storage vs. detail)
+  reuse_evals: true            # reuse a prior batch result for an exact-FEN repeat position
+                                 # instead of re-running Stockfish (keyed on fen_before +
+                                 # engine_version + depth + multipv, so an engine/config
+                                 # change naturally falls back to a fresh search). Measured
+                                 # ~70% of ply<=24 rows are exact repeats across games --
+                                 # false = restores the old always-re-analyze behavior exactly.
 
 worker:
   max_games: 100             # stop after this many games per run -- matches a
