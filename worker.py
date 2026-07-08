@@ -273,7 +273,13 @@ def write_move_and_lines(conn, move_id, lines_payload, run_id, engine_version, e
 
 def analyze_game(conn, engine, game_row, depth, multipv, pv_max_len, commit_every_n_moves,
                   engine_version, run_id, deadline=None, max_plies=None, stop_event=None,
-                  reuse_evals=True):
+                  reuse_evals=True, cache_stats=None):
+    """cache_stats: optional dict with int "eligible"/"reused" keys, mutated
+    in place (not returned) so a caller looping over many games can keep one
+    running tally across the whole session without re-summing anything.
+    None (every existing caller before this parameter existed, and
+    calibrate(), which always runs with reuse_evals=False anyway) means
+    "don't bother tallying" -- behavior is otherwise unchanged either way."""
     game_id, num_plies, last_analyzed_ply = game_row
     if num_plies is None or num_plies == 0:
         conn.execute("UPDATE games SET analysis_status='done', analysis_completed_at=? WHERE id=?",
@@ -318,7 +324,12 @@ def analyze_game(conn, engine, game_row, depth, multipv, pv_max_len, commit_ever
         cached_lines = fetch_cached_eval(conn, fen_before, engine_version, depth, multipv) \
             if cache_eligible else None
 
+        if cache_stats is not None and cache_eligible:
+            cache_stats["eligible"] += 1
+
         if cached_lines is not None:
+            if cache_stats is not None:
+                cache_stats["reused"] += 1
             search_time_ms = None  # no search happened -- see write_move_and_lines() docstring
             rank1 = write_move_and_lines(
                 conn, move_id, cached_lines, run_id, engine_version, eval_source="reuse")
@@ -544,6 +555,12 @@ def run(db_path, depth, multipv, threads, hash_mb, pv_max_len, engine_path,
     games_done = 0
     total_plies = 0
     consecutive_failures = 0
+    # Cumulative for the whole session, mutated in place by every analyze_game()
+    # call below. Same hit-rate definition the Analysis Jobs GUI tile uses
+    # (reused / (reused + engine) among ply<=REUSE_EVAL_MAX_PLY) -- this is
+    # just the in-process-counter route to it instead of a query, since the
+    # CLI has no reason to hit the DB again for a number it already knows.
+    cache_stats = {"eligible": 0, "reused": 0}
 
     try:
         while True:
@@ -567,7 +584,8 @@ def run(db_path, depth, multipv, threads, hash_mb, pv_max_len, engine_path,
             try:
                 n_plies, finished = analyze_game(conn, engine, game_row, depth, multipv, pv_max_len,
                                                   commit_every_n_moves, engine_version, run_id, deadline,
-                                                  stop_event=stop_event, reuse_evals=reuse_evals)
+                                                  stop_event=stop_event, reuse_evals=reuse_evals,
+                                                  cache_stats=cache_stats)
                 consecutive_failures = 0
             except chess.engine.EngineTerminatedError:
                 raise  # engine itself died; not worth continuing the batch
@@ -592,9 +610,20 @@ def run(db_path, depth, multipv, threads, hash_mb, pv_max_len, engine_path,
             ).fetchone()[0]
             eta_h = (remaining * avg_per_game) / 3600
             status = "done" if finished else "paused (duration limit mid-game)"
+            # Cache fragment omitted entirely when no eligible (ply<=REUSE_EVAL_MAX_PLY)
+            # plies have been touched yet this session -- naturally covers both
+            # reuse_evals=False and "batch hasn't reached any eligible ply yet",
+            # matching this codebase's existing "don't clutter when there's
+            # nothing to show" convention (e.g. the annotation-pass-now section
+            # in dashboard/analysis_jobs_view.py).
+            cache_fragment = ""
+            if cache_stats["eligible"] > 0:
+                rate = cache_stats["reused"] / cache_stats["eligible"]
+                cache_fragment = (f" | cache {cache_stats['reused']}/{cache_stats['eligible']} "
+                                   f"eligible plies reused ({rate:.0%})")
             print(f"[{games_done}] game {game_id}: {n_plies} plies in {dt:.1f}s [{status}] "
                   f"| session avg {avg_per_game:.1f}s/game | {remaining} games left "
-                  f"(~{eta_h:.1f}h at current pace)")
+                  f"(~{eta_h:.1f}h at current pace){cache_fragment}")
             conn.execute("""
                 UPDATE analysis_runs SET games_analyzed=?, plies_analyzed=? WHERE id=?
             """, (games_done, total_plies, run_id))
@@ -614,8 +643,13 @@ def run(db_path, depth, multipv, threads, hash_mb, pv_max_len, engine_path,
         conn.close()
         joblock.release()
 
+    summary_cache_fragment = ""
+    if cache_stats["eligible"] > 0:
+        rate = cache_stats["reused"] / cache_stats["eligible"]
+        summary_cache_fragment = (f" | cache {cache_stats['reused']}/{cache_stats['eligible']} "
+                                   f"eligible plies reused ({rate:.0%})")
     print(f"Session summary: {games_done} games, {total_plies} plies, "
-          f"{time.monotonic()-start_time:.1f}s elapsed.")
+          f"{time.monotonic()-start_time:.1f}s elapsed.{summary_cache_fragment}")
     return run_id
 
 

@@ -195,6 +195,71 @@ class TestQueryPerformance:
 
 
 @pytest.mark.perf
+class TestCacheStatsQueryPerformance:
+    """Query-plan + wall-clock check for the Analysis Jobs live cache-stats
+    tile's `_run_cache_stats()` query (dashboard/analysis_jobs_view.py,
+    added alongside the eval-reuse cache's live GUI stats). Must hit
+    idx_moves_run (migrations/0006), not a full `moves` table scan -- this
+    query runs every 2s while a batch is live, on top of the worker's own
+    analysis throughput, so an accidental scan here would be a real
+    regression, not just a one-off slow page load."""
+
+    def _seed_run(self, conn):
+        # large_db's own insert doesn't set analysis_run_id/eval_source/
+        # search_time_ms -- they're columns this feature (and migration
+        # 0006/0033) added after that fixture was written -- so seed a
+        # subset here to exercise a real run with real cache-stat rows,
+        # not an all-NULL no-op scan.
+        conn.execute("""
+            UPDATE moves SET analysis_run_id=1,
+                eval_source=CASE WHEN ply % 2 = 0 THEN 'reuse' ELSE 'engine' END,
+                search_time_ms=CASE WHEN ply % 2 = 1 THEN 500 END
+            WHERE ply <= 30
+        """)
+        conn.commit()
+
+    def test_run_cache_stats_query_uses_idx_moves_run(self, large_db):
+        from worker import REUSE_EVAL_MAX_PLY
+        conn = _sqlite(large_db)
+        self._seed_run(conn)
+
+        plan = conn.execute(
+            "EXPLAIN QUERY PLAN SELECT "
+            "SUM(CASE WHEN eval_source='reuse' THEN 1 ELSE 0 END), "
+            "SUM(CASE WHEN eval_source='engine' THEN 1 ELSE 0 END), "
+            "AVG(CASE WHEN eval_source='engine' THEN search_time_ms END) "
+            "FROM moves WHERE analysis_run_id=? AND ply <= ?",
+            (1, REUSE_EVAL_MAX_PLY)
+        ).fetchall()
+        plan_text = " ".join(str(row) for row in plan)
+        assert "idx_moves_run" in plan_text, \
+            f"expected idx_moves_run in the query plan, got: {plan_text}"
+        assert "SCAN moves" not in plan_text, \
+            f"expected an index seek/search, not a full table scan: {plan_text}"
+
+    def test_run_cache_stats_query_under_50ms(self, large_db, benchmark):
+        """Wall-clock timing against the 30,000-row large_db fixture. See
+        the BRIEF.md entry for this feature for a separate timing against a
+        backup-API scratch copy of the real dev chess.db, if one was taken."""
+        from worker import REUSE_EVAL_MAX_PLY
+        conn = _sqlite(large_db)
+        self._seed_run(conn)
+
+        def _run():
+            return conn.execute("""
+                SELECT
+                    SUM(CASE WHEN eval_source='reuse' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN eval_source='engine' THEN 1 ELSE 0 END),
+                    AVG(CASE WHEN eval_source='engine' THEN search_time_ms END)
+                FROM moves WHERE analysis_run_id=? AND ply <= ?
+            """, (1, REUSE_EVAL_MAX_PLY)).fetchone()
+
+        benchmark.pedantic(_run, rounds=20, warmup_rounds=3)
+        assert benchmark.stats["mean"] < 0.05, \
+            f"_run_cache_stats-shaped query mean={benchmark.stats['mean']:.4f}s > 50ms limit"
+
+
+@pytest.mark.perf
 class TestMigrationPerformance:
     def test_all_migrations_under_500ms(self, benchmark):
         """22 migrations on a fresh in-memory DB must run in < 500ms."""

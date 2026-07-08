@@ -255,6 +255,65 @@ class TestReuseEvalsKnobOff:
 
 
 @pytest.mark.integration
+class TestCacheStatsTally:
+    """cache_stats mutation in analyze_game() -- the in-process counter
+    worker.run() uses for its CLI print lines (must count 'eligible' among
+    ply<=REUSE_EVAL_MAX_PLY only, never ply beyond the cutoff, and 'reused'
+    only on an actual hit)."""
+
+    def test_mix_of_hits_misses_and_ineligible_plies_in_one_call(self, migrated_db, monkeypatch):
+        monkeypatch.setattr(worker, "REUSE_EVAL_MAX_PLY", 3)
+        conn = _with_runs(migrated_db)
+        engine = FakeAnalysisEngine()
+
+        # Seed the cache: g1's 3 plies are all fresh (first time seeing these
+        # FENs), populating batch_eval_cache for start / after-1.e4 / after-1.e4-e5.
+        _insert_game_with_moves(conn, "g1", ["e4", "e5", "Nf3"])
+        analyze_game(conn, engine, _game_row(conn, "g1"), depth=6, multipv=1, pv_max_len=10,
+                      commit_every_n_moves=1, engine_version="FakeEngine", run_id=1,
+                      reuse_evals=True)  # no cache_stats passed -- must not raise
+
+        # g2: ply1 "e4" -> same start-position FEN as g1's ply1 -> HIT.
+        # ply2 "d5" -> fen_before is "after 1.e4" (matches g1's ply1 move) -> HIT.
+        # ply3 "Nf3" -> fen_before is "after 1.e4 d5", never seen before -> MISS.
+        # ply4/ply5 -> beyond the ply<=3 cutoff, must never touch the cache at all.
+        _insert_game_with_moves(conn, "g2", ["e4", "d5", "Nf3", "Nc6", "Bb5"])
+        cache_stats = {"eligible": 0, "reused": 0}
+        analyze_game(conn, engine, _game_row(conn, "g2"), depth=6, multipv=1, pv_max_len=10,
+                      commit_every_n_moves=1, engine_version="FakeEngine", run_id=1,
+                      reuse_evals=True, cache_stats=cache_stats)
+
+        assert cache_stats == {"eligible": 3, "reused": 2}
+        sources = [r[0] for r in conn.execute(
+            "SELECT eval_source FROM moves WHERE game_id='g2' ORDER BY ply")]
+        assert sources == ["reuse", "reuse", "engine", "engine", "engine"]
+
+    def test_cache_stats_stays_zero_when_reuse_evals_off(self, migrated_db):
+        conn = _with_runs(migrated_db)
+        _insert_game_with_moves(conn, "g1", ["e4"])
+        _insert_game_with_moves(conn, "g2", ["e4"])
+        engine = FakeAnalysisEngine()
+        analyze_game(conn, engine, _game_row(conn, "g1"), depth=6, multipv=1, pv_max_len=10,
+                      commit_every_n_moves=1, engine_version="FakeEngine", run_id=1, reuse_evals=False)
+        cache_stats = {"eligible": 0, "reused": 0}
+        analyze_game(conn, engine, _game_row(conn, "g2"), depth=6, multipv=1, pv_max_len=10,
+                      commit_every_n_moves=1, engine_version="FakeEngine", run_id=1,
+                      reuse_evals=False, cache_stats=cache_stats)
+        assert cache_stats == {"eligible": 0, "reused": 0}
+
+    def test_cache_stats_none_is_a_safe_default(self, migrated_db):
+        """Existing callers (e.g. calibrate()) that never pass cache_stats
+        must be entirely unaffected -- no crash, no attribute error."""
+        conn = _with_runs(migrated_db)
+        _insert_game_with_moves(conn, "g1", ["e4", "e5"])
+        engine = FakeAnalysisEngine()
+        n_plies, finished = analyze_game(
+            conn, engine, _game_row(conn, "g1"), depth=6, multipv=1, pv_max_len=10,
+            commit_every_n_moves=1, engine_version="FakeEngine", run_id=1, reuse_evals=True)
+        assert (n_plies, finished) == (2, True)
+
+
+@pytest.mark.integration
 class TestResumeAcrossCacheHitBoundary:
     def test_interrupt_right_after_a_cache_hit_ply_then_resume(self, migrated_db):
         conn = _with_runs(migrated_db)
@@ -379,5 +438,31 @@ class TestRealEngineCacheRoundTrip:
                 f"SELECT {derived_cols} FROM moves WHERE game_id=? ORDER BY ply", (gid,)).fetchall()
             assert rows_u == rows_c, f"annotate.py output diverged for game {gid} between cached/uncached runs"
 
-        conn_u.close()
-        conn_c.close()
+    def test_cli_prints_cache_tally_fragment(self, tmp_path, monkeypatch, capsys):
+        """games 1 and 3 of the fixture both open 1.e4 e5 -- a genuine repeat
+        -- so a real reuse_evals=True run must produce at least one reused
+        ply, and worker.py's own print output (per-game line + session
+        summary) must both surface the 'cache N/M eligible plies reused'
+        fragment with a sane, non-crashing count."""
+        self._analyze_fixture(tmp_path, "cli_cache.db", reuse_evals=True, monkeypatch=monkeypatch)
+        out = capsys.readouterr().out
+
+        per_game_lines = [line for line in out.splitlines() if line.startswith("[")]
+        assert per_game_lines, "expected at least one per-game print line"
+        cache_lines = [line for line in per_game_lines if "eligible plies reused" in line]
+        assert cache_lines, \
+            f"expected a per-game line with the cache fragment, got:\n{out}"
+        for line in cache_lines:
+            assert " | cache " in line
+
+        summary_lines = [line for line in out.splitlines() if line.startswith("Session summary:")]
+        assert len(summary_lines) == 1
+        assert "eligible plies reused" in summary_lines[0], \
+            f"expected the session summary to include the cache fragment, got:\n{summary_lines[0]}"
+
+        import re
+        m = re.search(r"cache (\d+)/(\d+) eligible plies reused \((\d+)%\)", summary_lines[0])
+        assert m is not None, f"cache fragment didn't match the expected shape: {summary_lines[0]}"
+        reused, eligible, pct = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        assert 0 < reused <= eligible
+        assert 0 <= pct <= 100

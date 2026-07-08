@@ -27,6 +27,8 @@ that preceded this file):
 7. Navigation: this dedicated page, in app.py's "App" group next to
    Settings -- an ongoing operational concern, not one-time setup.
 """
+import datetime
+
 import streamlit as st
 
 import annotate
@@ -34,7 +36,7 @@ import backfill_batch_eval_cache
 import config as config_module
 import joblock
 import job_runner
-from worker import parse_duration
+from worker import parse_duration, REUSE_EVAL_MAX_PLY
 from _common import get_config, get_sqlite_connection, resolve_db_path
 
 
@@ -48,6 +50,40 @@ def _queue_counts(conn):
     """).fetchone()
     pending, done, failed = row
     return pending or 0, done or 0, failed or 0
+
+
+def _active_run_id(conn):
+    """(id, started_at) of the analysis_runs row with no ended_at -- the
+    currently running batch. None if the row hasn't been inserted yet
+    (a brief window right after job_runner.start() spawns the thread) or
+    if no batch is running. analysis_runs.finally: always sets ended_at
+    (even on crash), so a stale NULL row from a hard-killed process can
+    only be OLDER than the real current run -- ORDER BY id DESC LIMIT 1
+    is safe."""
+    return conn.execute(
+        "SELECT id, started_at FROM analysis_runs WHERE ended_at IS NULL "
+        "ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+
+
+def _run_cache_stats(conn, run_id):
+    """eval_source counts for THIS run's reuse-eligible plies only
+    (ply <= REUSE_EVAL_MAX_PLY) -- moves.analysis_run_id=? hits
+    idx_moves_run (migrations/0006). Deliberately excludes ply >
+    REUSE_EVAL_MAX_PLY: those were never cache candidates (always
+    eval_source='engine'), so including them would dilute the ratio with
+    plies that were never eligible in the first place -- see
+    worker.REUSE_EVAL_MAX_PLY's own docstring for the same reasoning.
+    Returns (reused_count, engine_count, avg_engine_search_time_ms_or_None)."""
+    reused, engine_n, avg_engine_ms = conn.execute("""
+        SELECT
+            SUM(CASE WHEN eval_source='reuse' THEN 1 ELSE 0 END),
+            SUM(CASE WHEN eval_source='engine' THEN 1 ELSE 0 END),
+            AVG(CASE WHEN eval_source='engine' THEN search_time_ms END)
+        FROM moves
+        WHERE analysis_run_id=? AND ply <= ?
+    """, (run_id, REUSE_EVAL_MAX_PLY)).fetchone()
+    return reused or 0, engine_n or 0, avg_engine_ms
 
 
 def _render_lock_warning(lock_info):
@@ -98,6 +134,56 @@ def _render_status(db_path, cfg):
     if running:
         games_done = state.get("games_done", 0)
         st.info(f"Batch running -- {games_done} game(s) analyzed so far this run.")
+
+        # Eval-reuse cache stats for the currently running batch. No trend-
+        # over-time chart here: this fragment already re-renders on a fixed
+        # 2s timer regardless of whether anyone's watching, and a ring-buffer
+        # chart would add real render cost across a multi-hour run just to
+        # show a number the plain percentage tile below already updates
+        # live every 2s anyway -- not worth it for this feature.
+        active_run = _active_run_id(conn)
+        if active_run is not None:
+            run_id, started_at = active_run
+            reused, engine_n, avg_engine_ms = _run_cache_stats(conn, run_id)
+            eligible = reused + engine_n
+            reuse_evals_on = cfg["engine"].get("reuse_evals", True)
+
+            tiles = st.columns(3)
+            if not reuse_evals_on:
+                tiles[0].metric("Cache hit rate", "Off",
+                                 help="Eval reuse is disabled via engine.reuse_evals in "
+                                      "config.yaml — every position is re-analyzed by the "
+                                      "engine, so there's no hit rate to show.")
+            elif eligible == 0:
+                tiles[0].metric("Cache hit rate", "N/A",
+                                 help="No ply<=24 positions analyzed yet this run.")
+            else:
+                tiles[0].metric("Cache hit rate", f"{reused/eligible:.0%}",
+                                 help=f"{reused:,} of {eligible:,} eligible plies (ply<=24) "
+                                      "this run were exact-FEN repeats reused from a prior "
+                                      "analysis instead of re-running the engine.")
+
+            if reused > 0 and avg_engine_ms is not None:
+                tiles[1].metric("Est. engine time saved", f"{reused * avg_engine_ms / 1000:.0f}s",
+                                 help="An ESTIMATE: reused-ply count × this run's own average "
+                                      "engine search time on eligible plies. Reused rows carry "
+                                      "no real search telemetry (nothing ran), so this is the "
+                                      "closest honest stand-in, not a reconstruction of what "
+                                      "each individual dropped search would have taken.")
+
+            if games_done == 0:
+                tiles[2].metric("ETA", "calculating…",
+                                 help="Needs at least one finished game this run to estimate a pace.")
+            else:
+                started_dt = datetime.datetime.fromisoformat(started_at)
+                now = datetime.datetime.now(datetime.timezone.utc)
+                elapsed_since_run_started = (now - started_dt).total_seconds()
+                eta_seconds = pending * (elapsed_since_run_started / games_done)
+                eta_td = datetime.timedelta(seconds=round(eta_seconds))
+                tiles[2].metric("ETA", str(eta_td),
+                                 help="Same pace formula the CLI's own per-game print line uses: "
+                                      "games remaining × (elapsed time / games done so far this run).")
+
         if st.button("Stop after current move", help="Cooperative -- finishes the in-progress "
                                                        "move, leaves the game safely resumable."):
             job_runner.stop()
@@ -194,6 +280,14 @@ def render(batch_impact_page=None):
                 st.error(str(e))
             else:
                 st.rerun()
+
+        st.caption(
+            "For max throughput, `python3 worker.py` from a terminal skips GUI/browser "
+            "overhead entirely and now prints the same cache hit-rate stats shown above.",
+            help="Closing this app's window while a batch is running from here kills it "
+                 "(abruptly, though safely resumable) -- if you want a terminal run you can "
+                 "walk away from without a window to accidentally close, "
+                 "`desktop_app.py --server-mode --port N --config PATH` boots headlessly.")
 
     st.divider()
 
