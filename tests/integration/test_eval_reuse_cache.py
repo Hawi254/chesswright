@@ -11,6 +11,7 @@ worker.py -> annotate.py round trip this feature is not allowed to change.
 """
 import pathlib
 import sqlite3
+import subprocess
 import sys
 
 import chess
@@ -466,3 +467,68 @@ class TestRealEngineCacheRoundTrip:
         reused, eligible, pct = int(m.group(1)), int(m.group(2)), int(m.group(3))
         assert 0 < reused <= eligible
         assert 0 <= pct <= 100
+
+
+# ---------------------------------------------------------------------------
+# worker.main() CLI-entrypoint refactor correctness (desktop_app.py's
+# --run-worker mode calls this exact same function in-process -- see
+# desktop_app.run_worker_mode()). Pure extraction from the old bare
+# `if __name__ == "__main__":` block, so this only needs to prove
+# args-parse-and-dispatch still works, not re-test run()'s own behavior
+# (already covered above and in tests/unit/test_worker.py).
+# ---------------------------------------------------------------------------
+
+@pytest.mark.integration
+@pytest.mark.skipif(REAL_STOCKFISH is None, reason="no Stockfish binary on this machine")
+class TestWorkerMainEntrypoint:
+    def test_subprocess_python3_worker_py_still_works_post_refactor(self, tmp_path, monkeypatch):
+        """`python3 worker.py ...` -- the exact pre-refactor invocation --
+        must still behave identically: real subprocess, real engine, one
+        game analyzed end to end."""
+        import migrate as migrate_mod
+        import ingest
+
+        db_path = str(tmp_path / "cli.db")
+        migrate_mod.migrate(db_path)
+        ingest.ingest(pgn_path=str(FIXTURES / "synthetic_games.pgn"), db_path=db_path,
+                      player_name="TestPlayerWhite")
+
+        proc = subprocess.run(
+            [sys.executable, str(REPO_ROOT / "worker.py"),
+             "--db", db_path, "--depth", "4", "--multipv", "1", "--threads", "1",
+             "--max-games", "1", "--engine-path", REAL_STOCKFISH],
+            capture_output=True, text=True, timeout=180, cwd=str(REPO_ROOT),
+        )
+        assert proc.returncode == 0, f"stdout={proc.stdout}\nstderr={proc.stderr}"
+
+        conn = sqlite3.connect(db_path)
+        statuses = [r[0] for r in conn.execute("SELECT analysis_status FROM games").fetchall()]
+        conn.close()
+        assert "done" in statuses, f"expected at least one game analyzed, got {statuses}"
+
+    def test_in_process_main_call_parses_args_and_dispatches(self, tmp_path, monkeypatch):
+        """worker.main([...]) called directly in-process (as desktop_app.py's
+        --run-worker mode does) with a short real-Stockfish scenario -- proves
+        argparse + run() dispatch still works when called as a function, not
+        just as a script."""
+        import migrate as migrate_mod
+        import ingest
+
+        db_path = str(tmp_path / "inprocess.db")
+        migrate_mod.migrate(db_path)
+        ingest.ingest(pgn_path=str(FIXTURES / "synthetic_games.pgn"), db_path=db_path,
+                      player_name="TestPlayerWhite")
+
+        lock_path = tmp_path / "inprocess.lock"
+        monkeypatch.setattr(worker.joblock, "LOCK_PATH", lock_path)
+        monkeypatch.setattr(worker.joblock, "_lock_fd", None)
+
+        worker.main([
+            "--db", db_path, "--depth", "4", "--multipv", "1", "--threads", "1",
+            "--max-games", "1", "--engine-path", REAL_STOCKFISH,
+        ])
+
+        conn = sqlite3.connect(db_path)
+        statuses = [r[0] for r in conn.execute("SELECT analysis_status FROM games").fetchall()]
+        conn.close()
+        assert "done" in statuses, f"expected at least one game analyzed, got {statuses}"

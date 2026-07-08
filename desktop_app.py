@@ -48,6 +48,11 @@ Usage:
                                         # internal -- re-invoked by the
                                           launcher itself, not meant to
                                           be run directly
+    python3 desktop_app.py --run-worker [worker.py flags...]
+                                        # analysis-only, no GUI/browser --
+                                          the real max-throughput path for
+                                          a packaged (frozen) install; see
+                                          run_worker_mode() below.
 """
 import json
 import os
@@ -424,6 +429,49 @@ def launch_server_subprocess(port, config_path):
     return subprocess.Popen(cmd, cwd=str(resource_dir()))
 
 
+def run_worker_mode():
+    """chesswright --run-worker [any worker.py flag: --max-games/--depth/...]
+    -- runs an analysis batch directly, no Streamlit/pywebview boot at all.
+    The actual max-throughput path for a PACKAGED user (unlike the
+    Analysis Jobs page's CLI-throughput tip, which only works from a
+    source checkout where python3 worker.py exists as a real script) --
+    see BRIEF.md for the finding that motivated this. Reuses run_server_mode()'s
+    exact CHESSWRIGHT_CONFIG_PATH env-var mechanism (config.py already reads
+    it) so worker.main()'s own --config=None default resolves to this
+    user's real ~/.chesswright/config.yaml, not a meaningless bundle-relative
+    path -- zero new config-resolution plumbing needed.
+
+    Ordering caveat found live (not in the original sketch of this
+    function): config.DEFAULT_CONFIG_PATH is a plain module-level constant,
+    resolved from CHESSWRIGHT_CONFIG_PATH once at config.py's *first*
+    import in this process, not re-read later. ensure_user_data() itself
+    is what imports `config` for the first time -- so the env var has to
+    be set BEFORE calling it, not after, or worker.main()'s --config=None
+    default silently resolves to the bundled read-only template instead
+    of this user's real config. USER_DATA_DIR/"config.yaml" is exactly the
+    path ensure_user_data() computes and returns internally, so it can be
+    set here without waiting on that call."""
+    user_config = USER_DATA_DIR / "config.yaml"
+    os.environ["CHESSWRIGHT_CONFIG_PATH"] = str(user_config)
+    ensure_user_data()
+    sys.path.insert(0, str(resource_dir()))
+    import worker
+    idx = sys.argv.index("--run-worker")
+    worker_argv = sys.argv[idx + 1:]
+    try:
+        worker.main(worker_argv)
+    except RuntimeError as e:
+        # Covers joblock.LockHeldError (a GUI batch or another --run-worker
+        # is already running -- joblock.acquire() inside worker.run() raises
+        # this) and the "no Stockfish found" case worker.run() also raises
+        # as a bare RuntimeError -- both already carry a clean, human-
+        # readable message (see joblock.LockHeldError.__str__ and worker.run()'s
+        # own raise site), so a packaged user sees that message on stderr and
+        # a clean non-zero exit, not a raw Python traceback.
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
 def main():
     if "--check-imports" in sys.argv:
         run_check_imports()
@@ -435,6 +483,9 @@ def main():
         port = int(sys.argv[sys.argv.index("--port") + 1])
         config_path = sys.argv[sys.argv.index("--config") + 1]
         run_server_mode(port, config_path)
+        return
+    if "--run-worker" in sys.argv:
+        run_worker_mode()
         return
 
     check_cpu_compat()

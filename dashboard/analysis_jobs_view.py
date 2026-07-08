@@ -28,6 +28,7 @@ that preceded this file):
    Settings -- an ongoing operational concern, not one-time setup.
 """
 import datetime
+import sys
 
 import streamlit as st
 
@@ -243,6 +244,50 @@ def _render_status(db_path, cfg):
     return running
 
 
+def _throughput_caption():
+    """Frozen-vs-source-aware "for max throughput" caption + help tooltip
+    (single-line visible caption, nuance in help= -- same pattern the prior
+    version of this line already used). getattr(sys, "frozen", False) is
+    the standard PyInstaller runtime check (desktop_app.resource_dir() uses
+    the same test) -- True only inside the packaged/frozen chesswright
+    binary, never in a `streamlit run dashboard/app.py` dev checkout.
+
+    Frozen users have no `python3`/`worker.py` at all (see the finding that
+    motivated this rewrite, BRIEF.md), so the real max-throughput path there
+    is `chesswright --run-worker` -- desktop_app.py's new analysis-only
+    entrypoint, which skips Streamlit/pywebview entirely and picks up this
+    run's saved engine/batch settings from the same config.yaml the Settings
+    form below writes to (no flags needed for the common case). Distinguished
+    from `--server-mode` (still mentioned): that gives the FULL dashboard in
+    a closable browser tab, useful if you still want to browse other pages
+    while a batch runs; `--run-worker` is analysis-only and faster, for when
+    throughput is all that matters. Only one batch (GUI or --run-worker) can
+    run at a time against a given database (joblock.py's cross-process
+    lock) -- called out explicitly so a frozen user doesn't try to stack a
+    terminal run on top of this page's own running batch."""
+    window_warning = (
+        "Closing this app's window while a batch is running from here kills it "
+        "(abruptly, though safely resumable).")
+    if getattr(sys, "frozen", False):
+        caption = "For max throughput, run `chesswright --run-worker` from a terminal."
+        help_text = (
+            f"{window_warning} `chesswright --run-worker` skips GUI/browser overhead "
+            "entirely and automatically uses this run's saved engine/batch settings -- "
+            "no flags needed for the common case. It can't run at the same time as a "
+            "GUI-driven batch (only one analysis run at a time) -- stop this page's batch "
+            "first if one's running. If you'd rather keep the full dashboard open in a "
+            "closable browser tab instead (e.g. to browse other pages while it runs), "
+            "`chesswright --server-mode --port N --config PATH` boots headlessly for that.")
+    else:
+        caption = "For max throughput, run `python3 worker.py` from a terminal."
+        help_text = (
+            f"{window_warning} `python3 worker.py` (source checkout only) skips GUI/browser "
+            "overhead entirely and prints the same cache hit-rate stats shown above. If you "
+            "want a terminal run you can walk away from without a window to accidentally "
+            "close, `desktop_app.py --server-mode --port N --config PATH` boots headlessly.")
+    return caption, help_text
+
+
 def render(batch_impact_page=None):
     st.title("Analysis Jobs")
 
@@ -281,13 +326,8 @@ def render(batch_impact_page=None):
             else:
                 st.rerun()
 
-        st.caption(
-            "For max throughput, `python3 worker.py` from a terminal skips GUI/browser "
-            "overhead entirely and now prints the same cache hit-rate stats shown above.",
-            help="Closing this app's window while a batch is running from here kills it "
-                 "(abruptly, though safely resumable) -- if you want a terminal run you can "
-                 "walk away from without a window to accidentally close, "
-                 "`desktop_app.py --server-mode --port N --config PATH` boots headlessly.")
+        caption, caption_help = _throughput_caption()
+        st.caption(caption, help=caption_help)
 
     st.divider()
 

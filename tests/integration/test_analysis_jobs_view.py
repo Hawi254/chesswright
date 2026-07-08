@@ -16,7 +16,8 @@ sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "dashboard"))
 
 from worker import REUSE_EVAL_MAX_PLY
-from analysis_jobs_view import _active_run_id, _run_cache_stats
+from analysis_jobs_view import _active_run_id, _run_cache_stats, _throughput_caption
+import analysis_jobs_view
 
 
 def _insert_run(conn, run_id, started_at="2026-07-08T00:00:00+00:00", ended_at=None):
@@ -121,3 +122,31 @@ class TestRunCacheStats:
         _insert_run(conn, 1)
         conn.commit()
         assert _run_cache_stats(conn, 1) == (0, 0, None)
+
+
+class TestThroughputCaption:
+    """_throughput_caption() -- the frozen-vs-source-checkout-aware "for max
+    throughput" caption/help pair under the Start analysis batch button.
+    getattr(sys, "frozen", False) is the standard PyInstaller runtime flag
+    (unset on a normal `streamlit run` dev checkout, True inside the
+    packaged chesswright binary); this exercises both branches directly
+    since actually launching the frozen pywebview GUI isn't practical in a
+    headless test (see the live-verification notes in BRIEF.md)."""
+
+    def test_source_checkout_wording_when_not_frozen(self, monkeypatch):
+        monkeypatch.delattr(analysis_jobs_view.sys, "frozen", raising=False)
+        caption, help_text = _throughput_caption()
+        assert caption == "For max throughput, run `python3 worker.py` from a terminal."
+        assert "python3 worker.py" in help_text
+        assert "--server-mode" in help_text
+        assert "kills it" in help_text  # window-closing warning preserved
+
+    def test_frozen_wording_when_frozen(self, monkeypatch):
+        monkeypatch.setattr(analysis_jobs_view.sys, "frozen", True, raising=False)
+        caption, help_text = _throughput_caption()
+        assert caption == "For max throughput, run `chesswright --run-worker` from a terminal."
+        assert "chesswright --run-worker" in help_text
+        assert "--server-mode" in help_text  # still mentioned, but distinguished
+        assert "only one" in help_text.lower()  # can't run alongside a GUI batch
+        assert "kills it" in help_text  # window-closing warning preserved
+        assert "python3 worker.py" not in help_text  # no dev-only wording leaks in

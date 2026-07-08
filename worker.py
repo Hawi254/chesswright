@@ -653,7 +653,17 @@ def run(db_path, depth, multipv, threads, hash_mb, pv_max_len, engine_path,
     return run_id
 
 
-if __name__ == "__main__":
+def main(argv=None):
+    """CLI entrypoint. argv=None means "read real sys.argv[1:]" (argparse's
+    own default) -- preserves `python3 worker.py ...`'s exact existing
+    behavior. Extracted out of a bare `if __name__ == "__main__":` block so
+    desktop_app.py's frozen `--run-worker` mode can call this SAME argparse
+    surface and dispatch path in-process, instead of duplicating flag
+    definitions or (worse) re-invoking `sys.executable worker.py` as a
+    subprocess -- which breaks once frozen, since sys.executable IS the
+    single bundled exe there (same reason desktop_app.py's own module
+    docstring already documents for why --server-mode re-invokes itself
+    instead of shelling out to a second script)."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--db", default=None)
     ap.add_argument("--depth", type=int, default=None)
@@ -673,7 +683,7 @@ if __name__ == "__main__":
     ap.add_argument("--backlog-quota-window", type=int, default=None,
                      help="How many of the most recently analyzed games backlog-quota looks at.")
     ap.add_argument("--config", default=None, help="Path to config.yaml (default: ./config.yaml)")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     cfg = load_config(args.config)
     db_path = pick(args.db, cfg["database"]["path"])
@@ -699,3 +709,7 @@ if __name__ == "__main__":
         max_games, max_duration_s, consecutive_failure_limit, commit_every_n_moves,
         backlog_quota=backlog_quota, backlog_quota_window=backlog_quota_window,
         reuse_evals=reuse_evals)
+
+
+if __name__ == "__main__":
+    main()
