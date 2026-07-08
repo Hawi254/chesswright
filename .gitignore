@@ -28,6 +28,7 @@ sample.pgn
 # private project docs -- never version-controlled in the open-core repo
 CLAUDE.md
 BRIEF.md
+docs/scoping/
 
 # local-only generated artifacts (anchored to repo root -- PyInstaller output)
 /dist/

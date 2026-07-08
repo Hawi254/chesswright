@@ -7,6 +7,7 @@ _component_func = components.declare_component("chessboard", path=_FRONTEND_BUIL
 
 
 def render(fen: str, orientation: str = "white", arrows: list = None,
+           highlighted_squares: list = None,
            interactive: bool = False, lastmove_from: str = None,
            lastmove_to: str = None, enable_keyboard_nav: bool = False,
            key: str = None) -> dict | None:
@@ -33,6 +34,13 @@ def render(fen: str, orientation: str = "white", arrows: list = None,
     ply/step) and dedupe on "nonce" instead.
 
     arrows: list of {from, to, color} dicts.
+    highlighted_squares: list of {"square": ..., "color": ...} dicts, e.g.
+        {"square": "e4", "color": "#B0584F"}. Colors are pre-resolved by
+        the caller (a style-enum -> theme-color mapping happens in
+        chesswright_pro/board_chat.py, never in this component) -- same
+        convention `arrows` already uses (callers pass a resolved `color`
+        string, never a style keyword the component would need to
+        interpret).
     enable_keyboard_nav: also grabs keyboard focus on mount and listens for
         Left/Right arrow keys -- only turn on where the caller actually has
         a fixed move sequence to step through (see game_detail_view.py).
@@ -41,6 +49,7 @@ def render(fen: str, orientation: str = "white", arrows: list = None,
         fen=fen,
         orientation=orientation,
         arrows=arrows or [],
+        highlighted_squares=highlighted_squares or [],
         interactive=interactive,
         lastmove_from=lastmove_from,
         lastmove_to=lastmove_to,

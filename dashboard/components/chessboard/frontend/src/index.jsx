@@ -20,6 +20,7 @@ function ChessboardInner({ args, disabled }) {
     fen: propFen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
     orientation = "white",
     arrows = [],
+    highlighted_squares: highlightedSquares = [],
     interactive = false,
     lastmove_from: lastmoveFrom = null,
     lastmove_to: lastmoveTo = null,
@@ -215,7 +216,10 @@ function ChessboardInner({ args, disabled }) {
     ...(lastmoveFrom ? { [lastmoveFrom]: lastmoveStyle } : {}),
     ...(lastmoveTo   ? { [lastmoveTo]:   lastmoveStyle } : {}),
   }
-  const customSquareStyles = { ...lastmoveSquares, ...optionSquares }
+  const chatHighlightStyles = Object.fromEntries(
+    highlightedSquares.map(h => [h.square, { background: h.color }])
+  )
+  const customSquareStyles = { ...chatHighlightStyles, ...lastmoveSquares, ...optionSquares }
 
   // arrows prop: [{from, to, color}] dicts from Python
   const customArrows = arrows.map(a => [a.from, a.to, a.color || "rgb(0,128,0)"])
