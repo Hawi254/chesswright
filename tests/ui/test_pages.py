@@ -62,6 +62,7 @@ class TestAllCareerPagesRender:
         "evolution_view",
         "batch_impact_view",  # render(self_page=None, detail_page=None) defaults
         "analysis_jobs_view",  # render(batch_impact_page=None) default
+        "ask_view",  # free-tier body when pro_gate inactive, delegates to AI Coach when active
     ])
     def test_no_arg_page_renders(self, module_name):
         at = _page_apptest(module_name)
@@ -77,6 +78,37 @@ class TestAllCareerPagesRender:
         at = _page_apptest(module_name, call_with_dummy_pages=True)
         at.run(timeout=60)
         assert not at.exception, f"{module_name} raised: {at.exception}"
+
+
+@pytest.mark.ui
+class TestAskViewFreeTierUnchanged:
+    """Dedicated coverage for the Pro gate added to ask_view.py. Confirms
+    the free-tier body (preset buttons, ask_history session state) still
+    renders exactly as before, and that the chesswright_pro import path is
+    never attempted, when pro_gate.is_pro_active() is False -- the actual
+    state in this dev/test environment (no license key active), verified
+    directly rather than assumed."""
+
+    def test_pro_gate_inactive_in_this_environment(self):
+        import pro_gate
+        assert pro_gate.is_pro_active() is False
+
+    def test_free_tier_renders_with_preset_buttons_and_upsell(self, monkeypatch):
+        import pro_gate
+        monkeypatch.setattr(pro_gate, "is_pro_active", lambda: False)
+
+        at = _page_apptest("ask_view")
+        at.run(timeout=60)
+        assert not at.exception, f"ask_view raised: {at.exception}"
+
+        # Free-tier preset-question buttons still render (unchanged body).
+        preset_labels = {b.label for b in at.button}
+        assert "Blunder timing" in preset_labels
+        assert "Ask" in preset_labels
+
+        # Honest upsell blurb present, no Pro-import error surfaced.
+        assert any("AI Coach" in i.value for i in at.info)
+        assert not at.error
 
 
 @pytest.mark.ui

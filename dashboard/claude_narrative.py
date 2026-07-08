@@ -26,6 +26,7 @@ the Settings page, never hardcoded, never logged.
 import anthropic
 
 import api_key_store
+import app_capabilities
 
 MODEL = "claude-sonnet-4-6"
 
@@ -345,13 +346,15 @@ def generate_coaching_recommendations(findings, win_pct, analyzed_games, total_g
 
 
 def _build_ask_prompt(question: str, data_brief: str) -> str:
+    capabilities_block = app_capabilities.format_capabilities_block()
     return f"""You are a chess analysis assistant helping a player understand their personal game history.
 
 {PERSONA_AND_STYLE}
 
 STRICT RULES — do not violate these:
 - Answer using ONLY the data provided in the section below. Do not invent statistics, trends, or comparisons not present in the data.
-- If the question asks about something not covered (a specific game, a specific date, individual move sequences), say so explicitly and name the relevant app page (Game Detail for individual games, Tactical Highlights for specific moves, Patterns & Tendencies for time/phase breakdowns).
+- If the question asks about something not covered (a specific game, a specific date, individual move sequences), say so explicitly and name the real page(s) below that come closest, from this list of what the app actually offers:
+{capabilities_block}
 - Cite actual numbers from the data. Be specific.
 - 2-4 sentences. No headers. Bullet points only if comparing 3+ items makes the answer genuinely clearer as a list.
 - Address the player as "you".
@@ -463,6 +466,60 @@ def generate_game_report(header, num_plies: int,
     """
     prompt = _build_game_report_prompt(header, num_plies, phase_stats, notable_moments)
     return contextualize(prompt, max_tokens=1600)
+
+
+def converse(messages, system=None, tools=None, model=MODEL, max_tokens=1024):
+    """Multi-round conversational entry point for AI Coach (a later, private
+    chesswright_pro phase builds the tool loop and prompts on top of this).
+    Unlike contextualize(), this is not single-shot: messages carries the
+    full conversation history (content can be a plain string or a list of
+    structured blocks, since tool_result/tool_use blocks are structured),
+    and the RAW response object is returned -- not response.content[0].text
+    -- because a tool-loop caller needs response.stop_reason and to inspect
+    response.content for tool_use blocks.
+
+    Prompt caching: when both system and tools are given, system is wrapped
+    in the Anthropic cache_control ephemeral form and the LAST tool schema
+    gets cache_control too (a single breakpoint caches everything before
+    it -- the standard recipe). The tool schema and system prompt are
+    stable across a whole multi-round conversation, so this is worth
+    paying for; a bare single-shot system string has no such prefix to
+    reuse, so it's left unwrapped when tools isn't given. Confirmed against
+    this repo's pinned `anthropic==0.111.0` (requirements.txt): cache_control
+    on system/tools content blocks has been a stable, non-beta feature of
+    the Messages API for a long time, well predating this SDK version, so
+    no beta header or fallback is needed here.
+    """
+    api_key = api_key_store.get_api_key()
+    if not api_key:
+        raise MissingApiKeyError(
+            "No Anthropic API key configured. Add your own key on the Settings "
+            "page to enable this feature.")
+
+    client = anthropic.Anthropic(api_key=api_key)
+    kwargs = {
+        "model": model,
+        "max_tokens": max_tokens,
+        "messages": messages,
+    }
+
+    if system is not None:
+        if tools is not None:
+            kwargs["system"] = [{
+                "type": "text",
+                "text": system,
+                "cache_control": {"type": "ephemeral"},
+            }]
+        else:
+            kwargs["system"] = system
+
+    if tools is not None:
+        tools = [dict(t) for t in tools]
+        if tools:
+            tools[-1] = {**tools[-1], "cache_control": {"type": "ephemeral"}}
+        kwargs["tools"] = tools
+
+    return client.messages.create(**kwargs)
 
 
 def annotate_position(fen: str, eval_cp: int | None = None,

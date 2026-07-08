@@ -111,6 +111,11 @@ from .srs import (
     compute_motif_transfer,
 )
 from .prep import open_opponent_connections, get_recent_form, get_opening_tendencies
+from .ai_coach import (
+    start_conversation, add_turn, record_feedback, get_conversation_messages,
+    get_all_turns, get_profile, upsert_profile, count_turns_since,
+    record_capability_gap, get_capability_gaps,
+)
 from .variations import (
     Variation, Annotation,
     compute_variation_fen,
@@ -178,4 +183,7 @@ __all__ = [
     "compute_variation_fen",
     "save_variation", "update_variation_moves", "delete_variation",
     "list_variations", "get_variation_annotations", "upsert_annotation",
+    "start_conversation", "add_turn", "record_feedback", "get_conversation_messages",
+    "get_all_turns", "get_profile", "upsert_profile", "count_turns_since",
+    "record_capability_gap", "get_capability_gaps",
 ]
