@@ -6,18 +6,15 @@ feedback, and the rolling profile summary that a later phase regenerates
 periodically from conversation history.
 
 All functions take sqlite_conn first, matching this package's universal
-convention. Every write follows this project's documented commit +
-PRAGMA wal_checkpoint(TRUNCATE) discipline (see _shared.save_narrative) --
-this app also holds a long-lived DuckDB connection ATTACHed to the same
-sqlite file, and a plain commit() alone leaves a row invisible to other
-connections until process exit.
+convention. Every write just calls sqlite_conn.commit() -- no explicit
+WAL checkpoint needed. DuckDB (dashboard/data/_common.get_duckdb_connection)
+only ever ATTACHes a private, read-only snapshot copy of the sqlite file,
+never the live file, so there's no other connection that needs a write to
+be checkpointed to disk for immediate visibility; a plain commit() is
+already durable and immediately visible to any other real connection to
+the WAL-mode file.
 """
 import datetime
-
-
-def _checkpoint(sqlite_conn):
-    sqlite_conn.commit()
-    sqlite_conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
 
 def start_conversation(sqlite_conn) -> int:
@@ -25,7 +22,7 @@ def start_conversation(sqlite_conn) -> int:
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
     cur = sqlite_conn.execute(
         "INSERT INTO ai_coach_conversations (started_at) VALUES (?)", [now])
-    _checkpoint(sqlite_conn)
+    sqlite_conn.commit()
     return cur.lastrowid
 
 
@@ -42,7 +39,7 @@ def add_turn(sqlite_conn, conversation_id: int, role: str, content: str) -> int:
         INSERT INTO ai_coach_turns (conversation_id, role, content, created_at)
         VALUES (?, ?, ?, ?)
     """, [conversation_id, role, content, now])
-    _checkpoint(sqlite_conn)
+    sqlite_conn.commit()
     return cur.lastrowid
 
 
@@ -65,7 +62,7 @@ def record_feedback(sqlite_conn, turn_id: int, feedback: int) -> None:
             f"role='assistant' turns")
     sqlite_conn.execute(
         "UPDATE ai_coach_turns SET feedback = ? WHERE id = ?", [feedback, turn_id])
-    _checkpoint(sqlite_conn)
+    sqlite_conn.commit()
 
 
 def get_conversation_messages(sqlite_conn, conversation_id: int) -> list[dict]:
@@ -144,7 +141,7 @@ def upsert_profile(sqlite_conn, summary_text: str, source_turns: int,
             generated_at = excluded.generated_at,
             model = excluded.model
     """, [summary_text, source_turns, generated_at, model])
-    _checkpoint(sqlite_conn)
+    sqlite_conn.commit()
 
 
 def record_capability_gap(sqlite_conn, turn_id: int, question_summary: str,
@@ -159,7 +156,7 @@ def record_capability_gap(sqlite_conn, turn_id: int, question_summary: str,
             (turn_id, question_summary, missing_data_description, created_at)
         VALUES (?, ?, ?, ?)
     """, [turn_id, question_summary, missing_data_description, now])
-    _checkpoint(sqlite_conn)
+    sqlite_conn.commit()
     return cur.lastrowid
 
 

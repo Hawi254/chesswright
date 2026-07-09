@@ -99,17 +99,13 @@ def save_narrative(sqlite_conn, subject_type, subject_key, response_text, model)
             generated_at = excluded.generated_at
     """, (subject_type, subject_key, response_text, model))
     sqlite_conn.commit()
-    # Explicit checkpoint right after commit -- this dashboard also holds a
-    # long-lived DuckDB connection ATTACHed to the same sqlite file
-    # (_common.get_duckdb_connection), and empirically (confirmed live,
-    # not assumed) a plain commit() on this sqlite3 connection alone left
-    # the row sitting in the WAL, invisible to every OTHER connection to
-    # this file (a fresh `sqlite3 chess.db` query, a separate Python
-    # process) until the whole dashboard process was killed -- i.e. it
-    # would NOT have survived an actual restart, defeating the entire
-    # point of persisting this. Checkpointing from the writer connection
-    # itself, immediately, makes it durable to disk for real.
-    sqlite_conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    # No explicit checkpoint needed here: this dashboard's DuckDB connection
+    # (_common.get_duckdb_connection) only ever ATTACHes a private,
+    # read-only snapshot copy of the sqlite file, never the live file, so
+    # there's no other connection that needs this write checkpointed to
+    # disk for immediate visibility. A plain commit() on this WAL-mode
+    # sqlite3 connection is already durable and immediately visible to any
+    # other real connection to the file.
 
 
 def _fetchone_scalar(duck_conn, sql, default: int | None = 0):

@@ -7,14 +7,13 @@ turns (with an optional per-turn board_directives JSON blob for arrows/
 highlights shown alongside that turn), and capability-gap telemetry.
 
 All functions take sqlite_conn first, matching this package's universal
-convention. Every write follows this project's documented commit +
-PRAGMA wal_checkpoint(TRUNCATE) discipline -- this app also holds a
-long-lived DuckDB connection ATTACHed to the same sqlite file, and a plain
-commit() alone leaves a row invisible to other connections until process
-exit. The _checkpoint helper is duplicated here rather than imported from
-data.ai_coach -- it's private (leading underscore) there, and importing a
-private symbol across sibling modules for 3 lines is worse than the
-duplication itself.
+convention. Every write just calls sqlite_conn.commit() -- no explicit
+WAL checkpoint needed. DuckDB (dashboard/data/_common.get_duckdb_connection)
+only ever ATTACHes a private, read-only snapshot copy of the sqlite file,
+never the live file, so there's no other connection that needs a write to
+be checkpointed to disk for immediate visibility; a plain commit() is
+already durable and immediately visible to any other real connection to
+the WAL-mode file.
 
 No record_feedback/thumbs-up-down function here: deliberately out of
 scope for this feature (see docs/scoping/ai-coach-board-interaction-
@@ -24,18 +23,13 @@ import datetime
 import json
 
 
-def _checkpoint(sqlite_conn):
-    sqlite_conn.commit()
-    sqlite_conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-
-
 def start_conversation(sqlite_conn, game_id: str) -> int:
     """Start a new board-chat conversation for one game, returning its id."""
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
     cur = sqlite_conn.execute(
         "INSERT INTO board_chat_conversations (game_id, started_at) VALUES (?, ?)",
         [game_id, now])
-    _checkpoint(sqlite_conn)
+    sqlite_conn.commit()
     return cur.lastrowid
 
 
@@ -55,7 +49,7 @@ def add_turn(sqlite_conn, conversation_id: int, role: str, content: str,
             (conversation_id, role, content, board_directives, created_at)
         VALUES (?, ?, ?, ?, ?)
     """, [conversation_id, role, content, board_directives, now])
-    _checkpoint(sqlite_conn)
+    sqlite_conn.commit()
     return cur.lastrowid
 
 
@@ -130,7 +124,7 @@ def record_capability_gap(sqlite_conn, turn_id: int, question_summary: str,
             (turn_id, question_summary, missing_data_description, created_at)
         VALUES (?, ?, ?, ?)
     """, [turn_id, question_summary, missing_data_description, now])
-    _checkpoint(sqlite_conn)
+    sqlite_conn.commit()
     return cur.lastrowid
 
 
