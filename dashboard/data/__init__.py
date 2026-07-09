@@ -45,7 +45,7 @@ from .openings import (
     store_position_analysis, get_opening_moves_from_fen,
     get_opening_moves_by_year, get_player_move_year_stats,
     compute_dominant_move_flips, summarize_position_timeline,
-    get_path_to_position,
+    get_path_to_position, resolve_move_squares,
 )
 from .patterns import (
     SHARPNESS_BUCKETS, PIECE_ORDER, PIECE_NAME,
@@ -135,7 +135,7 @@ __all__ = [
     "store_position_analysis", "FLIP_SCAN_MIN_TOTAL_GAMES",
     "get_opening_moves_by_year", "get_player_move_year_stats",
     "compute_dominant_move_flips", "summarize_position_timeline",
-    "get_path_to_position",
+    "get_path_to_position", "resolve_move_squares",
     "SHARPNESS_BUCKETS", "PIECE_ORDER", "PIECE_NAME",
     "get_blunder_rate_by_time_pressure", "get_acpl_by_time_control",
     "get_phase_accuracy", "get_prior_outcome_performance",
