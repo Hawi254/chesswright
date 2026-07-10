@@ -15,7 +15,9 @@ chess_display._drill_context that had already drifted in label wording.
 import pandas as pd
 
 import analytics
+import chess_utils
 from chess_display import _drill_context
+from _common import get_config
 
 from .openings import get_repertoire_holes
 
@@ -67,14 +69,33 @@ def get_motif_drill_positions(sqlite_conn, motif: str | None = None,
     """, sqlite_conn, params=params)
 
 
-def get_decisive_moment_positions(duck_conn, top_n: int = 20) -> pd.DataFrame:
+def get_decisive_moment_positions(duck_conn, top_n: int = 20, phase: str | None = None,
+                                   config_path=None) -> pd.DataFrame:
     """One position per loss: the ply with the largest win-probability drop
     in a contested position (win_prob_before between 0.30 and 0.70).
 
     Sorted by wp_drop descending so the most dramatic turning points come first.
     Requires worker.py (win_prob_*) and annotate.py (fen_before, best_move_san).
+
+    phase: optional filter to one of 'opening' / 'middlegame' / 'endgame'
+    (the same move-number-derived bucket already computed by the query).
+    When phase == "endgame", an ADDITIONAL material check is applied:
+    non_pawn_piece_count(material_sig) <= config's analytics.endgame_max_pieces.
+    This is necessary because the move-number phase alone is a poor endgame
+    detector -- checked directly against the real dev DB, 28 of 180 (15.6%)
+    phase='endgame' rows (move_number > 30) still had more than
+    endgame_max_pieces non-pawn pieces on the board, i.e. a long middlegame
+    mislabeled as an endgame by move count alone. The config load for that
+    threshold only happens when phase == "endgame", to avoid extra work on
+    the (far more common) unfiltered/non-endgame call paths.
+
+    The SQL no longer LIMITs server-side -- it already fully sorts by
+    wp_drop DESC, so top_n is applied client-side, AFTER any phase filter.
+    Limiting before filtering could silently return fewer than top_n rows
+    (or zero) when the unfiltered top-N window doesn't contain enough
+    matching positions.
     """
-    return duck_conn.execute("""
+    df = duck_conn.execute("""
         WITH ranked AS (
             SELECT
                 m.game_id,
@@ -82,6 +103,7 @@ def get_decisive_moment_positions(duck_conn, top_n: int = 20) -> pd.DataFrame:
                 m.best_move_san,
                 m.san                                             AS actual_move_san,
                 m.move_number,
+                m.material_sig,
                 m.win_prob_before - m.win_prob_after              AS wp_drop,
                 CASE WHEN m.move_number <= 12 THEN 'opening'
                      WHEN m.move_number <= 30 THEN 'middlegame'
@@ -103,20 +125,29 @@ def get_decisive_moment_positions(duck_conn, top_n: int = 20) -> pd.DataFrame:
               AND m.best_move_san      IS NOT NULL
         )
         SELECT game_id, fen_before, best_move_san, actual_move_san,
-               move_number, phase, opening, ROUND(wp_drop, 3) AS wp_drop
+               move_number, phase, opening, material_sig, ROUND(wp_drop, 3) AS wp_drop
         FROM ranked
         WHERE rn = 1
         ORDER BY wp_drop DESC
-        LIMIT ?
-    """, [top_n]).fetchdf()
+    """).fetchdf()
+
+    if phase is not None:
+        df = df[df.phase == phase]
+        if phase == "endgame":
+            cfg = get_config(config_path)
+            max_pieces = cfg["analytics"]["endgame_max_pieces"]
+            df = df[df.material_sig.apply(chess_utils.non_pawn_piece_count) <= max_pieces]
+
+    return df.drop(columns=["material_sig"]).head(top_n)
 
 
 def build_drill_cards(sqlite_conn, duck_conn,
                       include_motifs: bool = True,
                       include_moments: bool = True,
                       include_holes: bool = True,
+                      include_endgame_moments: bool = False,
                       top_n: int = 20) -> list[dict]:
-    """Collects drill positions from the three sources into add_cards()-
+    """Collects drill positions from the sources into add_cards()-
     ready dicts. Shared by the SRS Manage Queue tab (own database) and
     Coach Mode's drill assignment (a student's database) -- pass whichever
     database's connections the cards should be built FROM; add_cards()
@@ -126,6 +157,16 @@ def build_drill_cards(sqlite_conn, duck_conn,
     count-sentinel -- a no-op unless new analysis landed), since a
     student's database may never have visited the Openings page. Views
     wanting a spinner around that put it around this whole call.
+
+    include_endgame_moments (default False, opt-in) pulls decisive-moment
+    positions filtered to phase="endgame" (real material-based endgames,
+    not just move_number > 30 -- see get_decisive_moment_positions) as a
+    separate, more specific "Endgame Turning Point" source. It is
+    deliberately collected BEFORE include_moments: add_cards() dedupes by
+    UNIQUE(fen) via INSERT OR IGNORE, so when a position qualifies for
+    both (a user enables both checkboxes), whichever source appears first
+    in `cards` wins the label -- endgame-first means the more specific
+    label wins.
     """
     cards: list[dict] = []
 
@@ -136,6 +177,17 @@ def build_drill_cards(sqlite_conn, duck_conn,
             if rd.get("fen_before") and rd.get("best_move_san"):
                 cards.append({
                     "fen": rd["fen_before"], "source": "Missed Tactics",
+                    "best_move_san": str(rd["best_move_san"]),
+                    "actual_move_san": str(rd["actual_move_san"]) if rd.get("actual_move_san") else None,
+                    "context": _drill_context(rd),
+                })
+    if include_endgame_moments:
+        df = get_decisive_moment_positions(duck_conn, top_n=top_n, phase="endgame")
+        for row in df.itertuples(index=False):
+            rd = row._asdict()
+            if rd.get("fen_before") and rd.get("best_move_san"):
+                cards.append({
+                    "fen": rd["fen_before"], "source": "Endgame Turning Point",
                     "best_move_san": str(rd["best_move_san"]),
                     "actual_move_san": str(rd["actual_move_san"]) if rd.get("actual_move_san") else None,
                     "context": _drill_context(rd),
