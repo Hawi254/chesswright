@@ -1619,3 +1619,57 @@ class TestBoardChatData:
         with pytest.raises(sqlite3.IntegrityError):
             C.record_capability_gap(
                 populated_db, ai_coach_turn_id, "some question", "some missing data")
+
+    def test_record_feedback_on_assistant_turn(self, populated_db):
+        from data import board_chat as C
+        game_id = populated_db.execute("SELECT id FROM games LIMIT 1").fetchone()[0]
+        conv_id = C.start_conversation(populated_db, game_id)
+        turn_id = C.add_turn(populated_db, conv_id, "assistant", "Nf3 is strongest.")
+        C.record_feedback(populated_db, turn_id, -1)
+        row = populated_db.execute(
+            "SELECT feedback FROM board_chat_turns WHERE id = ?", [turn_id]).fetchone()
+        assert row[0] == -1
+
+    def test_record_feedback_rejects_invalid_turn_id(self, populated_db):
+        from data import board_chat as C
+        with pytest.raises(ValueError):
+            C.record_feedback(populated_db, 999999, 1)
+
+    def test_record_feedback_rejects_non_assistant_turn(self, populated_db):
+        from data import board_chat as C
+        game_id = populated_db.execute("SELECT id FROM games LIMIT 1").fetchone()[0]
+        conv_id = C.start_conversation(populated_db, game_id)
+        user_turn_id = C.add_turn(populated_db, conv_id, "user", "what about e4?")
+        with pytest.raises(ValueError):
+            C.record_feedback(populated_db, user_turn_id, 1)
+
+    def test_record_feedback_rejects_invalid_value(self, populated_db):
+        from data import board_chat as C
+        game_id = populated_db.execute("SELECT id FROM games LIMIT 1").fetchone()[0]
+        conv_id = C.start_conversation(populated_db, game_id)
+        turn_id = C.add_turn(populated_db, conv_id, "assistant", "hi")
+        with pytest.raises(ValueError):
+            C.record_feedback(populated_db, turn_id, 2)
+
+    def test_record_feedback_scoped_to_correct_turn(self, populated_db):
+        from data import board_chat as C
+        game_id = populated_db.execute("SELECT id FROM games LIMIT 1").fetchone()[0]
+        conv_id = C.start_conversation(populated_db, game_id)
+        t1 = C.add_turn(populated_db, conv_id, "user", "q1")
+        t2 = C.add_turn(populated_db, conv_id, "assistant", "bad advice")
+        t3 = C.add_turn(populated_db, conv_id, "assistant", "good advice")
+        C.record_feedback(populated_db, t2, -1)
+        C.record_feedback(populated_db, t3, 1)
+
+        turns = C.get_turns_for_display(populated_db, conv_id)
+        by_id = {t["id"]: t for t in turns}
+        assert by_id[t1]["role"] == "user"
+        # get_turns_for_display doesn't select feedback (display shape only
+        # needs id/role/content/board_directives/created_at) -- confirm the
+        # persisted value directly against the table instead.
+        assert populated_db.execute(
+            "SELECT feedback FROM board_chat_turns WHERE id = ?", [t2]).fetchone()[0] == -1
+        assert populated_db.execute(
+            "SELECT feedback FROM board_chat_turns WHERE id = ?", [t3]).fetchone()[0] == 1
+        assert populated_db.execute(
+            "SELECT feedback FROM board_chat_turns WHERE id = ?", [t1]).fetchone()[0] is None

@@ -468,7 +468,7 @@ def generate_game_report(header, num_plies: int,
     return contextualize(prompt, max_tokens=1600)
 
 
-def converse(messages, system=None, tools=None, model=MODEL, max_tokens=1024):
+def converse(messages, system=None, system_suffix=None, tools=None, model=MODEL, max_tokens=1024):
     """Multi-round conversational entry point for AI Coach (a later, private
     chesswright_pro phase builds the tool loop and prompts on top of this).
     Unlike contextualize(), this is not single-shot: messages carries the
@@ -478,17 +478,46 @@ def converse(messages, system=None, tools=None, model=MODEL, max_tokens=1024):
     -- because a tool-loop caller needs response.stop_reason and to inspect
     response.content for tool_use blocks.
 
-    Prompt caching: when both system and tools are given, system is wrapped
-    in the Anthropic cache_control ephemeral form and the LAST tool schema
-    gets cache_control too (a single breakpoint caches everything before
-    it -- the standard recipe). The tool schema and system prompt are
-    stable across a whole multi-round conversation, so this is worth
-    paying for; a bare single-shot system string has no such prefix to
-    reuse, so it's left unwrapped when tools isn't given. Confirmed against
-    this repo's pinned `anthropic==0.111.0` (requirements.txt): cache_control
-    on system/tools content blocks has been a stable, non-beta feature of
-    the Messages API for a long time, well predating this SDK version, so
-    no beta header or fallback is needed here.
+    Prompt caching: system is ALWAYS wrapped in the Anthropic cache_control
+    ephemeral form when given, regardless of whether tools is also given.
+    This used to be gated on `tools is not None` -- the reasoning at the
+    time was "a bare single-shot system string has no prefix to reuse" --
+    but that reasoning doesn't hold for this function's real callers: every
+    actual caller of converse() with a system prompt is inside a multi-round
+    loop (ai_coach.py's and board_chat.py's run_turn()), including the
+    forced-final round each of those loops makes with tools=None after
+    MAX_TOOL_ROUNDS is hit. Under the old gating, that final round -- the
+    single most expensive round of the turn, since it's the one carrying
+    the full system string -- silently lost its cache_control breakpoint
+    and paid full price with no cache read, even though the exact same
+    system text was cached under cache_control in every prior round of the
+    same turn (a cache_control breakpoint is what triggers the read lookup,
+    not just the write; omit it and the matching prior-round prefix is
+    never looked up at all). Confirmed by grepping every converse() call
+    site in both chess_app and chesswright-pro: none rely on system being
+    sent as an uncached plain string, so decoupling this from `tools` is
+    purely a caching-correctness fix, not a behavior change for any caller.
+
+    The LAST tool schema also gets cache_control (a single breakpoint
+    caches everything before it -- the standard recipe), independently of
+    the system-caching decision above.
+
+    system_suffix (optional): a second, small system block appended AFTER
+    the cached `system` block, itself left uncached -- the "shared prefix,
+    varying suffix" caching pattern, for a caller whose system prompt has a
+    large stable portion and a small per-turn-volatile portion (e.g.
+    board_chat.py's current_fen sentence, which changes every time the
+    player navigates to a different board position and would otherwise
+    bust the whole cached block if it were concatenated inside `system`
+    itself). Only meaningful when `system` is also given; a bare
+    system_suffix with no system is silently ignored, mirroring how a bare
+    `tools=[]` with no schemas is already a no-op above.
+
+    Confirmed against this repo's pinned `anthropic==0.111.0`
+    (requirements.txt): cache_control on system/tools content blocks has
+    been a stable, non-beta feature of the Messages API for a long time,
+    well predating this SDK version, so no beta header or fallback is
+    needed here.
     """
     api_key = api_key_store.get_api_key()
     if not api_key:
@@ -504,14 +533,14 @@ def converse(messages, system=None, tools=None, model=MODEL, max_tokens=1024):
     }
 
     if system is not None:
-        if tools is not None:
-            kwargs["system"] = [{
-                "type": "text",
-                "text": system,
-                "cache_control": {"type": "ephemeral"},
-            }]
-        else:
-            kwargs["system"] = system
+        blocks = [{
+            "type": "text",
+            "text": system,
+            "cache_control": {"type": "ephemeral"},
+        }]
+        if system_suffix is not None:
+            blocks.append({"type": "text", "text": system_suffix})
+        kwargs["system"] = blocks
 
     if tools is not None:
         tools = [dict(t) for t in tools]

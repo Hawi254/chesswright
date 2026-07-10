@@ -38,7 +38,7 @@ class TestConverse:
         # messages must not be mutated in place (same object identity, same content)
         assert kwargs["messages"] is messages
 
-    def test_system_wrapped_with_cache_control_only_when_tools_given(self):
+    def test_system_wrapped_with_cache_control_when_tools_given(self):
         client = _mock_client()
         tools = [{"name": "get_stats", "description": "d", "input_schema": {}}]
         with patch("claude_narrative.api_key_store.get_api_key", return_value="sk-test"), \
@@ -55,7 +55,13 @@ class TestConverse:
             "cache_control": {"type": "ephemeral"},
         }]
 
-    def test_system_plain_string_when_no_tools(self):
+    def test_system_wrapped_with_cache_control_even_without_tools(self):
+        # Regression test for the forced-final-tool-round gap: caching used
+        # to be gated on `tools is not None` for system too, which silently
+        # dropped the cache_control breakpoint (and therefore the cache
+        # read) on the one round of a turn that matters most -- see
+        # converse()'s docstring. system must be cached whenever it's
+        # given, independent of tools.
         client = _mock_client()
         with patch("claude_narrative.api_key_store.get_api_key", return_value="sk-test"), \
              patch("claude_narrative.anthropic.Anthropic", return_value=client):
@@ -64,7 +70,41 @@ class TestConverse:
                 system="You are a chess coach.",
             )
         _, kwargs = client.messages.create.call_args
-        assert kwargs["system"] == "You are a chess coach."
+        assert kwargs["system"] == [{
+            "type": "text",
+            "text": "You are a chess coach.",
+            "cache_control": {"type": "ephemeral"},
+        }]
+
+    def test_system_suffix_appended_uncached_after_cached_system_block(self):
+        client = _mock_client()
+        with patch("claude_narrative.api_key_store.get_api_key", return_value="sk-test"), \
+             patch("claude_narrative.anthropic.Anthropic", return_value=client):
+            claude_narrative.converse(
+                messages=[{"role": "user", "content": "hi"}],
+                system="stable persona + game brief + tools",
+                system_suffix="volatile: current FEN is ...",
+            )
+        _, kwargs = client.messages.create.call_args
+        assert kwargs["system"] == [
+            {
+                "type": "text",
+                "text": "stable persona + game brief + tools",
+                "cache_control": {"type": "ephemeral"},
+            },
+            {"type": "text", "text": "volatile: current FEN is ..."},
+        ]
+
+    def test_system_suffix_ignored_when_system_not_given(self):
+        client = _mock_client()
+        with patch("claude_narrative.api_key_store.get_api_key", return_value="sk-test"), \
+             patch("claude_narrative.anthropic.Anthropic", return_value=client):
+            claude_narrative.converse(
+                messages=[{"role": "user", "content": "hi"}],
+                system_suffix="volatile: current FEN is ...",
+            )
+        _, kwargs = client.messages.create.call_args
+        assert "system" not in kwargs
 
     def test_system_omitted_when_not_given(self):
         client = _mock_client()

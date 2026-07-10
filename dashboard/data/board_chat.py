@@ -15,9 +15,12 @@ be checkpointed to disk for immediate visibility; a plain commit() is
 already durable and immediately visible to any other real connection to
 the WAL-mode file.
 
-No record_feedback/thumbs-up-down function here: deliberately out of
-scope for this feature (see docs/scoping/ai-coach-board-interaction-
-2026-07-08.md §3).
+Also record_feedback: thumbs up/down on one assistant turn, identical
+shape to ai_coach.py's own record_feedback (see migration 0037's own
+comment for why this mirrors migration 0034's ai_coach_turns.feedback
+column). Thumbs-down additionally drives an auto-logged capability gap
+via record_capability_gap() -- wired in chesswright_pro/board_chat.py's
+render(), not here (this module stays plain CRUD, no Streamlit).
 """
 import datetime
 import json
@@ -51,6 +54,30 @@ def add_turn(sqlite_conn, conversation_id: int, role: str, content: str,
     """, [conversation_id, role, content, board_directives, now])
     sqlite_conn.commit()
     return cur.lastrowid
+
+
+def record_feedback(sqlite_conn, turn_id: int, feedback: int) -> None:
+    """Record thumbs up (+1) / thumbs down (-1) on one assistant turn.
+
+    Raises ValueError if turn_id doesn't exist, isn't role='assistant', or
+    feedback isn't +1/-1 -- feedback is only meaningful on Claude's own
+    replies, never on the player's own messages. Exact structural mirror
+    of ai_coach.record_feedback, board_chat_turns substituted for
+    ai_coach_turns.
+    """
+    if feedback not in (1, -1):
+        raise ValueError(f"feedback must be 1 or -1, got {feedback!r}")
+    row = sqlite_conn.execute(
+        "SELECT role FROM board_chat_turns WHERE id = ?", [turn_id]).fetchone()
+    if row is None:
+        raise ValueError(f"no board_chat_turns row with id={turn_id}")
+    if row[0] != "assistant":
+        raise ValueError(
+            f"turn {turn_id} has role={row[0]!r}, feedback only applies to "
+            f"role='assistant' turns")
+    sqlite_conn.execute(
+        "UPDATE board_chat_turns SET feedback = ? WHERE id = ?", [feedback, turn_id])
+    sqlite_conn.commit()
 
 
 def get_conversation_messages(sqlite_conn, conversation_id: int) -> list[dict]:
