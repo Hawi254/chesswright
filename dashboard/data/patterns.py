@@ -373,6 +373,225 @@ def get_castling_performance(duck_conn, config_path=None):
     return win_df, acpl_summary
 
 
+# ---------- Favorite vs. underdog rating-bucket comparison (roadmap §15 unit #3, 2026-07-10) ----------
+# Reuses matchups.get_color_performance_by_rating's config-driven 3-way
+# underdog/even/favorite bucketing of rating_diff -- NOT _shared.py's
+# GIANT_KILLING_UPSET_THRESHOLD/GIANT_KILLING_COLLAPSE_THRESHOLD (+-300),
+# which are reserved for the existing rare-extreme "giant-killing"
+# narrative already fully built out in matchups_view.py and would produce
+# a tiny, mismatched-purpose sample here. Kept in THIS module (not
+# matchups.py) so all three axes below (win/ACPL, clock pressure,
+# openings) share one rating-bucket CASE fragment and one config read --
+# matchups.py's own rating-bucket functions are a different, narrower
+# analysis (color-adjusted win rate, rare-extreme counts) that don't need
+# any of this module's per-move/per-opening machinery.
+
+def _rating_bucket_case_sql(cfg, column):
+    """SQL CASE fragment bucketing *column* (a rating_diff expression,
+    e.g. "g.rating_diff") into 'underdog'/'even'/'favorite' using the
+    same config thresholds get_color_performance_by_rating uses."""
+    buckets = cfg["analytics"]["rating_diff_buckets"]
+    underdog_max, favorite_min = buckets["underdog_max"], buckets["favorite_min"]
+    return (f"CASE WHEN {column} <= {underdog_max} THEN 'underdog' "
+            f"WHEN {column} >= {favorite_min} THEN 'favorite' ELSE 'even' END")
+
+
+_RATING_BUCKET_ORDER = ["underdog", "even", "favorite"]
+
+
+def get_favorite_underdog_performance(duck_conn, config_path=None):
+    """Win rate and ACPL split by the underdog/even/favorite rating_diff
+    bucket -- same combined-query shape as get_castling_performance (one
+    per-game DuckDB scan produces both the outcome flag and the weighted
+    ACPL inputs, instead of two separate scans). Returns (win_df, acpl_df):
+    win_df columns bucket, n_games, win_pct; acpl_df columns bucket,
+    n_games, n_moves, acpl (weighted by each game's own analyzed-move
+    count, same weighting as get_castling_performance's acpl_summary)."""
+    cfg = get_config(config_path)
+    bucket_sql = _rating_bucket_case_sql(cfg, "g.rating_diff")
+
+    df = duck_conn.execute(f"""
+        SELECT g.id AS game_id, g.outcome_for_player,
+               {bucket_sql} AS rating_bucket,
+               AVG(CASE WHEN m.is_player_move=1 AND m.cpl IS NOT NULL THEN m.cpl END) AS mean_cpl,
+               COUNT(CASE WHEN m.is_player_move=1 AND m.cpl IS NOT NULL THEN 1 END)   AS n_cpl_moves
+        FROM db.games g JOIN db.moves m ON m.game_id = g.id
+        WHERE g.rating_diff IS NOT NULL AND g.outcome_for_player IS NOT NULL
+        GROUP BY g.id, g.outcome_for_player, g.rating_diff
+    """).fetchdf()
+
+    win_rows = []
+    for label in _RATING_BUCKET_ORDER:
+        sub = df[df.rating_bucket == label]
+        if len(sub):
+            win_rows.append((label, len(sub), 100.0 * (sub.outcome_for_player == "win").sum() / len(sub)))
+    win_df = pd.DataFrame(win_rows, columns=["bucket", "n_games", "win_pct"])
+
+    acpl_rows = []
+    for label in _RATING_BUCKET_ORDER:
+        sub = df[(df.rating_bucket == label) & (df.n_cpl_moves > 0)]
+        if len(sub):
+            total_moves = int(sub.n_cpl_moves.sum())
+            weighted_acpl = (sub.mean_cpl * sub.n_cpl_moves).sum() / total_moves
+            acpl_rows.append((label, len(sub), total_moves, weighted_acpl))
+    acpl_df = pd.DataFrame(acpl_rows, columns=["bucket", "n_games", "n_moves", "acpl"])
+    return win_df, acpl_df
+
+
+def get_clock_pressure_by_rating_bucket(duck_conn, config_path=None):
+    """Clock-pressure (TIME_PRESSURE_BUCKETS) ACPL/blunder-rate crossed
+    with the underdog/even/favorite rating bucket -- one per-move DuckDB
+    fetch (same filter shape as get_blunder_rate_by_time_pressure, plus
+    the rating_bucket column), then bucket_acpl_blunder_rate is reused
+    per rating_bucket subset and the results concatenated, rather than
+    hand-restating TIME_PRESSURE_BUCKETS' boundaries as a second SQL CASE
+    fragment (that helper is the single source of truth for those cuts).
+
+    Returns a long-form DataFrame: rating_bucket, time_bucket, n_moves,
+    acpl, blunder_rate."""
+    cfg = get_config(config_path)
+    bucket_sql = _rating_bucket_case_sql(cfg, "g.rating_diff")
+
+    df = duck_conn.execute(f"""
+        SELECT {bucket_sql} AS rating_bucket, m.cpl, m.classification,
+               CAST(m.clock_seconds AS DOUBLE) / g.base_seconds AS time_fraction
+        FROM db.moves m JOIN db.games g ON g.id = m.game_id
+        WHERE m.is_player_move=1 AND m.cpl IS NOT NULL
+          AND m.clock_seconds IS NOT NULL AND g.base_seconds IS NOT NULL AND g.base_seconds > 0
+          AND g.rating_diff IS NOT NULL
+    """).fetchdf()
+
+    frames = []
+    for label in _RATING_BUCKET_ORDER:
+        sub = df[df.rating_bucket == label]
+        bucketed = bucket_acpl_blunder_rate(sub, "time_fraction", TIME_PRESSURE_BUCKETS)
+        if not bucketed.empty:
+            bucketed = bucketed.rename(columns={"bucket": "time_bucket"})
+            bucketed.insert(0, "rating_bucket", label)
+            frames.append(bucketed)
+    if not frames:
+        return pd.DataFrame(columns=["rating_bucket", "time_bucket", "n_moves", "acpl", "blunder_rate"])
+    return pd.concat(frames, ignore_index=True)
+
+
+def get_openings_by_rating_bucket(duck_conn, config_path=None, top_n=None):
+    """Win rate by (rating_bucket, opening_family) -- mirrors
+    openings.get_openings_table's GROUP BY shape but crosses opening_family
+    with the underdog/even/favorite rating bucket instead of player_color.
+    ACPL deliberately omitted: a full ACPL join (sqlite_conn, per
+    (opening_family, rating_bucket) pair, same two-query shape
+    get_openings_table uses for its own ACPL side) is a reasonable follow-
+    up, but win_pct-by-opening is already a complete "Openings" axis for
+    the favorite/underdog overlay this feeds, and the analyzed-move
+    population is thin enough (~2.9% of games database-wide, see this
+    module's board-position-character section above) that crossing it with
+    BOTH opening_family and a 3-way rating bucket would leave most cells
+    empty.
+
+    Capped to the top_n opening_families by TOTAL game count across all
+    rating buckets (top_n_openings if not given), then further restricted
+    to opening_families that have a qualifying (>= min_games_per_group
+    games) row in EVERY rating_bucket actually present in the data -- so
+    an overlay chart comparing buckets never shows a bar for one bucket
+    with nothing in the other bucket(s) to compare it against.
+
+    Returns rating_bucket, opening_family, n_games, win_pct."""
+    cfg = get_config(config_path)
+    bucket_sql = _rating_bucket_case_sql(cfg, "rating_diff")
+    top_n = top_n or cfg["analytics"]["top_n_openings"]
+    min_games = cfg["analytics"]["min_games_per_group"]
+
+    df = duck_conn.execute(f"""
+        SELECT opening_family, {bucket_sql} AS rating_bucket, COUNT(*) AS n_games,
+               100.0 * SUM(CASE WHEN outcome_for_player='win' THEN 1 ELSE 0 END) / COUNT(*) AS win_pct
+        FROM db.games
+        WHERE opening_family IS NOT NULL AND outcome_for_player IS NOT NULL AND rating_diff IS NOT NULL
+        GROUP BY opening_family, rating_bucket
+        HAVING COUNT(*) >= ?
+    """, [min_games]).fetchdf()
+    cols = ["rating_bucket", "opening_family", "n_games", "win_pct"]
+    if df.empty:
+        return pd.DataFrame(columns=cols)
+
+    totals = df.groupby("opening_family")["n_games"].sum().sort_values(ascending=False)
+    top_families = set(totals.head(top_n).index)
+    df = df[df.opening_family.isin(top_families)]
+    if df.empty:
+        return pd.DataFrame(columns=cols)
+
+    n_buckets_present = df.rating_bucket.nunique()
+    counts_per_family = df.groupby("opening_family")["rating_bucket"].nunique()
+    complete_families = counts_per_family[counts_per_family == n_buckets_present].index
+    df = df[df.opening_family.isin(complete_families)]
+
+    return df[cols].sort_values(["opening_family", "rating_bucket"]).reset_index(drop=True)
+
+
+def get_session_rollup(sqlite_conn, config_path=None):
+    """Per-session W/D/L% and ACPL rollup -- the Playing Sessions unit
+    (roadmap §15 unit #4). Extends get_prior_outcome_performance/
+    get_session_position_performance's session_ctx JOIN, but keyed on the
+    session itself (session_start, unique per session -- broadcast onto
+    every game in that session by compute_session_context's second pass,
+    see analytics.py) rather than folded into either function's handful of
+    shared cross-session labels.
+
+    Uses the SAME per-game combined-query shape as get_castling_performance/
+    get_favorite_underdog_performance above (one row per game with its own
+    mean_cpl/n_cpl_moves, aggregated in pandas afterward) rather than a
+    single SQL GROUP BY directly on session_start with a moves JOIN -- a
+    LEFT JOIN moves fans a game out to one row per move, which would make
+    a naive SUM(CASE WHEN outcome_for_player='win' ...) overcount by the
+    game's own move count; aggregating per-game first avoids that.
+
+    No min-games gate on the rollup itself (unlike every other ACPL query
+    in this module) -- most sessions are short (session_position_cap is
+    typically single digits, see config.yaml), so a min-games floor would
+    hide most sessions; ACPL coverage disclosure is the view layer's job
+    (patterns_view.py's existing _coverage_caption helper), not this
+    function's.
+
+    Games with no recorded outcome_for_player are excluded, matching every
+    other win/draw/loss query in this package (get_openings_table,
+    get_castling_performance, etc.).
+
+    Returns one row per session: session_start, session_end, n_games,
+    win_pct, draw_pct, loss_pct, acpl, n_analyzed (n_analyzed is a MOVE
+    count, matching get_material_structure_table's acpl_lookup convention
+    -- acpl is None and n_analyzed is 0 for a session with zero analyzed
+    moves, not a dropped row)."""
+    cfg = get_config(config_path)
+    analytics.ensure_session_ctx(sqlite_conn, cfg["analytics"]["session_gap_minutes"])
+    rows = sqlite_conn.execute("""
+        SELECT sc.session_start, sc.session_end, g.id AS game_id, g.outcome_for_player,
+               AVG(CASE WHEN m.is_player_move=1 AND m.cpl IS NOT NULL THEN m.cpl END) AS mean_cpl,
+               COUNT(CASE WHEN m.is_player_move=1 AND m.cpl IS NOT NULL THEN 1 END)   AS n_cpl_moves
+        FROM session_ctx sc
+        JOIN games g ON g.id = sc.game_id
+        LEFT JOIN moves m ON m.game_id = g.id
+        WHERE g.outcome_for_player IS NOT NULL
+        GROUP BY sc.session_start, sc.session_end, g.id, g.outcome_for_player
+    """).fetchall()
+    cols = ["session_start", "session_end", "n_games", "win_pct", "draw_pct", "loss_pct",
+            "acpl", "n_analyzed"]
+    df = pd.DataFrame(rows, columns=["session_start", "session_end", "game_id",
+                                      "outcome_for_player", "mean_cpl", "n_cpl_moves"])
+    if df.empty:
+        return pd.DataFrame(columns=cols)
+
+    out_rows = []
+    for (start, end), sub in df.groupby(["session_start", "session_end"], sort=True):
+        n_games = len(sub)
+        win_pct = 100.0 * (sub.outcome_for_player == "win").sum() / n_games
+        draw_pct = 100.0 * (sub.outcome_for_player == "draw").sum() / n_games
+        loss_pct = 100.0 * (sub.outcome_for_player == "loss").sum() / n_games
+        analyzed = sub[sub.n_cpl_moves > 0]
+        n_analyzed = int(analyzed.n_cpl_moves.sum())
+        acpl = ((analyzed.mean_cpl * analyzed.n_cpl_moves).sum() / n_analyzed) if n_analyzed else None
+        out_rows.append((start, end, n_games, win_pct, draw_pct, loss_pct, acpl, n_analyzed))
+    return pd.DataFrame(out_rows, columns=cols).sort_values("session_start").reset_index(drop=True)
+
+
 # ---------- Board-position character and squares (drill-down survey, 2026-07-07) ----------
 # Open/closed/semi-open + symmetric/asymmetric come from ONE fen_before
 # fetch+classify pass at the existing middlegame_ply checkpoint (reuses

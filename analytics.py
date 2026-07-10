@@ -98,7 +98,22 @@ def compute_session_context(conn, session_gap_minutes):
     Computed over all games (engine-analyzed or not) because outcome/
     timestamp are tier-2 ingest-time facts available regardless of
     analysis status -- only the ACPL/blunder-rate numbers later need a
-    game to be analyzed, not the session structure itself."""
+    game to be analyzed, not the session structure itself.
+
+    Returns (context, skipped), where context is a list of (game_id,
+    session_game_number, prior_outcome, losing_streak, session_start,
+    session_end) tuples -- session_start/session_end (added for the
+    Playing Sessions rollup, roadmap §15 unit #4) are ISO-format strings
+    (datetime.isoformat()), the same for every game in a given session.
+    session_start is known as soon as a session begins (the first game's
+    dt, held in session_start_by_id below); session_end is the LAST
+    game's dt in that session, which isn't known until the session
+    closes. Rather than rewrite the single forward pass above into a
+    lookahead, a synthetic per-session integer id is assigned during the
+    SAME walk (incremented each time a new session starts), and a second,
+    cheap pass over the already-collected rows (no new query, no
+    re-walk of the boundary logic) computes each session's max dt and
+    broadcasts it back onto every row sharing that session id."""
     rows = conn.execute("""
         SELECT id, utc_date, utc_time, outcome_for_player FROM games
         WHERE utc_date IS NOT NULL AND utc_date != ''
@@ -107,12 +122,14 @@ def compute_session_context(conn, session_gap_minutes):
     """).fetchall()
 
     gap = datetime.timedelta(minutes=session_gap_minutes)
-    context = []
+    raw_rows = []  # (game_id, session_game_number, prior_outcome, losing_streak, session_id, dt)
     skipped = 0
     prev_dt = None
     prev_outcome = None
     session_game_number = 0
     losing_streak = 0
+    session_id = -1
+    session_start_by_id = {}
 
     for game_id, utc_date, utc_time, outcome in rows:
         try:
@@ -125,15 +142,30 @@ def compute_session_context(conn, session_gap_minutes):
             session_game_number = 1
             prior_outcome = None
             losing_streak = 0
+            session_id += 1
+            session_start_by_id[session_id] = dt
         else:
             session_game_number += 1
             prior_outcome = prev_outcome
             losing_streak = losing_streak + 1 if prev_outcome == "loss" else 0
 
-        context.append((game_id, session_game_number, prior_outcome, losing_streak))
+        raw_rows.append((game_id, session_game_number, prior_outcome, losing_streak, session_id, dt))
         prev_dt = dt
         prev_outcome = outcome
 
+    # Second pass (over the already-collected rows, not a new DB query):
+    # each session's end is simply the max dt among its rows.
+    session_end_by_id = {}
+    for row in raw_rows:
+        sid, dt = row[4], row[5]
+        if sid not in session_end_by_id or dt > session_end_by_id[sid]:
+            session_end_by_id[sid] = dt
+
+    context = [
+        (game_id, sgn, prior_outcome, losing_streak,
+         session_start_by_id[sid].isoformat(), session_end_by_id[sid].isoformat())
+        for game_id, sgn, prior_outcome, losing_streak, sid, dt in raw_rows
+    ]
     return context, skipped
 
 
@@ -269,6 +301,10 @@ def ensure_session_ctx(conn, session_gap_minutes):
     32k-row cache in <100ms instead of running compute_session_context()
     (~500ms).  Stale or absent cache falls back to a full rebuild and
     persists the result so the next start is fast.
+
+    session_start/session_end columns (migration 0038) are carried through
+    both the fast path and the rebuild path unchanged -- see
+    compute_session_context's docstring for what they hold.
     """
     if conn.execute("SELECT name FROM sqlite_temp_master WHERE name='session_ctx'").fetchone():
         return
@@ -281,7 +317,8 @@ def ensure_session_ctx(conn, session_gap_minutes):
     if cache_current:
         conn.execute("""CREATE TEMP TABLE session_ctx (
             game_id TEXT PRIMARY KEY, session_game_number INTEGER,
-            prior_outcome TEXT, losing_streak INTEGER
+            prior_outcome TEXT, losing_streak INTEGER,
+            session_start TEXT, session_end TEXT
         )""")
         conn.execute("INSERT INTO session_ctx SELECT * FROM session_ctx_cache")
         return
@@ -291,14 +328,15 @@ def ensure_session_ctx(conn, session_gap_minutes):
         print(f"  ({skipped} game(s) skipped from session analysis -- unparseable timestamp)")
 
     conn.execute("DELETE FROM session_ctx_cache")
-    conn.executemany("INSERT INTO session_ctx_cache VALUES (?,?,?,?)", context)
+    conn.executemany("INSERT INTO session_ctx_cache VALUES (?,?,?,?,?,?)", context)
     conn.execute("UPDATE ctx_cache_meta SET session_game_count=?, built_at=CURRENT_TIMESTAMP WHERE id=1",
                  (game_count,))
     conn.commit()
 
     conn.execute("""CREATE TEMP TABLE session_ctx (
         game_id TEXT PRIMARY KEY, session_game_number INTEGER,
-        prior_outcome TEXT, losing_streak INTEGER
+        prior_outcome TEXT, losing_streak INTEGER,
+        session_start TEXT, session_end TEXT
     )""")
     conn.execute("INSERT INTO session_ctx SELECT * FROM session_ctx_cache")
 

@@ -128,6 +128,26 @@ def cached_motif_backfill_needed(_duck_conn):
     return data.motif_backfill_needed(_duck_conn)
 
 
+@st.cache_data(show_spinner="Comparing favorite vs. underdog performance…")
+def cached_favorite_underdog_performance(_duck_conn):
+    return data.get_favorite_underdog_performance(_duck_conn)
+
+
+@st.cache_data(show_spinner="Computing clock pressure by favorite/underdog…")
+def cached_clock_pressure_by_rating_bucket(_duck_conn):
+    return data.get_clock_pressure_by_rating_bucket(_duck_conn)
+
+
+@st.cache_data(show_spinner="Computing openings by favorite/underdog…")
+def cached_openings_by_rating_bucket(_duck_conn):
+    return data.get_openings_by_rating_bucket(_duck_conn)
+
+
+@st.cache_data(show_spinner="Building your playing-session rollup…")
+def cached_session_rollup(_sqlite_conn):
+    return data.get_session_rollup(_sqlite_conn)
+
+
 def _coverage_caption(win_df, acpl_df, key_col, label_map=None):
     """Shared n_analyzed/coverage_pct disclosure for a win/ACPL table pair
     keyed by the same category column -- same 'explain, don't hide'
@@ -157,21 +177,30 @@ def render():
                "Every panel below asks the same question under a different condition: when "
                "do you actually play worse, and when do you play better?")
 
-    tab_clock, tab_rhythm, tab_position, tab_pieces, tab_turning = st.tabs(
-        ["Clock & Time", "Game Context", "Positions", "Piece Handling", "Turning Points"])
+    tab_clock, tab_comparisons, tab_rhythm, tab_sessions, tab_position, tab_pieces, tab_turning = st.tabs(
+        ["Clock & Time", "Comparisons", "Game Context", "Playing Sessions", "Positions",
+         "Piece Handling", "Turning Points"])
 
     # Each tab body is its own @st.fragment: st.tabs doesn't scope
     # reruns by itself (every tab's code runs on every rerun regardless
     # of which one is visually active), so without this, adjusting the
     # "Structure type" radio in Positions (or "View by" in Piece
-    # Handling) would re-run and re-render all five tabs' charts, not
+    # Handling) would re-run and re-render all seven tabs' charts, not
     # just the one whose widget changed. No cross-tab state/data
-    # dependency between any of the five (confirmed before converting,
-    # unlike openings_view.py -- see BRIEF.md §6h's Tier 2 plan).
+    # dependency between any of the seven (confirmed before converting,
+    # unlike openings_view.py -- see BRIEF.md §6h's Tier 2 plan) --
+    # Comparisons and Playing Sessions (added 2026-07-10, roadmap §15
+    # units #3/#4) call their own page-wide `cached_*` wrappers same as
+    # every other tab; Playing Sessions reuses two wrappers Game Context
+    # also calls, but that's shared *cache* backing, not cross-tab state.
     with tab_clock:
         _render_tab_clock(sqlite_conn, duck_conn)
+    with tab_comparisons:
+        _render_tab_comparisons(sqlite_conn, duck_conn)
     with tab_rhythm:
         _render_tab_rhythm(sqlite_conn, duck_conn)
+    with tab_sessions:
+        _render_tab_sessions(sqlite_conn, duck_conn)
     with tab_position:
         _render_tab_position(sqlite_conn, duck_conn)
     with tab_pieces:
@@ -238,30 +267,108 @@ def _render_tab_clock(sqlite_conn, duck_conn):
 
 
 @st.fragment
+def _render_tab_comparisons(sqlite_conn, duck_conn):
+    with st.container(border=True):
+        st.subheader("Favorite vs. underdog: overall record")
+        st.caption("Win rate and ACPL split by whether you were the rating underdog, evenly "
+                   "matched, or the rating favorite going into the game.")
+        win_df, acpl_df = cached_favorite_underdog_performance(duck_conn)
+        if win_df.empty:
+            st.info(theme.thin_data_message(0, 1))
+        else:
+            bucket_order = ["underdog", "even", "favorite"]
+            bucket_labels = {"underdog": "Underdog", "even": "Even", "favorite": "Favorite"}
+            acpl_lookup = {r.bucket: r.acpl for r in acpl_df.itertuples()}
+            cols = st.columns(3)
+            for col, bucket in zip(cols, bucket_order):
+                with col:
+                    row = win_df[win_df.bucket == bucket]
+                    if row.empty:
+                        st.caption(f"{bucket_labels[bucket]}: no games")
+                        continue
+                    r = row.iloc[0]
+                    theme.render_metric_card(
+                        value=f"{r.win_pct:.1f}%", label=f"{bucket_labels[bucket]} win rate",
+                        sample_size=f"{int(r.n_games)} games", key=f"fav_underdog_{bucket}")
+                    acpl = acpl_lookup.get(bucket)
+                    st.caption(f"ACPL: {acpl:.1f}" if acpl is not None
+                               else "ACPL: no analyzed games yet")
+            coverage = _coverage_caption(win_df, acpl_df, "bucket", label_map=bucket_labels)
+            if coverage:
+                st.caption(coverage)
+
+    with st.container(border=True):
+        st.subheader("Clock pressure: underdog vs. favorite")
+        st.caption("Accuracy and blunder rate under time pressure, split by whether you were "
+                   "the underdog or the favorite going into the game.")
+        cp_df = cached_clock_pressure_by_rating_bucket(duck_conn)
+        if cp_df.empty:
+            st.info(theme.thin_data_message(0, 1))
+        else:
+            underdog_cp = cp_df[cp_df.rating_bucket == "underdog"]
+            favorite_cp = cp_df[cp_df.rating_bucket == "favorite"]
+            even_cp = cp_df[cp_df.rating_bucket == "even"]
+
+            st.write("**ACPL by clock pressure**")
+            fig = theme.render_comparison_panel(
+                [{"df": underdog_cp, "x": "time_bucket", "y": "acpl", "label": "Underdog"},
+                 {"df": favorite_cp, "x": "time_bucket", "y": "acpl", "label": "Favorite"}],
+                mode="overlay", x_title="Clock remaining", y_title="ACPL (lower = more accurate)")
+            st.plotly_chart(fig, theme=None)
+
+            st.write("**Blunder rate by clock pressure**")
+            fig2 = theme.render_comparison_panel(
+                [{"df": underdog_cp, "x": "time_bucket", "y": "blunder_rate", "label": "Underdog"},
+                 {"df": favorite_cp, "x": "time_bucket", "y": "blunder_rate", "label": "Favorite"}],
+                mode="overlay", x_title="Clock remaining", y_title="Blunder rate (% of moves)")
+            st.plotly_chart(fig2, theme=None)
+
+            if not even_cp.empty:
+                total_moves = int(even_cp.n_moves.sum())
+                weighted_acpl = (even_cp.acpl * even_cp.n_moves).sum() / total_moves
+                weighted_blunder = (even_cp.blunder_rate * even_cp.n_moves).sum() / total_moves
+                st.caption(
+                    f"Even-strength games: ACPL {weighted_acpl:.1f}, blunder rate "
+                    f"{weighted_blunder:.1f}% across all clock-pressure levels combined "
+                    f"({total_moves} analyzed moves).")
+
+    with st.container(border=True):
+        st.subheader("Openings: underdog vs. favorite win rate")
+        st.caption("Win rate by opening family, split by rating bucket -- restricted to "
+                   "opening families with enough games in every present bucket to compare "
+                   "fairly. ACPL isn't shown here by design: the analyzed-move population is "
+                   "too thin to cross with both opening family and rating bucket meaningfully.")
+        ob_df = cached_openings_by_rating_bucket(duck_conn)
+        uf_df = (ob_df[ob_df.rating_bucket.isin(["underdog", "favorite"])]
+                 if not ob_df.empty else ob_df)
+        if uf_df.empty:
+            st.info(theme.thin_data_message(0, 1))
+        else:
+            underdog_o = uf_df[uf_df.rating_bucket == "underdog"]
+            favorite_o = uf_df[uf_df.rating_bucket == "favorite"]
+            fig3 = theme.render_comparison_panel(
+                [{"df": underdog_o, "x": "opening_family", "y": "win_pct", "label": "Underdog"},
+                 {"df": favorite_o, "x": "opening_family", "y": "win_pct", "label": "Favorite"}],
+                mode="overlay", x_title="Opening", y_title="Win rate (%)")
+            st.plotly_chart(fig3, theme=None)
+        if not ob_df.empty:
+            st.caption("Even-strength games are available too, in the table below.")
+            with st.expander("See all three buckets, including even-strength games"):
+                st.dataframe(ob_df, width='stretch', hide_index=True, column_config={
+                    "rating_bucket": "Rating bucket",
+                    "opening_family": "Opening",
+                    "n_games": "Games",
+                    "win_pct": st.column_config.NumberColumn("Win %", format="%.1f"),
+                })
+
+
+@st.fragment
 def _render_tab_rhythm(sqlite_conn, duck_conn):
     with st.container(border=True):
         st.subheader("ACPL by game phase")
         phase_df = cached_phase_accuracy(sqlite_conn)
         st.plotly_chart(charts.bar_chart(phase_df, "phase", "acpl", theme.NEGATIVE,
                                           x_title="Game phase", y_title="ACPL (lower = more accurate)"),
-                         theme=None)
-
-    with st.container(border=True):
-        st.subheader("Performance after a win vs. after a loss")
-        outcome_df = cached_prior_outcome_performance(sqlite_conn).copy()
-        # Display-layer relabel only -- the cached DataFrame keeps the raw
-        # 'first_game_of_session' bucket value used for ordering.
-        outcome_df["bucket"] = outcome_df["bucket"].replace(
-            {"first_game_of_session": "first game of session"})
-        st.plotly_chart(charts.bar_chart(outcome_df, "bucket", "acpl", theme.NEGATIVE,
-                                          x_title="Situation", y_title="ACPL (lower = more accurate)"),
-                         theme=None)
-
-    with st.container(border=True):
-        st.subheader("Performance by position within a session")
-        session_df = cached_session_position_performance(sqlite_conn)
-        st.plotly_chart(charts.bar_chart(session_df, "position", "acpl", theme.NEGATIVE,
-                                          x_title="Game within the playing session", y_title="ACPL (lower = more accurate)"),
                          theme=None)
 
     with st.container(border=True):
@@ -285,6 +392,113 @@ def _render_tab_rhythm(sqlite_conn, duck_conn):
                            colorbar_title="Win %",
                            hover_extra=(rating_df, "Avg rating diff")),
             theme=None)
+
+
+@st.fragment
+def _render_tab_sessions(sqlite_conn, duck_conn):
+    df = cached_session_rollup(sqlite_conn)
+    if df.empty:
+        st.info(theme.thin_data_message(0, 1))
+        return
+
+    with st.container(border=True):
+        st.subheader("Session summary")
+        n_sessions = len(df)
+        avg_games = df.n_games.mean()
+        overall_win_pct = (df.win_pct * df.n_games).sum() / df.n_games.sum()
+        cols = st.columns(3)
+        with cols[0]:
+            theme.render_metric_card(value=f"{n_sessions:,}", label="Total sessions",
+                                      key="session_total")
+        with cols[1]:
+            theme.render_metric_card(value=f"{avg_games:.1f}", label="Avg. games per session",
+                                      key="session_avg_games")
+        with cols[2]:
+            theme.render_metric_card(value=f"{overall_win_pct:.1f}%", label="Overall win rate",
+                                      key="session_overall_win")
+
+    # Capped to the most recent 60 sessions for the trend charts below --
+    # 32k games' worth of session_ctx (config session_gap_minutes: 30)
+    # could produce far more sessions than a single Plotly x-axis reads
+    # sensibly. The full, uncapped rollup is still available in the "All
+    # sessions" expander further down.
+    recent_df = df.tail(60)
+    if len(df) > 60:
+        st.caption(f"Showing the most recent 60 of {len(df)} sessions.")
+
+    with st.container(border=True):
+        st.subheader("Win rate over time")
+        st.plotly_chart(
+            charts.line_chart(recent_df, "session_start", "win_pct", theme.POSITIVE,
+                               x_title="Session start", y_title="Win rate (%)"),
+            theme=None)
+
+    with st.container(border=True):
+        st.subheader("Games per session")
+        st.plotly_chart(
+            charts.bar_chart(recent_df, "session_start", "n_games", theme.ACCENT_GOLD,
+                              x_title="Session start", y_title="Games in session"),
+            theme=None)
+
+    with st.container(border=True):
+        st.subheader("ACPL trend across sessions")
+        acpl_recent = recent_df[recent_df.acpl.notna()]
+        if acpl_recent.empty:
+            st.info(theme.thin_data_message(0, 1))
+        else:
+            st.plotly_chart(
+                charts.line_chart(acpl_recent, "session_start", "acpl", theme.NEGATIVE,
+                                   x_title="Session start", y_title="ACPL (lower = more accurate)"),
+                theme=None)
+        # Hand-written, not _coverage_caption -- get_session_rollup returns
+        # one combined frame (not a win_df/acpl_df pair keyed on a shared
+        # category column), so that helper doesn't fit; same "explain
+        # what's missing, don't hide it" disclosure posture as its own
+        # wording, just written out directly here.
+        n_sessions_analyzed = int((df.n_analyzed > 0).sum())
+        n_sessions_total = len(df)
+        pct = 100.0 * n_sessions_analyzed / n_sessions_total if n_sessions_total else 0.0
+        st.caption(
+            f"ACPL coverage: {n_sessions_analyzed} of {n_sessions_total} sessions ({pct:.1f}%) "
+            "have at least one analyzed move; the rest show no ACPL line above, not a zero.")
+
+    with st.expander("All sessions"):
+        # BRIEF.md Convention #3: a None/NaN reaching st.dataframe renders
+        # as literal "None" text -- same fix as get_material_structure_
+        # table's acpl column above (~line 322).
+        display_df = df.copy()
+        display_df["acpl"] = display_df["acpl"].apply(
+            lambda v: "--" if pd.isna(v) else f"{v:.1f}")
+        st.dataframe(display_df, width='stretch', hide_index=True, column_config={
+            "session_start": "Session start",
+            "session_end": "Session end",
+            "n_games": "Games",
+            "win_pct": st.column_config.NumberColumn("Win %", format="%.1f"),
+            "draw_pct": st.column_config.NumberColumn("Draw %", format="%.1f"),
+            "loss_pct": st.column_config.NumberColumn("Loss %", format="%.1f"),
+            "acpl": st.column_config.Column(
+                "ACPL", help="Average centipawn loss across analyzed moves in this session."),
+            "n_analyzed": st.column_config.Column(
+                "Analyzed moves", help="How many moves in this session have engine analysis."),
+        })
+
+    with st.container(border=True):
+        st.subheader("Performance after a win vs. after a loss")
+        outcome_df = cached_prior_outcome_performance(sqlite_conn).copy()
+        # Display-layer relabel only -- the cached DataFrame keeps the raw
+        # 'first_game_of_session' bucket value used for ordering.
+        outcome_df["bucket"] = outcome_df["bucket"].replace(
+            {"first_game_of_session": "first game of session"})
+        st.plotly_chart(charts.bar_chart(outcome_df, "bucket", "acpl", theme.NEGATIVE,
+                                          x_title="Situation", y_title="ACPL (lower = more accurate)"),
+                         theme=None)
+
+    with st.container(border=True):
+        st.subheader("Performance by position within a session")
+        session_df = cached_session_position_performance(sqlite_conn)
+        st.plotly_chart(charts.bar_chart(session_df, "position", "acpl", theme.NEGATIVE,
+                                          x_title="Game within the playing session", y_title="ACPL (lower = more accurate)"),
+                         theme=None)
 
 
 @st.fragment
