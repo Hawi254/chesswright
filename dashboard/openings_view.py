@@ -404,3 +404,43 @@ def _render_opening_ply_accuracy_section(sqlite_conn, duck_conn):
                                        f"{r.blunder_rate:.0f}% blunder)"
                                        for r in worst.itertuples())
                 st.caption(f"Highest-CPL move numbers: {worst_nums}")
+
+            compare_labels = ["None"] + drill_labels
+            compare_label = st.selectbox("Compare against", compare_labels, index=0,
+                                         key="opening_ply_compare_select")
+            if compare_label != "None" and not ply_df.empty:
+                compare_row = openings_df.iloc[drill_labels.index(compare_label)]
+                compare_df = cached_opening_ply_accuracy(
+                    duck_conn, compare_row.opening_family, compare_row.player_color, min_app)
+                if compare_df.empty:
+                    st.info(theme.thin_data_message(0, min_app))
+                else:
+                    fig_overlay = theme.render_comparison_panel(
+                        [{"df": ply_df, "x": "move_number", "y": "avg_cpl",
+                          "label": drill_label},
+                         {"df": compare_df, "x": "move_number", "y": "avg_cpl",
+                          "label": compare_label}],
+                        mode="overlay", x_title="Move number",
+                        y_title="Average centipawn loss")
+                    st.plotly_chart(fig_overlay, theme=None)
+                    st.caption(f"{drill_label} vs. {compare_label}: average centipawn loss "
+                               f"by move number, side by side.")
+
+                    common_moves = set(ply_df.move_number) & set(compare_df.move_number)
+                    if not common_moves:
+                        st.info(theme.thin_data_message(0, 1))
+                    else:
+                        ply_common = ply_df[ply_df.move_number.isin(common_moves)]
+                        compare_common = compare_df[compare_df.move_number.isin(common_moves)]
+                        fig_diff = theme.render_comparison_panel(
+                            [{"df": ply_common, "x": "move_number", "y": "avg_cpl",
+                              "label": drill_label},
+                             {"df": compare_common, "x": "move_number", "y": "avg_cpl",
+                              "label": compare_label}],
+                            mode="difference", x_title="Move number",
+                            y_title=f"CPL difference ({compare_label} minus {drill_label}; "
+                                    f"positive = {compare_label} more accurate)")
+                        st.plotly_chart(fig_diff, theme=None)
+                        st.caption(f"Move numbers where both openings have enough games "
+                                   f"({len(common_moves)} shared move numbers). Positive bars "
+                                   f"mean {compare_label} loses less here than {drill_label}.")
