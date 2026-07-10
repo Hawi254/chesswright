@@ -56,6 +56,49 @@ def _render_focus_card(findings, page_refs: dict) -> None:
                 st.switch_page(dest_page)
 
 
+def _render_coaching_teaser(sqlite_conn, insights_page) -> None:
+    """Points at Insights' existing "What to practice" coaching panel
+    rather than duplicating any AI-call logic here -- Overview never
+    calls Claude itself for this, it only reads whatever's already
+    cached via the same claude_narrative.generate_coaching_recommendations
+    output Insights writes."""
+    if insights_page is None:
+        return
+    cached = data.get_cached_narrative(sqlite_conn, "coaching", "recommendations")
+    with st.container(border=True):
+        st.subheader("Your coaching plan")
+        if cached:
+            _coaching_text, generated_at = cached
+            st.write(f"Personalized coaching notes ready, generated {generated_at}.")
+            button_label = "View your coaching plan →"
+        else:
+            st.write("Concrete, specific practice recommendations grounded in your findings.")
+            button_label = "Get your coaching plan →"
+        if st.button(button_label, key="coaching_teaser_goto"):
+            st.switch_page(insights_page)
+
+
+def _render_quick_explore(page_refs: dict) -> None:
+    """Static row of links into pages a returning user most plausibly wants
+    next. Page-level only, no attempt to pre-select a tab within a
+    destination page. Reuses the existing st.switch_page pattern already
+    used elsewhere on this page -- no new nav infrastructure."""
+    links = [
+        ("insights", "🔍 Insights", page_refs.get("insights_page")),
+        ("patterns", "📊 Patterns & Tendencies", page_refs.get("patterns_page")),
+        ("openings", "♟️ Openings & Repertoire", page_refs.get("openings_page")),
+    ]
+    links = [(key, label, page) for key, label, page in links if page is not None]
+    if not links:
+        return
+    st.subheader("Explore more")
+    cols = st.columns(len(links))
+    for col, (key, label, page) in zip(cols, links):
+        with col:
+            if st.button(label, key=f"quick_explore_{key}", width='stretch'):
+                st.switch_page(page)
+
+
 @st.cache_data(show_spinner="Loading your rating history…")
 def cached_rating_trajectory(_duck_conn):
     return data.get_rating_trajectory(_duck_conn)
@@ -77,7 +120,8 @@ def cached_progress_by_month(_duck_conn):
 
 
 def render(self_page, detail_page, *, patterns_page=None, matchups_page=None,
-           endings_page=None, highlights_page=None):
+           endings_page=None, highlights_page=None, insights_page=None,
+           openings_page=None):
     sqlite_conn, duck_conn = get_connections()
     st.title("Overview")
 
@@ -197,3 +241,11 @@ def render(self_page, detail_page, *, patterns_page=None, matchups_page=None,
                                       x_title="Month", y_title="Win rate (%)",
                                       hover_extra=("hover_coverage", "Analyzed")),
                     theme=None, width='stretch')
+
+    _render_coaching_teaser(sqlite_conn, insights_page)
+
+    _render_quick_explore({
+        "insights_page": insights_page,
+        "patterns_page": patterns_page,
+        "openings_page": openings_page,
+    })

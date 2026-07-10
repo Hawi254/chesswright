@@ -240,6 +240,8 @@ overview_page = st.Page(
         matchups_page=matchups_page,
         endings_page=endings_page,
         highlights_page=highlights_page,
+        insights_page=insights_page,
+        openings_page=openings_page,
     ),
     title="Overview", url_path="overview", default=not NEEDS_ONBOARDING)
 patterns_page = st.Page(patterns_view.render, title="Patterns & Tendencies",

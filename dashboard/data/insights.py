@@ -105,6 +105,40 @@ def _piece_hotspot(moves_df, baseline_blunder_rate):
                   f"over {int(row.n_moves)} analyzed {piece_name} moves.",
         "confidence": confidence_tier(row.n_moves, PIECE_MOVES_THRESHOLDS),
         "severity": confidence_tier(ratio, RATIO_SEVERITY_THRESHOLDS),
+        "polarity": "weakness",
+        "category": "tactical",
+    }
+
+
+def _safest_piece(moves_df, baseline_blunder_rate):
+    """Mirrors _piece_hotspot but picks the piece with the LOWEST blunder
+    rate instead of the highest -- same already-fetched moves_df, same
+    grouping, zero extra query cost. A real strength finding: which piece
+    you handle best relative to your own baseline."""
+    if not baseline_blunder_rate:
+        return None
+    df = moves_df.dropna(subset=["piece"])
+    if df.empty:
+        return None
+    grouped = df.groupby("piece").agg(
+        n_moves=("cpl", "size"),
+        blunder_rate=("classification", lambda s: 100.0 * (s == "blunder").sum() / len(s)),
+    ).reset_index()
+    grouped = grouped[grouped.n_moves.map(
+        lambda n: confidence_tier(n, PIECE_MOVES_THRESHOLDS) != "insufficient")]
+    if grouped.empty:
+        return None
+    row = grouped.loc[grouped.blunder_rate.idxmin()]
+    piece_name = patterns.PIECE_NAME.get(row.piece, row.piece)
+    inverse_ratio = (baseline_blunder_rate / row.blunder_rate) if row.blunder_rate > 0 else 999
+    return {
+        "title": "Safest piece",
+        "headline": f"{piece_name.capitalize()} moves blunder at only {row.blunder_rate:.1f}%",
+        "detail": f"vs. your overall blunder rate of {baseline_blunder_rate:.1f}%, "
+                  f"over {int(row.n_moves)} analyzed {piece_name} moves.",
+        "confidence": confidence_tier(row.n_moves, PIECE_MOVES_THRESHOLDS),
+        "severity": confidence_tier(inverse_ratio, RATIO_SEVERITY_THRESHOLDS),
+        "polarity": "strength",
         "category": "tactical",
     }
 
@@ -117,14 +151,23 @@ def _sharpness(moves_df):
     if len(bucketed) < 2:
         return None
     flat, forcing = bucketed.iloc[0], bucketed.iloc[-1]
+    delta = forcing.blunder_rate - flat.blunder_rate
+    if delta >= 0:
+        headline = f"Blunder rate climbs from {flat.blunder_rate:.1f}% to {forcing.blunder_rate:.1f}%"
+        polarity = "weakness"
+    else:
+        headline = (f"Blunder rate holds steady or falls, from {flat.blunder_rate:.1f}% (flattest) "
+                    f"to {forcing.blunder_rate:.1f}% (most forcing)")
+        polarity = "strength"
     return {
         "title": "Sharp positions and blunder rate",
-        "headline": f"Blunder rate climbs from {flat.blunder_rate:.1f}% to {forcing.blunder_rate:.1f}%",
+        "headline": headline,
         "detail": f"Comparing your flattest positions ({flat.bucket}) to your most forcing "
                   f"ones ({forcing.bucket}) -- sharpness is how much the best move beats the "
                   f"second-best, a high gap meaning only one move was actually good.",
         "confidence": confidence_tier(min(flat.n_moves, forcing.n_moves), BUCKET_MOVES_THRESHOLDS),
-        "severity": confidence_tier(forcing.blunder_rate - flat.blunder_rate, BLUNDER_GAP_SEVERITY_THRESHOLDS),
+        "severity": confidence_tier(abs(delta), BLUNDER_GAP_SEVERITY_THRESHOLDS),
+        "polarity": polarity,
         "category": "tactical",
     }
 
@@ -145,6 +188,7 @@ def _thinking_time(moves_df):
                   f"not always the slowest bucket that's safest.",
         "confidence": confidence_tier(min(worst.n_moves, best.n_moves), BUCKET_MOVES_THRESHOLDS),
         "severity": confidence_tier(worst.blunder_rate - best.blunder_rate, BLUNDER_GAP_SEVERITY_THRESHOLDS),
+        "polarity": "mixed",
         "category": "time",
     }
 
@@ -169,6 +213,7 @@ def _time_pressure(moves_df):
         "detail": f"vs. {best.blunder_rate:.1f}% with \"{best.bucket}\" clock left.",
         "confidence": confidence_tier(min(worst.n_moves, best.n_moves), BUCKET_MOVES_THRESHOLDS),
         "severity": confidence_tier(worst.blunder_rate - best.blunder_rate, BLUNDER_GAP_SEVERITY_THRESHOLDS),
+        "polarity": "mixed",
         "category": "time",
     }
 
@@ -187,6 +232,7 @@ def _castling(duck_conn, config_path=None):
                   f"in games long enough for castling to be a real option.",
         "confidence": confidence_tier(min(castled.n_games, not_castled.n_games), CASTLE_GAMES_THRESHOLDS),
         "severity": confidence_tier(abs(castled.win_pct - not_castled.win_pct), WINRATE_GAP_SEVERITY_THRESHOLDS),
+        "polarity": "strength" if castled.win_pct >= not_castled.win_pct else "weakness",
         "category": "defense",
     }
 
@@ -216,6 +262,7 @@ def _backrank(moves_df):
         "detail": f"vs. {back.acpl:.1f} on the back rank -- the average centipawn loss per move.",
         "confidence": confidence_tier(min(elsewhere.n_moves, back.n_moves), BACKRANK_MOVES_THRESHOLDS),
         "severity": confidence_tier(abs(elsewhere.acpl - back.acpl), ACPL_GAP_SEVERITY_THRESHOLDS),
+        "polarity": "weakness" if elsewhere.acpl > back.acpl else "strength",
         "category": "defense",
     }
 
@@ -254,6 +301,40 @@ def _nemesis(duck_conn):
         "opponent_on_lichess": bool(toughest.all_lichess),
         "confidence": confidence_tier(toughest.n, OPPONENT_GAMES_THRESHOLDS),
         "severity": severity,
+        "polarity": "weakness",
+        "category": "matchup",
+    }
+
+
+def _best_matchup(duck_conn):
+    """Mirrors _nemesis but picks the opponent with the HIGHEST surprise_pct
+    (biggest positive overperformance vs. Elo-expected) instead of the
+    lowest -- same query (matchups.get_nemesis_opponents), opposite
+    direction. A real strength finding: who you beat more than the rating
+    gap alone would predict."""
+    df = matchups.get_nemesis_opponents(duck_conn, min_games=MIN_OPPONENT_GAMES)
+    if df.empty:
+        return None
+    rated = df[df.surprise_pct.notna()]
+    best = (rated.loc[rated.surprise_pct.idxmax()] if len(rated)
+            else df.loc[df.score_pct.idxmax()])
+    detail = f"Over {int(best.n)} games (win + 0.5 x draw, standard tournament scoring)."
+    if pd.notna(best.get("expected_score_pct")):
+        detail += (f" The rating gap alone predicted {best.expected_score_pct:.1f}% -- "
+                   "you're overperforming, not just facing a weaker opponent.")
+        severity = confidence_tier(
+            best.score_pct - best.expected_score_pct, NEMESIS_SURPRISE_SEVERITY_THRESHOLDS)
+    else:
+        severity = confidence_tier(
+            max(0, best.score_pct - 50), NEMESIS_FALLBACK_SEVERITY_THRESHOLDS)
+    return {
+        "title": "Best matchup",
+        "headline": f"{best.score_pct:.1f}% score against {best.opponent_name}",
+        "detail": detail,
+        "opponent_name": best.opponent_name,
+        "confidence": confidence_tier(best.n, OPPONENT_GAMES_THRESHOLDS),
+        "severity": severity,
+        "polarity": "strength",
         "category": "matchup",
     }
 
@@ -273,6 +354,7 @@ def _giant_killing(duck_conn):
         "headline": f"{gk['n_upsets']} upset win(s) on record",
         "detail": " and ".join(parts) + ".",
         "severity": confidence_tier(collapse_rate, COLLAPSE_RATE_SEVERITY_THRESHOLDS),
+        "polarity": "mixed",
         "category": "giant_killer",
     }
 
@@ -310,6 +392,7 @@ def _tactical_highlights(duck_conn, moves_df, config_path=None):
         # are good news, hangs/blown mates are bad, they can't net into one
         # magnitude, so this is always "low" rather than computed.
         "severity": "low",
+        "polarity": "neutral",
         "category": "tactical",
     }
 
@@ -327,6 +410,7 @@ def _game_endings(duck_conn):
         # Informational distribution stat, not inherently good or bad --
         # there's no "worse" direction for how games end to rank against.
         "severity": "low",
+        "polarity": "neutral",
         "category": "general",
     }
 
@@ -349,16 +433,24 @@ def get_career_findings(duck_conn, baseline_blunder_rate, config_path=None):
       filtering, not used for ranking.
     - confidence: "insufficient"/"low"/"medium"/"high", present only where
       a natural sample-size gate already existed for that finding (absent
-      from _giant_killing, _tactical_highlights, _game_endings)."""
+      from _giant_killing, _tactical_highlights, _game_endings).
+    - polarity: "strength"/"weakness"/"mixed"/"neutral", always present --
+      "mixed" for findings that already bundle a good and a bad data point
+      into one card (_thinking_time, _time_pressure, _giant_killing),
+      "neutral" for purely informational round-ups/distributions with no
+      "worse" direction (_tactical_highlights, _game_endings), otherwise
+      "strength" or "weakness" per that finding's own data."""
     moves_df = _fetch_move_correlates(duck_conn)
     candidates = [
         _piece_hotspot(moves_df, baseline_blunder_rate),
+        _safest_piece(moves_df, baseline_blunder_rate),
         _sharpness(moves_df),
         _thinking_time(moves_df),
         _time_pressure(moves_df),
         _castling(duck_conn, config_path),
         _backrank(moves_df),
         _nemesis(duck_conn),
+        _best_matchup(duck_conn),
         _giant_killing(duck_conn),
         _tactical_highlights(duck_conn, moves_df, config_path),
         _game_endings(duck_conn),
