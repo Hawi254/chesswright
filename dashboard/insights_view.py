@@ -19,10 +19,30 @@ don't wire them (e.g. tests) continue to work unchanged.
 import streamlit as st
 
 import claude_narrative
+import confidence
 import data
 import theme
 from _common import get_connections
 from cached_queries import cached_career_findings, cached_headline_stats
+
+# Severity tier -> (chip CSS class, label). Same pattern as
+# confidence._TIER_CHIPS, kept local since it's a different axis
+# (magnitude, not sample size) and this is the only view that renders it.
+_SEVERITY_CHIPS = {
+    "high": ("chip-negative", "High impact"),
+    "medium": ("chip-neutral", "Medium impact"),
+    "low": ("chip-muted", "Low impact"),
+}
+
+# Category -> display label for the small category chip.
+CATEGORY_LABELS = {
+    "tactical": "Tactics",
+    "time": "Time management",
+    "defense": "King safety",
+    "matchup": "Matchups",
+    "giant_killer": "Giant-killing",
+    "general": "General",
+}
 
 # Findings whose title maps to a Drill Export preset.
 # Keys match finding["title"] exactly; values are passed as _drill_preset
@@ -77,11 +97,29 @@ def render(drill_export_page=None, prep_page=None):
         st.info(theme.thin_data_message(stats["analyzed_games"], 1))
         return
 
+    _SEVERITY_ORDER = {"high": 0, "medium": 1, "low": 2}
+    findings = sorted(findings, key=lambda f: _SEVERITY_ORDER.get(f.get("severity", "low"), 1))
+
     for finding in findings:
         with st.container(border=True):
             st.subheader(finding["title"])
             st.write(f"**{finding['headline']}**")
             st.caption(finding["detail"])
+
+            chips = []
+            if finding.get("confidence"):
+                badge = confidence.confidence_badge_html(finding["confidence"])
+                if badge:
+                    chips.append(badge)
+            severity_entry = _SEVERITY_CHIPS.get(finding.get("severity"))
+            if severity_entry:
+                cls, label = severity_entry
+                chips.append(f'<span class="chip {cls}">{label}</span>')
+            category_label = CATEGORY_LABELS.get(finding.get("category"))
+            if category_label:
+                chips.append(f'<span class="chip chip-neutral">{category_label}</span>')
+            if chips:
+                st.markdown("".join(chips), unsafe_allow_html=True)
 
             drill_preset = _DRILL_PRESETS.get(finding["title"])
             if drill_preset and drill_export_page:

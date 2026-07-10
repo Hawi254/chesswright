@@ -44,6 +44,21 @@ BACKRANK_MOVES_THRESHOLDS = default_thresholds(MIN_BACKRANK_MOVES)
 OPPONENT_GAMES_THRESHOLDS = default_thresholds(MIN_OPPONENT_GAMES)
 CASTLE_GAMES_THRESHOLDS = default_thresholds(MIN_CASTLE_GAMES)
 
+# Severity thresholds are magnitude-based (percentage-point gaps, ratios,
+# rate deltas), not sample-size gates -- reusing confidence_tier()'s
+# generic (value, {tier: cutoff}) mechanism for a different axis rather
+# than inventing a second tiering scheme. "low" cutoff is always 0 so
+# every finding that reaches severity scoring gets at least "low" (a
+# finding that already passed its confidence gate is never "insufficient"
+# severity -- it's already established as real, just maybe small).
+RATIO_SEVERITY_THRESHOLDS = {"low": 0, "medium": 1.5, "high": 2.5}
+BLUNDER_GAP_SEVERITY_THRESHOLDS = {"low": 0, "medium": 5, "high": 10}
+WINRATE_GAP_SEVERITY_THRESHOLDS = {"low": 0, "medium": 10, "high": 20}
+ACPL_GAP_SEVERITY_THRESHOLDS = {"low": 0, "medium": 10, "high": 20}
+NEMESIS_SURPRISE_SEVERITY_THRESHOLDS = {"low": 0, "medium": 15, "high": 30}
+NEMESIS_FALLBACK_SEVERITY_THRESHOLDS = {"low": 0, "medium": 20, "high": 35}
+COLLAPSE_RATE_SEVERITY_THRESHOLDS = {"low": 0, "medium": 10, "high": 25}
+
 
 def _fetch_move_correlates(duck_conn):
     """Single moves scan shared by all findings in get_career_findings.
@@ -88,6 +103,9 @@ def _piece_hotspot(moves_df, baseline_blunder_rate):
         "headline": f"{piece_name.capitalize()} moves blunder at {row.blunder_rate:.1f}%",
         "detail": f"{ratio:.1f}x your overall blunder rate of {baseline_blunder_rate:.1f}%, "
                   f"over {int(row.n_moves)} analyzed {piece_name} moves.",
+        "confidence": confidence_tier(row.n_moves, PIECE_MOVES_THRESHOLDS),
+        "severity": confidence_tier(ratio, RATIO_SEVERITY_THRESHOLDS),
+        "category": "tactical",
     }
 
 
@@ -105,6 +123,9 @@ def _sharpness(moves_df):
         "detail": f"Comparing your flattest positions ({flat.bucket}) to your most forcing "
                   f"ones ({forcing.bucket}) -- sharpness is how much the best move beats the "
                   f"second-best, a high gap meaning only one move was actually good.",
+        "confidence": confidence_tier(min(flat.n_moves, forcing.n_moves), BUCKET_MOVES_THRESHOLDS),
+        "severity": confidence_tier(forcing.blunder_rate - flat.blunder_rate, BLUNDER_GAP_SEVERITY_THRESHOLDS),
+        "category": "tactical",
     }
 
 
@@ -122,6 +143,9 @@ def _thinking_time(moves_df):
         "headline": f"Your worst blunder rate ({worst.blunder_rate:.1f}%) is on \"{worst.bucket}\" moves",
         "detail": f"Your best ({best.blunder_rate:.1f}%) is on \"{best.bucket}\" moves -- "
                   f"not always the slowest bucket that's safest.",
+        "confidence": confidence_tier(min(worst.n_moves, best.n_moves), BUCKET_MOVES_THRESHOLDS),
+        "severity": confidence_tier(worst.blunder_rate - best.blunder_rate, BLUNDER_GAP_SEVERITY_THRESHOLDS),
+        "category": "time",
     }
 
 
@@ -143,6 +167,9 @@ def _time_pressure(moves_df):
         "title": "Clock pressure and blunder rate",
         "headline": f"Blunder rate peaks at {worst.blunder_rate:.1f}% with \"{worst.bucket}\" clock left",
         "detail": f"vs. {best.blunder_rate:.1f}% with \"{best.bucket}\" clock left.",
+        "confidence": confidence_tier(min(worst.n_moves, best.n_moves), BUCKET_MOVES_THRESHOLDS),
+        "severity": confidence_tier(worst.blunder_rate - best.blunder_rate, BLUNDER_GAP_SEVERITY_THRESHOLDS),
+        "category": "time",
     }
 
 
@@ -158,6 +185,9 @@ def _castling(duck_conn, config_path=None):
         "headline": f"{castled.win_pct:.1f}% win rate when you castle",
         "detail": f"vs. {not_castled.win_pct:.1f}% in games where you don't, "
                   f"in games long enough for castling to be a real option.",
+        "confidence": confidence_tier(min(castled.n_games, not_castled.n_games), CASTLE_GAMES_THRESHOLDS),
+        "severity": confidence_tier(abs(castled.win_pct - not_castled.win_pct), WINRATE_GAP_SEVERITY_THRESHOLDS),
+        "category": "defense",
     }
 
 
@@ -184,6 +214,9 @@ def _backrank(moves_df):
         "title": "King moves off the back rank",
         "headline": f"King ACPL off the back rank: {elsewhere.acpl:.1f}",
         "detail": f"vs. {back.acpl:.1f} on the back rank -- the average centipawn loss per move.",
+        "confidence": confidence_tier(min(elsewhere.n_moves, back.n_moves), BACKRANK_MOVES_THRESHOLDS),
+        "severity": confidence_tier(abs(elsewhere.acpl - back.acpl), ACPL_GAP_SEVERITY_THRESHOLDS),
+        "category": "defense",
     }
 
 
@@ -206,6 +239,11 @@ def _nemesis(duck_conn):
     if pd.notna(toughest.get("expected_score_pct")):
         detail += (f" The rating gap alone predicted {toughest.expected_score_pct:.1f}% -- "
                    "this is a real surprise, not just a stronger opponent.")
+        severity = confidence_tier(
+            toughest.expected_score_pct - toughest.score_pct, NEMESIS_SURPRISE_SEVERITY_THRESHOLDS)
+    else:
+        severity = confidence_tier(
+            max(0, 50 - toughest.score_pct), NEMESIS_FALLBACK_SEVERITY_THRESHOLDS)
     return {
         "title": "Toughest opponent",
         "headline": f"{toughest.score_pct:.1f}% score against {toughest.opponent_name}",
@@ -214,6 +252,9 @@ def _nemesis(duck_conn):
         # Gates the "Scout this opponent" deep link -- see the all_lichess
         # comment in matchups.get_nemesis_opponents.
         "opponent_on_lichess": bool(toughest.all_lichess),
+        "confidence": confidence_tier(toughest.n, OPPONENT_GAMES_THRESHOLDS),
+        "severity": severity,
+        "category": "matchup",
     }
 
 
@@ -226,10 +267,13 @@ def _giant_killing(duck_conn):
         parts.append(f"{gk['n_upsets']} of {gk['n_underdog_games']} as a 300+ underdog")
     if gk["n_favorite_games"]:
         parts.append(f"{gk['n_collapses']} losses of {gk['n_favorite_games']} as a 300+ favorite")
+    collapse_rate = 100.0 * gk["n_collapses"] / gk["n_favorite_games"] if gk["n_favorite_games"] else 0
     return {
         "title": "Giant-killing and collapses",
         "headline": f"{gk['n_upsets']} upset win(s) on record",
         "detail": " and ".join(parts) + ".",
+        "severity": confidence_tier(collapse_rate, COLLAPSE_RATE_SEVERITY_THRESHOLDS),
+        "category": "giant_killer",
     }
 
 
@@ -262,6 +306,11 @@ def _tactical_highlights(duck_conn, moves_df, config_path=None):
         "headline": f"{n_brilliant} brilliant-move candidate(s) found",
         "detail": f"{n_hangs} hanging-piece blunder(s), {n_blown_loss} forced mate(s) blown "
                   f"and lost anyway.",
+        # Informational round-up, not a ranked weakness -- brilliant moves
+        # are good news, hangs/blown mates are bad, they can't net into one
+        # magnitude, so this is always "low" rather than computed.
+        "severity": "low",
+        "category": "tactical",
     }
 
 
@@ -275,6 +324,10 @@ def _game_endings(duck_conn):
         "title": "How your games end",
         "headline": f"{100.0 * top.n / total:.0f}% end in {top.game_end_type}",
         "detail": f"Based on {int(total)} games with a recorded ending type.",
+        # Informational distribution stat, not inherently good or bad --
+        # there's no "worse" direction for how games end to rank against.
+        "severity": "low",
+        "category": "general",
     }
 
 
@@ -282,7 +335,21 @@ def get_career_findings(duck_conn, baseline_blunder_rate, config_path=None):
     """Returns a list of {title, headline, detail} dicts, one per finding
     that currently has enough data to say something -- order is the
     fixed display order, not a ranking by "significance" (no principled
-    way to rank across domains this different)."""
+    way to rank across domains this different).
+
+    Each finding also carries:
+    - severity: "low"/"medium"/"high", always present -- a magnitude-based
+      tier (percentage-point gap, ratio, or rate) scored via
+      confidence_tier() reused for this different axis, not the sample-size
+      axis. Findings without a natural single-direction magnitude
+      (_tactical_highlights, _game_endings) get a literal "low" instead of
+      a computed value.
+    - category: always present, one of "tactical"/"time"/"defense"/
+      "matchup"/"giant_killer"/"general" -- a coarse tag for grouping/
+      filtering, not used for ranking.
+    - confidence: "insufficient"/"low"/"medium"/"high", present only where
+      a natural sample-size gate already existed for that finding (absent
+      from _giant_killing, _tactical_highlights, _game_endings)."""
     moves_df = _fetch_move_correlates(duck_conn)
     candidates = [
         _piece_hotspot(moves_df, baseline_blunder_rate),
