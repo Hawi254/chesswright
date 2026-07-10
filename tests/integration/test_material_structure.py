@@ -9,8 +9,11 @@ that file has pending, uncommitted, reviewed changes from the same-day
 Opponent Profile Analysis unit and was explicitly off-limits for this
 session's edits.
 """
+import os
 import pathlib
+import sqlite3
 import sys
+import tempfile
 
 import pandas as pd
 import pytest
@@ -18,6 +21,28 @@ import pytest
 REPO_ROOT = pathlib.Path(__file__).parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "dashboard"))
+
+
+def _duck_from_conn(sqlite_conn):
+    """Copy an in-memory/real sqlite connection to a temp file and attach
+    it to a fresh DuckDB connection. Returns (duck_conn, disk_conn,
+    tmp_path) -- callers must close both and delete the temp file. Mirrors
+    tests/integration/test_data_layer.py's / tests/unit/test_insights.py's
+    helper of the same name -- this file had no duck_conn need before
+    get_bishop_color_ending_performance."""
+    import duckdb
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    tmp.close()
+    disk = sqlite3.connect(tmp.name)
+    for line in sqlite_conn.iterdump():
+        try:
+            disk.execute(line)
+        except Exception:
+            pass
+    disk.commit()
+    duck = duckdb.connect(":memory:")
+    duck.execute(f"ATTACH '{tmp.name}' AS db (TYPE SQLITE, READ_ONLY TRUE)")
+    return duck, disk, tmp.name
 
 
 class TestClassifyEndgameType:
@@ -152,3 +177,80 @@ class TestMaterialStructureBucketTable:
         lookup = dict(zip(df.bucket, df.n_games))
         assert lookup.get("Queen") == 1
         assert "King & pawn" not in lookup
+
+
+@pytest.mark.integration
+class TestBishopColorEndingPerformance:
+    """Covers data.patterns.get_bishop_color_ending_performance directly
+    (roadmap §22) -- the raw bucket/n_moves/acpl extraction shared with
+    insights.py's _bishop_color_endings finding. Reuses
+    TestBishopColorEndingsSmoke's exact _SAME_FEN/_OPPOSITE_FEN
+    (tests/unit/test_insights.py:427-450) and _seed_game shape rather than
+    deriving new bishop-square-color FENs, adapted to this file's own
+    migrated_db + _duck_from_conn fixtures (get_bishop_color_ending_
+    performance needs BOTH connections, unlike get_material_structure_
+    bucket_table above)."""
+
+    # White bishop c1 (file 2, rank 1, sum=3, odd) same-parity with Black
+    # bishop f8 (file 5, rank 8, sum=13, odd) -> "same".
+    _SAME_FEN = "4kb2/8/8/8/8/8/8/2B1K3 w - - 0 1"
+    # White bishop c1 (odd) vs. Black bishop c8 (file 2, rank 8, sum=10,
+    # even) -> "opposite".
+    _OPPOSITE_FEN = "2bk4/8/8/8/8/8/8/2B1K3 w - - 0 1"
+
+    def _seed_bishop_game(self, conn, game_id, fen, cpl):
+        """Mirrors TestBishopColorEndingsSmoke._seed_game -- ply 41 carries
+        both material_sig (so compute_structure_context detects it as the
+        endgame checkpoint, non_pawn_piece_count("B1vB1")=2 <=
+        endgame_max_pieces=6) and fen_before (for the bishop-color
+        classifier); plies 41-45 all carry cpl so there are enough
+        analyzed moves (5/game) to clear MIN_BISHOP_ENDING_MOVES=20 across
+        5 games per bucket."""
+        conn.execute(
+            "INSERT INTO games (id, white, black, outcome_for_player, player_color) "
+            "VALUES (?, 'W', 'B', 'win', 'white')", (game_id,))
+        for i, ply in enumerate(range(41, 46)):
+            conn.execute(
+                "INSERT INTO moves (game_id, ply, move_number, color, san, is_player_move, "
+                "cpl, material_sig, fen_before) VALUES (?, ?, ?, 'w', 'Kf2', 1, ?, ?, ?)",
+                (game_id, ply, 21 + i, cpl,
+                 "B1vB1" if ply == 41 else None,
+                 fen if ply == 41 else None))
+        conn.commit()
+
+    def test_on_empty_db(self, migrated_db):
+        from data.patterns import get_bishop_color_ending_performance
+        duck, disk, tmp = _duck_from_conn(migrated_db)
+        try:
+            df = get_bishop_color_ending_performance(duck, migrated_db)
+            assert df.empty
+        finally:
+            duck.close(); disk.close(); os.unlink(tmp)
+
+    def test_seeded_two_buckets_have_real_acpl(self, migrated_db):
+        from data.patterns import get_bishop_color_ending_performance
+        for i in range(5):
+            self._seed_bishop_game(migrated_db, f"same{i}", self._SAME_FEN, cpl=20)
+            self._seed_bishop_game(migrated_db, f"opp{i}", self._OPPOSITE_FEN, cpl=100)
+        # analytics.ensure_structure_ctx runs inside
+        # get_bishop_color_ending_performance itself, but it must run on
+        # the LIVE sqlite connection BEFORE _duck_from_conn snapshots the
+        # file, or the DuckDB-attached copy won't see the
+        # structure_ctx_cache rows -- same ordering hazard
+        # TestBishopColorEndingsSmoke's class docstring documents.
+        import analytics
+        from _common import get_config
+        analytics.ensure_structure_ctx(migrated_db, get_config())
+
+        duck, disk, tmp = _duck_from_conn(migrated_db)
+        try:
+            df = get_bishop_color_ending_performance(duck, migrated_db)
+            assert set(df.bucket) == {"same", "opposite"}
+            same_row = df[df.bucket == "same"].iloc[0]
+            opp_row = df[df.bucket == "opposite"].iloc[0]
+            assert same_row.n_moves == 25
+            assert opp_row.n_moves == 25
+            assert same_row.acpl == pytest.approx(20.0)
+            assert opp_row.acpl == pytest.approx(100.0)
+        finally:
+            duck.close(); disk.close(); os.unlink(tmp)

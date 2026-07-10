@@ -316,6 +316,62 @@ def get_material_structure_bucket_table(sqlite_conn, structure_type="endgame", c
                                         "acpl", "n_analyzed"])
 
 
+def get_bishop_color_ending_performance(duck_conn, sqlite_conn, config_path=None) -> pd.DataFrame:
+    """Same-color vs. opposite-color bishop endings, by ACPL -- Material
+    Structure Explorer Tier 2 (roadmap §17 Q1 / §22): the one axis
+    material_sig can never express (piece COUNTS only, no square color),
+    classified instead from the endgame-checkpoint FEN via
+    chess_utils.classify_bishop_color_ending. Only meaningful when each
+    side has exactly one bishop at that checkpoint (the classifier returns
+    None otherwise) -- those games are excluded, same "no row" convention
+    as every other structure_ctx consumer.
+
+    Returns the raw per-bucket ("same"/"opposite") DataFrame -- columns
+    `bucket`, `n_moves`, `acpl` -- with no confidence-tier filtering and no
+    finding-dict wrapping. This is the shared computation extracted from
+    insights.py's `_bishop_color_endings` finding (roadmap §22): that
+    finding calls this function and then applies its own confidence/
+    severity/headline logic on top, so this DataFrame's shape and values
+    must stay exactly what that finding already relied on. ACPL is
+    measured over player moves from endgame_ply ONWARD (the actual ending
+    itself, not the whole game or just the transition move) -- see
+    insights.py's docstring for why that definition was chosen over the
+    alternatives that were empirically checked and rejected.
+
+    Returns an empty DataFrame (not None) when there's no structure_ctx
+    data, no bishop-ending games, or fewer than 2 buckets present --
+    callers should treat `df.empty` as "not enough data", matching this
+    module's other get_*_table functions' convention."""
+    cfg = get_config(config_path)
+    analytics.ensure_structure_ctx(sqlite_conn, cfg)
+
+    ctx = duck_conn.execute("""
+        SELECT m.game_id, m.fen_before
+        FROM db.structure_ctx_cache sc
+        JOIN db.moves m ON m.game_id = sc.game_id AND m.ply = sc.endgame_ply
+        WHERE sc.endgame_ply IS NOT NULL AND m.fen_before IS NOT NULL
+    """).fetchdf()
+    empty = pd.DataFrame(columns=["bucket", "n_moves", "acpl"])
+    if ctx.empty:
+        return empty
+    ctx["bucket"] = ctx.fen_before.apply(chess_utils.classify_bishop_color_ending)
+    ctx = ctx.dropna(subset=["bucket"])
+    if ctx.bucket.nunique() < 2:
+        return empty
+
+    moves = duck_conn.execute("""
+        SELECT m.game_id, m.cpl
+        FROM db.moves m JOIN db.structure_ctx_cache sc ON sc.game_id = m.game_id
+        WHERE m.is_player_move = 1 AND m.cpl IS NOT NULL
+          AND sc.endgame_ply IS NOT NULL AND m.ply >= sc.endgame_ply
+    """).fetchdf()
+    merged = moves.merge(ctx[["game_id", "bucket"]], on="game_id")
+    if merged.empty:
+        return empty
+    return merged.groupby("bucket").agg(
+        n_moves=("cpl", "size"), acpl=("cpl", "mean")).reset_index()
+
+
 # ---------- Piece-movement / castling (Phase 9, 2026-06-23) ----------
 # Mirrors analysis/piece_movement_patterns.py, piece_phase_sharpness.py,
 # square_color_backrank_performance.py, castling_performance.py -- see

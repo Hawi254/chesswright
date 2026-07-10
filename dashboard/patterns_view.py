@@ -86,6 +86,11 @@ def cached_material_structure_bucket_table(_sqlite_conn, structure_type):
     return data.patterns.get_material_structure_bucket_table(_sqlite_conn, structure_type=structure_type)
 
 
+@st.cache_data(show_spinner="Comparing same-color vs. opposite-color bishop endings…")
+def cached_bishop_color_ending_performance(_sqlite_conn, _duck_conn):
+    return data.get_bishop_color_ending_performance(_duck_conn, _sqlite_conn)
+
+
 @st.cache_data(show_spinner="Computing accuracy piece by piece…")
 def cached_piece_movement_patterns(_duck_conn):
     return data.get_piece_movement_patterns(_duck_conn)
@@ -681,6 +686,31 @@ def _render_tab_position(sqlite_conn, duck_conn):
                 "Analyzed games", help="How many of these games have engine analysis -- "
                                        "ACPL only counts analyzed games."),
         })
+
+    with st.container(border=True):
+        st.subheader("Same-color vs. opposite-color bishop endings")
+        st.caption("Accuracy specifically in single-bishop endgames, split by whether your "
+                   "bishop and your opponent's sit on the same color complex or opposite ones -- "
+                   "a bishop-endgame-technique question, narrower than the Material structure "
+                   "table above.")
+        bishop_df = cached_bishop_color_ending_performance(sqlite_conn, duck_conn)
+        if bishop_df.empty or bishop_df.bucket.nunique() < 2:
+            st.info(theme.thin_data_message(0, 1))
+        else:
+            lookup = {r.bucket: r for r in bishop_df.itertuples()}
+            opp, same = lookup["opposite"], lookup["same"]
+            col_opp, col_same = st.columns(2)
+            with col_opp:
+                theme.render_metric_card(
+                    value=f"{opp.acpl:.1f}", label="Opposite-color bishop endings ACPL",
+                    sample_size=f"{int(opp.n_moves)} moves", key="bishop_ending_opposite")
+            with col_same:
+                theme.render_metric_card(
+                    value=f"{same.acpl:.1f}", label="Same-color bishop endings ACPL",
+                    sample_size=f"{int(same.n_moves)} moves", key="bishop_ending_same")
+            st.caption("Win/draw rate showed no meaningful difference between same- and "
+                       "opposite-color bishop endings in this data -- ACPL, not outcome, is "
+                       "the real signal here.")
 
     with st.container(border=True):
         st.subheader("Open, semi-open, or closed?")

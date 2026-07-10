@@ -19,8 +19,6 @@ findings yet" must be a normal, common state, not a crash or a wall of
 """
 import pandas as pd
 
-import analytics
-import chess_utils
 from . import patterns, matchups, game_endings
 from ._shared import TIME_PRESSURE_BUCKETS, THINKING_TIME_BUCKETS, bucket_acpl_blunder_rate
 from _common import get_config
@@ -446,33 +444,9 @@ def _bishop_color_endings(duck_conn, sqlite_conn, config_path=None):
     too and show no real signal on the real dev DB (draw rate 7.5% vs.
     8.6%, win rate 47.8% vs. 47.6%) -- ACPL, not outcome, is the real
     finding here."""
-    cfg = get_config(config_path)
-    analytics.ensure_structure_ctx(sqlite_conn, cfg)
-
-    ctx = duck_conn.execute("""
-        SELECT m.game_id, m.fen_before
-        FROM db.structure_ctx_cache sc
-        JOIN db.moves m ON m.game_id = sc.game_id AND m.ply = sc.endgame_ply
-        WHERE sc.endgame_ply IS NOT NULL AND m.fen_before IS NOT NULL
-    """).fetchdf()
-    if ctx.empty:
+    result = patterns.get_bishop_color_ending_performance(duck_conn, sqlite_conn, config_path)
+    if result.empty:
         return None
-    ctx["bucket"] = ctx.fen_before.apply(chess_utils.classify_bishop_color_ending)
-    ctx = ctx.dropna(subset=["bucket"])
-    if ctx.bucket.nunique() < 2:
-        return None
-
-    moves = duck_conn.execute("""
-        SELECT m.game_id, m.cpl
-        FROM db.moves m JOIN db.structure_ctx_cache sc ON sc.game_id = m.game_id
-        WHERE m.is_player_move = 1 AND m.cpl IS NOT NULL
-          AND sc.endgame_ply IS NOT NULL AND m.ply >= sc.endgame_ply
-    """).fetchdf()
-    merged = moves.merge(ctx[["game_id", "bucket"]], on="game_id")
-    if merged.empty:
-        return None
-    result = merged.groupby("bucket").agg(
-        n_moves=("cpl", "size"), acpl=("cpl", "mean")).reset_index()
     result = result[result.n_moves.map(
         lambda n: confidence_tier(n, BISHOP_ENDING_MOVES_THRESHOLDS) != "insufficient")]
     opp = result[result.bucket == "opposite"]
