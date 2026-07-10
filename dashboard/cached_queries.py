@@ -49,3 +49,8 @@ def cached_resignation_loss_causes(_duck_conn):
 @st.cache_data(show_spinner="Working out how your time-forfeit losses happened…")
 def cached_time_forfeit_loss_breakdown(_duck_conn):
     return data.get_time_forfeit_loss_breakdown(_duck_conn)
+
+
+@st.cache_data(show_spinner=False)
+def cached_motif_backfill_needed(_duck_conn):
+    return data.motif_backfill_needed(_duck_conn)

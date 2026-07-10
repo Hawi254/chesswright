@@ -21,6 +21,7 @@ import duckdb
 import pandas as pd
 import streamlit as st
 
+import confidence
 from config import load_config, pick
 from db import get_connection as _get_sqlite_connection
 import migrate
@@ -419,3 +420,100 @@ def navigate_on_row_click(df, key, detail_page, self_page, return_label, column_
         st.session_state["return_page"] = self_page
         st.session_state["return_page_label"] = return_label
         st.switch_page(detail_page)
+
+
+# ---------- get_career_findings() rendering (shared by Insights + Training Queue) ----------
+# Promoted from insights_view.py (2026-07-10, Training Queue MVP) once a
+# second page needed the exact same chip/action-button rendering for the
+# same finding dicts -- same "promote to the one shared home, don't fork a
+# second copy" convention as data/_shared.py's _classify_endgame_type
+# promotion. Kept in _common.py rather than a new module: this file
+# already plays the "cross-page view helper" role for finding-adjacent
+# rendering (see game_labels/navigate_on_row_click above), so a second
+# shared-helpers module would just split one convention into two homes.
+
+# Severity tier -> sort rank. Insights sorts its full findings list by
+# this; Training Queue sorts its weakness-only subset the same way.
+SEVERITY_ORDER = {"high": 0, "medium": 1, "low": 2}
+
+# Severity tier -> (chip CSS class, label). Same pattern as
+# confidence._TIER_CHIPS, kept here since it's a different axis
+# (magnitude, not sample size).
+_SEVERITY_CHIPS = {
+    "high": ("chip-negative", "High impact"),
+    "medium": ("chip-neutral", "Medium impact"),
+    "low": ("chip-muted", "Low impact"),
+}
+
+# Category -> display label for the small category chip.
+CATEGORY_LABELS = {
+    "tactical": "Tactics",
+    "time": "Time management",
+    "defense": "King safety",
+    "matchup": "Matchups",
+    "giant_killer": "Giant-killing",
+    "general": "General",
+}
+
+# Findings whose title maps to a Drill Export preset.
+# Keys match finding["title"] exactly; values are passed as _drill_preset
+# into session_state so drill_export_view can pre-select sources + motif filter.
+DRILL_PRESETS = {
+    "Piece blunder hot-spot": {
+        "include_motifs": True,
+        "include_moments": False,
+        "include_holes": False,
+        "motif_filter": None,
+    },
+    "Tactical highlights so far": {
+        "include_motifs": True,
+        "include_moments": False,
+        "include_holes": False,
+        "motif_filter": None,
+    },
+    "King moves off the back rank": {
+        "include_motifs": True,
+        "include_moments": False,
+        "include_holes": False,
+        "motif_filter": "back_rank_mate",
+    },
+}
+
+
+def finding_chips_html(finding) -> str:
+    """Confidence + severity + category chips for one finding, as HTML. Empty string if none apply."""
+    chips = []
+    if finding.get("confidence"):
+        badge = confidence.confidence_badge_html(finding["confidence"])
+        if badge:
+            chips.append(badge)
+    severity_entry = _SEVERITY_CHIPS.get(finding.get("severity"))
+    if severity_entry:
+        cls, label = severity_entry
+        chips.append(f'<span class="chip {cls}">{label}</span>')
+    category_label = CATEGORY_LABELS.get(finding.get("category"))
+    if category_label:
+        chips.append(f'<span class="chip chip-neutral">{category_label}</span>')
+    return "".join(chips)
+
+
+def render_finding_actions(finding, drill_export_page, prep_page) -> None:
+    drill_preset = DRILL_PRESETS.get(finding["title"])
+    if drill_preset and drill_export_page:
+        if st.button("→ Export practice positions",
+                     key=f"drill_{finding['title']}",
+                     help="Open Drill Export with this weakness pre-selected."):
+            st.session_state["_drill_preset"] = drill_preset
+            st.switch_page(drill_export_page)
+
+    if (finding["title"] == "Toughest opponent"
+            and prep_page
+            and finding.get("opponent_name")
+            # Opponent Prep's fetch is lichess-only -- don't offer to
+            # scout a chess.com username (see get_nemesis_opponents).
+            and finding.get("opponent_on_lichess", True)):
+        if st.button("→ Scout this opponent",
+                     key="scout_nemesis",
+                     help="Open Opponent Prep with this player's username pre-filled."):
+            st.session_state["_prep_username"] = finding["opponent_name"]
+            st.switch_page(prep_page)

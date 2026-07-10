@@ -45,6 +45,7 @@ import batch_impact_view
 import ask_view
 import drill_export_view
 import srs_drill_view
+import training_queue_view
 import opening_tree_view
 import prep_view
 import annotate
@@ -273,6 +274,19 @@ explorer_page = st.Page(lambda: game_explorer_view.render(explorer_page, detail_
                          title="Game Explorer", url_path="game-explorer")
 drill_export_page = st.Page(drill_export_view.render, title="Drill Export",
                              url_path="drill-export")
+# Training Center MVP (roadmap S17 Q4 / S19) -- placed in "Explore" next to
+# the practice tools it feeds into (Drill Export, Opponent Prep), not in
+# "Career" alongside the read-only reporting pages it draws its findings
+# from. No new "Training Center" nav group yet: the roadmap's full Phase 5
+# vision (trainers, plans, achievements) doesn't exist yet, and standing up
+# a whole new sidebar group for one page would be premature -- revisit once
+# more Phase 5 pages actually land.
+training_queue_page = st.Page(
+    lambda: training_queue_view.render(drill_export_page=drill_export_page,
+                                        prep_page=prep_page,
+                                        analysis_jobs_page=analysis_jobs_page),
+    title="Training Queue", url_path="training-queue",
+)
 srs_drill_page = st.Page(srs_drill_view.render, title="SRS Drills ✦",
                           url_path="srs-drills")
 opening_tree_page = st.Page(opening_tree_view.render, title="Opening Tree ✦",
@@ -299,8 +313,8 @@ pg = st.navigation({
     "Career": [overview_page, patterns_page, openings_page, matchups_page,
                endings_page, highlights_page, insights_page, points_page,
                evolution_page],
-    "Explore": [explorer_page, drill_export_page, srs_drill_page, opening_tree_page,
-                prep_page, ask_page, detail_page],
+    "Explore": [explorer_page, drill_export_page, training_queue_page, srs_drill_page,
+                opening_tree_page, prep_page, ask_page, detail_page],
     "App": [settings_page, analysis_jobs_page, batch_impact_page, onboarding_page],
     **_pro_nav_groups,
 })

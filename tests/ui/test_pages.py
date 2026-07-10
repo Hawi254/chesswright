@@ -57,6 +57,7 @@ class TestAllCareerPagesRender:
         "openings_view",
         "game_endings_view",
         "insights_view",
+        "training_queue_view",  # render(drill_export_page=None, prep_page=None, analysis_jobs_page=None) defaults
         "points_view",  # render(self_page=None, detail_page=None) defaults
         "srs_drill_view",  # renders upsell when pro_gate inactive, full tabs when active
         "evolution_view",

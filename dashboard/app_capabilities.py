@@ -160,6 +160,18 @@ PAGE_CAPABILITIES = [
         ),
     },
     {
+        "title": "Training Queue",
+        "url_path": "training-queue",
+        "capability": (
+            "The weakness-only subset of Insights' findings (same underlying "
+            "data), sorted by severity, one card per weakness with the same "
+            "'Export practice positions'/'Scout this opponent' shortcut "
+            "buttons Insights has. No data table, no charts, and no findings "
+            "beyond what's already tagged a weakness on Insights -- "
+            "strengths/mixed/neutral findings aren't shown here."
+        ),
+    },
+    {
         "title": "SRS Drills",
         "url_path": "srs-drills",
         "capability": (
