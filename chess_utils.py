@@ -210,6 +210,42 @@ def classify_position_character(fen: str) -> dict:
     }
 
 
+def classify_bishop_color_ending(fen: str):
+    """Classifies same-color vs. opposite-color bishops from a FEN's board
+    field alone -- a square's color is (file_idx + rank_num) % 2 (a1 is
+    file 0/rank 1 -> odd -> dark, the standard alternating pattern).
+    Deliberately NOT a chess.Board() reconstruction, same reasoning as
+    _pawn_files_from_fen: pure square-color geometry needs no legality or
+    move-generation machinery.
+
+    Only meaningful when each side has EXACTLY one bishop on the board --
+    material_sig carries piece counts but no square-color information at
+    all, which is exactly why this needs a real FEN parse instead of a
+    signature-string check (roadmap's Material Structure Explorer Tier 2
+    gap). Returns None for zero, two, or unequal bishop counts per side --
+    the "opposite-color bishops" concept doesn't generalize past 1-vs-1,
+    same "no bucket fits" convention as classify_position_character's
+    callers use for a game that doesn't reach a checkpoint."""
+    board_part = fen.split(" ", 1)[0]
+    white_squares = []
+    black_squares = []
+    for rank_idx, rank_str in enumerate(board_part.split("/")):
+        rank_num = 8 - rank_idx
+        file_idx = 0
+        for ch in rank_str:
+            if ch.isdigit():
+                file_idx += int(ch)
+            else:
+                if ch == "B":
+                    white_squares.append((file_idx + rank_num) % 2)
+                elif ch == "b":
+                    black_squares.append((file_idx + rank_num) % 2)
+                file_idx += 1
+    if len(white_squares) != 1 or len(black_squares) != 1:
+        return None
+    return "same" if white_squares[0] == black_squares[0] else "opposite"
+
+
 def material_delta_for_move(board: chess.Board, move: chess.Move) -> int:
     """Material the MOVER gains by playing this move (captures/promotions),
     evaluated pre-push. Always >= 0 -- a player can never lose material on

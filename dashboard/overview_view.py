@@ -140,7 +140,7 @@ def render(self_page, detail_page, *, patterns_page=None, matchups_page=None,
         unsafe_allow_html=True)
 
     if stats.get("analyzed_games", 0) > 0:
-        findings = cached_career_findings(duck_conn, stats.get("blunder_rate"))
+        findings = cached_career_findings(duck_conn, sqlite_conn, stats.get("blunder_rate"))
         _render_focus_card(findings, {
             "patterns_page": patterns_page,
             "matchups_page": matchups_page,

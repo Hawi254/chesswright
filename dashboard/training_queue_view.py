@@ -43,7 +43,7 @@ def render(drill_export_page=None, prep_page=None, analysis_jobs_page=None):
              "to what's worth practicing and sorted by how much it's costing you.")
 
     stats = cached_headline_stats(duck_conn, sqlite_conn)
-    findings = cached_career_findings(duck_conn, stats["blunder_rate"])
+    findings = cached_career_findings(duck_conn, sqlite_conn, stats["blunder_rate"])
 
     if not findings:
         st.info(theme.thin_data_message(stats["analyzed_games"], 1))

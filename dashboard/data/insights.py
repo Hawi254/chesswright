@@ -19,6 +19,8 @@ findings yet" must be a normal, common state, not a crash or a wall of
 """
 import pandas as pd
 
+import analytics
+import chess_utils
 from . import patterns, matchups, game_endings
 from ._shared import TIME_PRESSURE_BUCKETS, THINKING_TIME_BUCKETS, bucket_acpl_blunder_rate
 from _common import get_config
@@ -37,12 +39,14 @@ MIN_BUCKET_MOVES = 20
 MIN_BACKRANK_MOVES = 20
 MIN_OPPONENT_GAMES = 5
 MIN_CASTLE_GAMES = 5
+MIN_BISHOP_ENDING_MOVES = 20
 
 PIECE_MOVES_THRESHOLDS = default_thresholds(MIN_PIECE_MOVES)
 BUCKET_MOVES_THRESHOLDS = default_thresholds(MIN_BUCKET_MOVES)
 BACKRANK_MOVES_THRESHOLDS = default_thresholds(MIN_BACKRANK_MOVES)
 OPPONENT_GAMES_THRESHOLDS = default_thresholds(MIN_OPPONENT_GAMES)
 CASTLE_GAMES_THRESHOLDS = default_thresholds(MIN_CASTLE_GAMES)
+BISHOP_ENDING_MOVES_THRESHOLDS = default_thresholds(MIN_BISHOP_ENDING_MOVES)
 
 # Severity thresholds are magnitude-based (percentage-point gaps, ratios,
 # rate deltas), not sample-size gates -- reusing confidence_tier()'s
@@ -415,7 +419,85 @@ def _game_endings(duck_conn):
     }
 
 
-def get_career_findings(duck_conn, baseline_blunder_rate, config_path=None):
+def _bishop_color_endings(duck_conn, sqlite_conn, config_path=None):
+    """Classifies each game's endgame-checkpoint position (structure_ctx's
+    endgame_ply -- the same access pattern get_position_character_
+    performance uses for pawn-structure classification) as same-color or
+    opposite-color bishop, the one axis material_sig can never express
+    (piece COUNTS only, no square color) -- Material Structure Explorer
+    Tier 2's gap (roadmap §17 Q1), delivered here as an Insights finding
+    rather than a Patterns-page addition since patterns.py/patterns_view.py/
+    _shared.py are this session's frozen files, still pending review from
+    the Tier 1 unit (§18). Only meaningful when each side has exactly one
+    bishop at that checkpoint (chess_utils.classify_bishop_color_ending
+    returns None otherwise) -- those games are excluded, same "no row"
+    convention as every other structure_ctx consumer.
+
+    ACPL is measured over player moves from endgame_ply ONWARD (the actual
+    ending itself), not the whole game or just the single transition move --
+    checked empirically against the real dev DB before picking this
+    definition: the transition-move-only ACPL (n=82/125) actually reverses
+    direction (opposite 39.3 < same 43.0 -- too thin and noisy to trust),
+    whole-game ACPL (n=3482/5629) shows a real but modest 7.8 CPL gap
+    diluted by opening/middlegame play unrelated to the ending, while
+    restricting to moves >= endgame_ply isolates the technique difference
+    chess theory actually predicts: opposite 125.8 vs. same 95.5 ACPL
+    (n=1224/2364) -- the definition used below. Win/draw rate were checked
+    too and show no real signal on the real dev DB (draw rate 7.5% vs.
+    8.6%, win rate 47.8% vs. 47.6%) -- ACPL, not outcome, is the real
+    finding here."""
+    cfg = get_config(config_path)
+    analytics.ensure_structure_ctx(sqlite_conn, cfg)
+
+    ctx = duck_conn.execute("""
+        SELECT m.game_id, m.fen_before
+        FROM db.structure_ctx_cache sc
+        JOIN db.moves m ON m.game_id = sc.game_id AND m.ply = sc.endgame_ply
+        WHERE sc.endgame_ply IS NOT NULL AND m.fen_before IS NOT NULL
+    """).fetchdf()
+    if ctx.empty:
+        return None
+    ctx["bucket"] = ctx.fen_before.apply(chess_utils.classify_bishop_color_ending)
+    ctx = ctx.dropna(subset=["bucket"])
+    if ctx.bucket.nunique() < 2:
+        return None
+
+    moves = duck_conn.execute("""
+        SELECT m.game_id, m.cpl
+        FROM db.moves m JOIN db.structure_ctx_cache sc ON sc.game_id = m.game_id
+        WHERE m.is_player_move = 1 AND m.cpl IS NOT NULL
+          AND sc.endgame_ply IS NOT NULL AND m.ply >= sc.endgame_ply
+    """).fetchdf()
+    merged = moves.merge(ctx[["game_id", "bucket"]], on="game_id")
+    if merged.empty:
+        return None
+    result = merged.groupby("bucket").agg(
+        n_moves=("cpl", "size"), acpl=("cpl", "mean")).reset_index()
+    result = result[result.n_moves.map(
+        lambda n: confidence_tier(n, BISHOP_ENDING_MOVES_THRESHOLDS) != "insufficient")]
+    opp = result[result.bucket == "opposite"]
+    same = result[result.bucket == "same"]
+    if opp.empty or same.empty:
+        return None
+    opp, same = opp.iloc[0], same.iloc[0]
+    return {
+        "title": "Opposite-color bishop endings",
+        "headline": f"ACPL {opp.acpl:.1f} in opposite-color-bishop endings",
+        "detail": f"vs. {same.acpl:.1f} when both bishops are on the same color, "
+                  f"measured from the point each ending was reached.",
+        "confidence": confidence_tier(min(opp.n_moves, same.n_moves), BISHOP_ENDING_MOVES_THRESHOLDS),
+        "severity": confidence_tier(abs(opp.acpl - same.acpl), ACPL_GAP_SEVERITY_THRESHOLDS),
+        "polarity": "weakness" if opp.acpl > same.acpl else "strength",
+        # "tactical" (not "defense"/"King safety" -- that label is specific
+        # to castling/back-rank king safety, not a fit here), matching
+        # _piece_hotspot/_safest_piece's category for the same shape of
+        # finding: move-quality (ACPL/blunder rate) varying by a structural
+        # feature, not a king-safety concept.
+        "category": "tactical",
+    }
+
+
+def get_career_findings(duck_conn, sqlite_conn, baseline_blunder_rate, config_path=None):
     """Returns a list of {title, headline, detail} dicts, one per finding
     that currently has enough data to say something -- order is the
     fixed display order, not a ranking by "significance" (no principled
@@ -439,7 +521,12 @@ def get_career_findings(duck_conn, baseline_blunder_rate, config_path=None):
       into one card (_thinking_time, _time_pressure, _giant_killing),
       "neutral" for purely informational round-ups/distributions with no
       "worse" direction (_tactical_highlights, _game_endings), otherwise
-      "strength" or "weakness" per that finding's own data."""
+      "strength" or "weakness" per that finding's own data.
+
+    sqlite_conn is needed only by _bishop_color_endings (it calls
+    analytics.ensure_structure_ctx, which requires a real sqlite
+    connection, not a DuckDB one) -- every other finding is duck_conn-only,
+    same as before this parameter was added."""
     moves_df = _fetch_move_correlates(duck_conn)
     candidates = [
         _piece_hotspot(moves_df, baseline_blunder_rate),
@@ -454,5 +541,6 @@ def get_career_findings(duck_conn, baseline_blunder_rate, config_path=None):
         _giant_killing(duck_conn),
         _tactical_highlights(duck_conn, moves_df, config_path),
         _game_endings(duck_conn),
+        _bishop_color_endings(duck_conn, sqlite_conn, config_path),
     ]
     return [f for f in candidates if f is not None]

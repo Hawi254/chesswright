@@ -104,7 +104,7 @@ def render(drill_export_page=None, prep_page=None):
                 help="Average centipawn loss — measures move accuracy across "
                      "analyzed games. Lower is better.")
 
-    findings = cached_career_findings(duck_conn, stats["blunder_rate"])
+    findings = cached_career_findings(duck_conn, sqlite_conn, stats["blunder_rate"])
 
     if not findings:
         st.info(theme.thin_data_message(stats["analyzed_games"], 1))

@@ -20,9 +20,12 @@ import tempfile
 import pandas as pd
 import pytest
 
+import analytics
+from _common import get_config
 from data.insights import (
     _piece_hotspot, _safest_piece, _sharpness, _thinking_time, _time_pressure, _backrank,
     _castling, _nemesis, _best_matchup, _giant_killing, _tactical_highlights, _game_endings,
+    _bishop_color_endings,
 )
 
 
@@ -406,5 +409,76 @@ class TestTacticalHighlightsSmoke:
             assert result["severity"] == "low"
             assert "confidence" not in result
             assert result["polarity"] == "neutral"
+        finally:
+            duck.close(); disk.close(); os.unlink(tmp)
+
+
+@pytest.mark.integration
+class TestBishopColorEndingsSmoke:
+    """_bishop_color_endings needs BOTH connections (sqlite_conn for
+    analytics.ensure_structure_ctx, duck_conn for the FEN scan + ACPL
+    join) -- unlike every other finding in this file. ensure_structure_ctx
+    must run on migrated_db (the LIVE connection) and its write must land
+    BEFORE _duck_from_conn snapshots the file, or the DuckDB-attached copy
+    won't see the structure_ctx_cache rows it just wrote (a real ordering
+    hazard specific to this finding, not needed by any duck_conn-only
+    finding above)."""
+
+    # White bishop c1 (file 2, rank 1, sum=3, odd) same-parity with Black
+    # bishop f8 (file 5, rank 8, sum=13, odd) -> "same".
+    _SAME_FEN = "4kb2/8/8/8/8/8/8/2B1K3 w - - 0 1"
+    # White bishop c1 (odd) vs. Black bishop c8 (file 2, rank 8, sum=10,
+    # even) -> "opposite".
+    _OPPOSITE_FEN = "2bk4/8/8/8/8/8/8/2B1K3 w - - 0 1"
+
+    def _seed_game(self, conn, game_id, fen, cpl):
+        conn.execute(
+            "INSERT INTO games (id, white, black, outcome_for_player, player_color) "
+            "VALUES (?, 'W', 'B', 'win', 'white')", (game_id,))
+        # ply 41: the endgame_ply row -- carries both material_sig (so
+        # compute_structure_context detects it as the endgame checkpoint,
+        # non_pawn_piece_count("B1vB1")=2 <= config's endgame_max_pieces=6)
+        # and fen_before (for the bishop-color classifier). plies 41-45 all
+        # carry cpl so there are enough analyzed moves (5/game) to clear
+        # MIN_BISHOP_ENDING_MOVES=20 across 5 games per bucket.
+        for i, ply in enumerate(range(41, 46)):
+            conn.execute(
+                "INSERT INTO moves (game_id, ply, move_number, color, san, is_player_move, "
+                "cpl, material_sig, fen_before) VALUES (?, ?, ?, 'w', 'Kf2', 1, ?, ?, ?)",
+                (game_id, ply, 21 + i, cpl,
+                 "B1vB1" if ply == 41 else None,
+                 fen if ply == 41 else None))
+
+    def test_new_finding_present_with_expected_shape(self, migrated_db):
+        for i in range(5):
+            self._seed_game(migrated_db, f"same{i}", self._SAME_FEN, cpl=20)
+            self._seed_game(migrated_db, f"opp{i}", self._OPPOSITE_FEN, cpl=100)
+        migrated_db.commit()
+        # Must run BEFORE the DuckDB snapshot below (see class docstring).
+        analytics.ensure_structure_ctx(migrated_db, get_config())
+
+        duck, disk, tmp = _duck_from_conn(migrated_db)
+        try:
+            result = _bishop_color_endings(duck, migrated_db)
+            assert result is not None
+            assert result["category"] == "tactical"
+            # opposite (cpl=100) is worse than same (cpl=20) -> weakness.
+            assert result["polarity"] == "weakness"
+            assert result["severity"] == "high"
+            assert result["confidence"] in ("low", "medium", "high")
+            assert "100.0" in result["headline"]
+            assert "20.0" in result["detail"]
+        finally:
+            duck.close(); disk.close(); os.unlink(tmp)
+
+    def test_returns_none_when_only_one_bucket_present(self, migrated_db):
+        for i in range(5):
+            self._seed_game(migrated_db, f"same{i}", self._SAME_FEN, cpl=20)
+        migrated_db.commit()
+        analytics.ensure_structure_ctx(migrated_db, get_config())
+
+        duck, disk, tmp = _duck_from_conn(migrated_db)
+        try:
+            assert _bishop_color_endings(duck, migrated_db) is None
         finally:
             duck.close(); disk.close(); os.unlink(tmp)

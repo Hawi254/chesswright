@@ -49,7 +49,7 @@ def _build_data_brief(_duck_conn, _sqlite_conn):
     # most expensive queries in the app (~0.4s / ~4.3s) and Overview/Insights
     # have usually already computed them (see cached_queries.py).
     stats = cached_headline_stats(_duck_conn, _sqlite_conn)
-    findings = cached_career_findings(_duck_conn, stats.get("blunder_rate"))
+    findings = cached_career_findings(_duck_conn, _sqlite_conn, stats.get("blunder_rate"))
 
     sections = []
 

@@ -27,8 +27,8 @@ def cached_headline_stats(_duck_conn, _sqlite_conn):
 
 
 @st.cache_data(show_spinner="Scanning your games for career findings…")
-def cached_career_findings(_duck_conn, baseline_blunder_rate):
-    return data.get_career_findings(_duck_conn, baseline_blunder_rate)
+def cached_career_findings(_duck_conn, _sqlite_conn, baseline_blunder_rate):
+    return data.get_career_findings(_duck_conn, _sqlite_conn, baseline_blunder_rate)
 
 
 @st.cache_data(show_spinner="Reading every game's win-probability curve…")
