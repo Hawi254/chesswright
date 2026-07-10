@@ -19,7 +19,7 @@ import claude_narrative
 import data
 import theme
 from _common import get_connections, navigate_on_row_click
-from cached_queries import cached_headline_stats
+from cached_queries import cached_headline_stats, cached_points_ledger
 
 _GK_REASON_LABELS = {
     "hung_piece":     "Hung a piece",
@@ -62,6 +62,11 @@ def cached_color_performance_by_rating(_duck_conn):
 @st.cache_data(show_spinner="Ranking your opponents…")
 def cached_nemesis_opponents(_duck_conn, min_games):
     return data.get_nemesis_opponents(_duck_conn, min_games=min_games)
+
+
+@st.cache_data(show_spinner="Building opponent profile…")
+def cached_opponent_profile(_duck_conn, opponent_name):
+    return data.get_opponent_profile(_duck_conn, opponent_name)
 
 
 
@@ -361,6 +366,50 @@ def _render_nemesis_section(sqlite_conn, duck_conn, prep_page=None):
         chosen_name = st.selectbox("Tell me about this rivalry", opponent_names,
                                     key="opponent_commentary_select")
         chosen_row = nem_df.loc[nem_df.opponent_name == chosen_name].iloc[0]
+
+        st.write(f"Profile against {chosen_name}")
+        profile = cached_opponent_profile(duck_conn, chosen_name)
+        st.caption(f"{profile['n_games']} game(s) total.")
+
+        _PCT_COLS = {"win_pct": st.column_config.NumberColumn("Win %", format="%.1f"),
+                     "blunder_rate": st.column_config.NumberColumn("Blunder %", format="%.1f")}
+
+        def _profile_table(df, caption, width="stretch"):
+            st.caption(caption)
+            if df.empty:
+                st.info(theme.thin_data_message(0, 1))
+                return
+            display_df = df.copy()
+            # acpl can be NaN (opening/bucket with no analyzed moves yet) --
+            # a bare NaN renders as the literal string "None" in st.dataframe
+            # (this codebase's own recurring null-rendering bug, see
+            # openings_view.py's identical fix); "--" reads as "not analyzed
+            # yet," matching the rest of the app's convention.
+            if "acpl" in display_df.columns:
+                display_df["acpl"] = display_df["acpl"].apply(
+                    lambda v: "--" if pd.isna(v) else f"{v:.1f}")
+            column_config = {c: cfg for c, cfg in _PCT_COLS.items() if c in display_df.columns}
+            st.dataframe(display_df, hide_index=True, width=width, column_config=column_config)
+
+        prof_col1, prof_col2 = st.columns(2)
+        with prof_col1:
+            _profile_table(profile["openings"], "By opening")
+        with prof_col2:
+            _profile_table(profile["position"], "By position character")
+
+        prof_col3, prof_col4 = st.columns(2)
+        with prof_col3:
+            _profile_table(profile["castling"], "By castling configuration")
+        with prof_col4:
+            _profile_table(profile["action_side"], "By attack side")
+
+        _profile_table(profile["clock"], "By clock pressure")
+
+        ledger = cached_points_ledger(duck_conn)
+        swindle = data.get_opponent_swindle_rate(ledger, chosen_name)
+        if swindle["n_losses"] > 0:
+            st.caption(f"Missed swindle in {swindle['n_missed_swindle']} of "
+                       f"{swindle['n_losses']} losses ({swindle['swindle_rate_pct']:.0f}%).")
 
         cached = data.get_cached_narrative(sqlite_conn, "opponent", chosen_name)
         if cached:

@@ -7,26 +7,7 @@ import analytics
 from chess_utils import material_balance_cp
 from _common import get_config
 
-from ._shared import _quarterly_zero_fill
-
-
-def _classify_endgame_type(endgame_sig: str) -> str | None:
-    """Map a player-relative material_sig to a broad endgame category.
-
-    material_sig format (from chess_utils.material_signature): piece letters
-    Q/R/B/N/P each followed by their count, white side first, then 'v', then
-    black side. e.g. "R1P5vP4" -> Rook, "B1N1P4vN2P3" -> Minor piece.
-    Kings are NOT in the signature (they're always present, not listed).
-    """
-    if not endgame_sig:
-        return None
-    if "Q" in endgame_sig:
-        return "Queen"
-    if "R" in endgame_sig:
-        return "Rook"
-    if "B" in endgame_sig or "N" in endgame_sig:
-        return "Minor piece"
-    return "King & pawn"
+from ._shared import _classify_endgame_type, _quarterly_zero_fill
 
 
 def get_endgame_type_performance(sqlite_conn, config_path=None):

@@ -418,6 +418,128 @@ class TestMatchupsData:
         finally:
             duck.close(); disk.close(); os.unlink(tmp)
 
+    def test_get_opponent_profile_on_empty_db(self, migrated_db):
+        from data.matchups import get_opponent_profile
+        duck, disk, tmp = _duck_from_conn(migrated_db)
+        try:
+            profile = get_opponent_profile(duck, "NoOne")
+            assert profile["n_games"] == 0
+            assert profile["openings"].empty
+            assert profile["position"].empty
+            assert profile["castling"].empty
+            assert profile["action_side"].empty
+            assert profile["clock"].empty
+        finally:
+            duck.close(); disk.close(); os.unlink(tmp)
+
+    def _seed_opponent_game(self, conn, game_id, opponent_name, opening_family, outcome,
+                            base_seconds, castle_white_sq, castle_black_sq, capture_square,
+                            fen_at_checkpoint, cpl, classification, clock_seconds):
+        """One game exercising all 5 opponent-profile axes at once: an
+        opening_family + outcome/cpl row (openings axis), a ply=24
+        (real config.yaml middlegame_ply) fen_before row (position axis),
+        one castle move per side (castling axis), one capture (action-side
+        axis), and clock_seconds on the same is_player_move cpl row
+        (clock axis)."""
+        conn.execute(
+            "INSERT INTO games (id, white, black, opponent_name, opening_family, "
+            "outcome_for_player, base_seconds) VALUES (?, 'W', 'B', ?, ?, ?, ?)",
+            (game_id, opponent_name, opening_family, outcome, base_seconds))
+        conn.execute(
+            "INSERT INTO moves (game_id, ply, move_number, color, san, is_castle, to_square) "
+            "VALUES (?, 1, 1, 'w', 'O-O', 1, ?)", (game_id, castle_white_sq))
+        conn.execute(
+            "INSERT INTO moves (game_id, ply, move_number, color, san, is_castle, to_square) "
+            "VALUES (?, 2, 1, 'b', 'O-O', 1, ?)", (game_id, castle_black_sq))
+        conn.execute(
+            "INSERT INTO moves (game_id, ply, move_number, color, san, is_capture, to_square) "
+            "VALUES (?, 3, 2, 'w', 'Nxc6', 1, ?)", (game_id, capture_square))
+        conn.execute(
+            "INSERT INTO moves (game_id, ply, move_number, color, san, fen_before) "
+            "VALUES (?, 24, 12, 'w', 'Nf3', ?)", (game_id, fen_at_checkpoint))
+        conn.execute(
+            "INSERT INTO moves (game_id, ply, move_number, color, san, is_player_move, "
+            "cpl, classification, clock_seconds) VALUES (?, 30, 15, 'w', 'Qd2', 1, ?, ?, ?)",
+            (game_id, cpl, classification, clock_seconds))
+        conn.commit()
+
+    def test_get_opponent_profile_seeded(self, migrated_db):
+        """Two games vs. 'Foe' (different openings, one same-side/kingside-
+        heavy win, one opposite-side/queenside-heavy loss) plus a decoy
+        game vs. a different opponent using the SAME opening_family/FEN --
+        confirms the WHERE opponent_name filter, not just the underlying
+        groupby logic (already covered for the whole-DB case by
+        TestPositionCharacterData)."""
+        from data.matchups import get_opponent_profile
+        CLOSED_FEN = "rnbqkbnr/ppp2ppp/4p3/3pP3/3P4/8/PPP2PPP/RNBQKBNR b KQkq - 0 3"
+        OPEN_FEN = "4k3/8/8/8/8/8/8/4K3 w - - 0 1"
+        # g1: same-side castling (kingside/kingside), one kingside capture
+        # (e5) -> kingside-heavy, closed position, comfortable clock (0.5),
+        # no blunder.
+        self._seed_opponent_game(
+            migrated_db, "g1", "Foe", "Sicilian Defense", "win", 300,
+            "g1", "g8", "e5", CLOSED_FEN, 20, "good", 150)
+        # g2: opposite-side castling (queenside/kingside), two queenside
+        # captures -> queenside-heavy, open position, critical clock
+        # (0.033), blunder.
+        self._seed_opponent_game(
+            migrated_db, "g2", "Foe", "French Defense", "loss", 300,
+            "c1", "g8", "b6", OPEN_FEN, 80, "blunder", 10)
+        # g3: decoy, different opponent, same opening/FEN shape as g1 --
+        # must be excluded from every 'Foe' axis below.
+        self._seed_opponent_game(
+            migrated_db, "g3", "Other", "Sicilian Defense", "win", 300,
+            "g1", "g8", "e5", CLOSED_FEN, 20, "good", 150)
+        duck, disk, tmp = _duck_from_conn(migrated_db)
+        try:
+            profile = get_opponent_profile(duck, "Foe")
+            assert profile["n_games"] == 2
+
+            openings = {row.opening_family: (row.n_games, row.win_pct, row.acpl)
+                        for row in profile["openings"].itertuples()}
+            assert openings["Sicilian Defense"] == (1, 100.0, 20.0)
+            assert openings["French Defense"] == (1, 0.0, 80.0)
+
+            position = {row.bucket: (row.n_games, row.win_pct)
+                        for row in profile["position"].itertuples()}
+            assert position["closed"] == (1, 100.0)
+            assert position["open"] == (1, 0.0)
+
+            castling = {row.castling_config: (row.n_games, row.win_pct)
+                        for row in profile["castling"].itertuples()}
+            assert castling["same-side"] == (1, 100.0)
+            assert castling["opposite-side"] == (1, 0.0)
+
+            action_side = {row.action_side: (row.n_games, row.win_pct)
+                           for row in profile["action_side"].itertuples()}
+            assert action_side["kingside-heavy"] == (1, 100.0)
+            assert action_side["queenside-heavy"] == (1, 0.0)
+
+            clock = {row.bucket: (row.n_moves, row.acpl, row.blunder_rate)
+                     for row in profile["clock"].itertuples()}
+            assert clock["comfortable (30-60%)"] == (1, 20.0, 0.0)
+            assert clock["critical (<5%)"] == (1, 80.0, 100.0)
+        finally:
+            duck.close(); disk.close(); os.unlink(tmp)
+
+    def test_get_opponent_swindle_rate(self):
+        """Pure pandas, no DB -- covers the WHERE-opponent filter, the
+        loss-only filter, and the missed_swindle share, plus the
+        None-not-zero convention when there are no losses at all."""
+        import pandas as pd
+        from data.matchups import get_opponent_swindle_rate
+        ledger = pd.DataFrame([
+            {"opponent_name": "Foe", "outcome_for_player": "loss", "bucket": "missed_swindle"},
+            {"opponent_name": "Foe", "outcome_for_player": "loss", "bucket": "none"},
+            {"opponent_name": "Foe", "outcome_for_player": "win", "bucket": "none"},
+            {"opponent_name": "Other", "outcome_for_player": "loss", "bucket": "missed_swindle"},
+        ])
+        result = get_opponent_swindle_rate(ledger, "Foe")
+        assert result == {"n_losses": 2, "n_missed_swindle": 1, "swindle_rate_pct": 50.0}
+
+        no_loss_result = get_opponent_swindle_rate(ledger, "NoOne")
+        assert no_loss_result == {"n_losses": 0, "n_missed_swindle": 0, "swindle_rate_pct": None}
+
 
 @pytest.mark.integration
 class TestTacticalData:

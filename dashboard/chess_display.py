@@ -40,11 +40,14 @@ def material_sig_str(sig: str) -> str:
     _END_TYPE_LABELS already uses for its own chart labels -- the
     underlying cached DataFrame is never mutated.
 
-    Kept intentionally more granular than game_endings.py's 4-bucket
-    _classify_endgame_type (Queen/Rook/Minor/King & pawn): this is for
-    the Patterns page's material-structure breakdown, where the exact
-    piece combination (opposite-colored bishops, queenless middlegame,
-    etc.) is the whole point, not a broad category."""
+    Kept intentionally more granular than data/_shared.py's bucketed
+    classifiers (_classify_endgame_type's Queen/Rook/Minor/King & pawn,
+    _classify_middlegame_trade_tier's No/Light/Moderate/Heavy trades): this
+    per-signature string is for the Patterns page's detailed material-
+    structure table, where the exact piece combination (opposite-colored
+    bishops, queenless middlegame, etc.) is the whole point, not a broad
+    category -- the bucketed classifiers back a separate, coarser grouped
+    view on the same page, not a replacement for this one."""
     def side_str(side: str) -> str:
         pairs = re.findall(r"([QRBNP])(\d+)", side)
         # Preserve chess_utils's own piece order rather than regex match

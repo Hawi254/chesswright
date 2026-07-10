@@ -55,7 +55,7 @@ import pandas as pd
 import analytics
 from _common import get_config
 
-from .game_endings import _classify_endgame_type
+from ._shared import _classify_endgame_type
 
 
 def list_analysis_runs(sqlite_conn) -> pd.DataFrame:

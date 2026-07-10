@@ -73,6 +73,19 @@ def cached_material_structure_table(_sqlite_conn, structure_type):
     return data.get_material_structure_table(_sqlite_conn, structure_type=structure_type)
 
 
+@st.cache_data(show_spinner="Grouping results by broad position category…")
+def cached_material_structure_bucket_table(_sqlite_conn, structure_type):
+    # data.patterns.* (submodule attribute, not data.*) deliberately here --
+    # data/__init__.py is one of six files this build session was told not
+    # to touch (Opponent Profile Analysis unit pending the user's own
+    # commit decision), so this new function isn't re-exported through the
+    # package's usual flat namespace the way every sibling function above
+    # is. Works because __init__.py's own `from .patterns import (...)`
+    # already imports the patterns submodule at package-init time, making
+    # data.patterns accessible regardless.
+    return data.patterns.get_material_structure_bucket_table(_sqlite_conn, structure_type=structure_type)
+
+
 @st.cache_data(show_spinner="Computing accuracy piece by piece…")
 def cached_piece_movement_patterns(_duck_conn):
     return data.get_piece_movement_patterns(_duck_conn)
@@ -607,9 +620,33 @@ def _render_tab_position(sqlite_conn, duck_conn):
         st.caption("Win/draw/loss record and ACPL grouped by the kind of position you ended up "
                    "in (rook endgame, opposite-colored bishops, queenless middlegame, etc.) -- "
                    "a tendency in your own play, not about who you were facing.")
-        structure_type = st.radio("Structure type", ["endgame", "middlegame"], horizontal=True,
-                                   key="material_structure_type")
-        structure_df = cached_material_structure_table(sqlite_conn, structure_type)
+        col_type, col_group = st.columns([3, 2])
+        with col_type:
+            structure_type = st.radio("Structure type", ["endgame", "middlegame"], horizontal=True,
+                                       key="material_structure_type")
+        with col_group:
+            # Grouped view reuses the same taxonomy game_endings.py's
+            # "Endgame type" table already ships (Queen/Rook/Minor
+            # piece/King & pawn) for the endgame case, plus a new
+            # trade-tier taxonomy for middlegame (piece TYPE isn't a
+            # useful split there -- see data/_shared.py's
+            # _classify_middlegame_trade_tier docstring). A toggle, not a
+            # second permanently-visible table: both views are the same
+            # shape (win/draw/loss/ACPL), so showing both stacked would
+            # mostly be redundant vertical space, not new information --
+            # chess_display.material_sig_str's docstring's "both views
+            # have a place" is honored by one click away, not by always-on
+            # duplication.
+            grouped = st.checkbox("Group into broad categories", key="material_structure_grouped",
+                                   help="Queen/Rook/Minor piece/King & pawn for endgame; "
+                                        "No/Light/Moderate/Heavy trades for middlegame -- vs. "
+                                        "the exact material signature below.")
+        if grouped:
+            structure_df = cached_material_structure_bucket_table(sqlite_conn, structure_type)
+            label_col, label_header = "bucket", "Category"
+        else:
+            structure_df = cached_material_structure_table(sqlite_conn, structure_type)
+            label_col, label_header = "material_sig", "Position Type"
         # win_pct/draw_pct/loss_pct come from ALL games (ingest-time, no
         # engine needed) and are always populated; acpl/n_analyzed need an
         # engine pass, so most structures show acpl=NaN right now (185 of
@@ -624,14 +661,15 @@ def _render_tab_position(sqlite_conn, duck_conn):
         display_df = structure_df.copy()
         display_df["acpl"] = display_df["acpl"].apply(
             lambda v: "--" if pd.isna(v) else f"{v:.1f}")
-        # Display-layer only -- chess_utils.material_signature()'s raw
-        # "Q1R1B1P6vQ1R1B1P6" encoding is accurate but not meant for a
-        # reader; cached_material_structure_table's own DataFrame (and
-        # its st.cache_data entry) is untouched.
-        display_df["material_sig"] = display_df["material_sig"].apply(
-            chess_display.material_sig_str)
+        if not grouped:
+            # Display-layer only -- chess_utils.material_signature()'s raw
+            # "Q1R1B1P6vQ1R1B1P6" encoding is accurate but not meant for a
+            # reader; cached_material_structure_table's own DataFrame (and
+            # its st.cache_data entry) is untouched.
+            display_df["material_sig"] = display_df["material_sig"].apply(
+                chess_display.material_sig_str)
         st.dataframe(display_df, width='stretch', hide_index=True, column_config={
-            "material_sig": "Position Type",
+            label_col: label_header,
             "n_games": "Games",
             "win_pct": st.column_config.NumberColumn("Win %", format="%.1f"),
             "draw_pct": st.column_config.NumberColumn("Draw %", format="%.1f"),

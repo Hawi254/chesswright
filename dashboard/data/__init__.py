@@ -68,7 +68,7 @@ from .matchups import (
     get_win_rate_by_rating_diff, get_comeback_collapse_counts,
     get_color_performance_by_rating, get_giant_killing_counts,
     get_nemesis_opponents, get_giant_killing_collapse_causes,
-    get_giant_killing_rate_trend,
+    get_giant_killing_rate_trend, get_opponent_profile, get_opponent_swindle_rate,
 )
 from .game_endings import (
     get_game_end_type_breakdown, get_endgame_type_performance, get_resignation_loss_causes,
@@ -157,7 +157,7 @@ __all__ = [
     "get_win_rate_by_rating_diff", "get_comeback_collapse_counts",
     "get_color_performance_by_rating", "get_giant_killing_counts",
     "get_nemesis_opponents", "get_giant_killing_collapse_causes",
-    "get_giant_killing_rate_trend",
+    "get_giant_killing_rate_trend", "get_opponent_profile", "get_opponent_swindle_rate",
     "get_game_end_type_breakdown", "get_endgame_type_performance", "get_resignation_loss_causes",
     "get_resignation_time_pressure_trend",
     "RIM_SQL",

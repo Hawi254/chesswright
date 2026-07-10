@@ -1,14 +1,17 @@
 """Matchups and Opponents page queries."""
 import pandas as pd
 
+import chess_utils
 from _common import get_config
 from confidence import confidence_tier, default_thresholds
 
 from ._shared import (
     GIANT_KILLING_UPSET_THRESHOLD, GIANT_KILLING_COLLAPSE_THRESHOLD,
     COMEBACK_WP_THRESHOLD, COLLAPSE_WP_THRESHOLD, _quarterly_zero_fill,
+    TIME_PRESSURE_BUCKETS, bucket_acpl_blunder_rate,
 )
 from .game_endings import MATE_DISTANCE_BUCKETS
+from .patterns import _classify_castling_config, _classify_action_side
 
 
 def get_win_rate_by_rating_diff(duck_conn, band_width=100, band_range=500):
@@ -339,3 +342,140 @@ def get_giant_killing_rate_trend(duck_conn):
     df["pct_upset"] = 100.0 * df["n_upset"] / df["n_underdog"].where(df["n_underdog"] > 0)
     df["pct_collapse"] = 100.0 * df["n_collapse"] / df["n_favorite"].where(df["n_favorite"] > 0)
     return df[cols]
+
+
+def get_opponent_profile(duck_conn, opponent_name, config_path=None):
+    """Per-opponent breakdown across openings, position character,
+    castling/attack-side, and clock pressure -- each axis re-scopes an
+    existing classification (chess_utils.classify_position_character,
+    patterns._classify_castling_config/_classify_action_side,
+    _shared.bucket_acpl_blunder_rate + TIME_PRESSURE_BUCKETS) to
+    WHERE opponent_name = ? instead of its usual whole-database grouping.
+    No new chess-analysis logic, only new grouping scope.
+
+    Row counts per opponent are small (rarely more than a few dozen
+    games), so plain pandas .apply() for the castling/position
+    classifiers is fine here -- unlike the whole-database case that
+    caused a real ~280x slowdown elsewhere in this codebase (see
+    chess_utils.classify_position_character's caller), that anti-pattern
+    is about scale, not about .apply() itself.
+
+    Returns a dict: n_games (int, total games vs this opponent),
+    openings (DataFrame: opening_family, n_games, win_pct, acpl),
+    position (DataFrame: bucket, n_games, win_pct -- open/semi-open/closed),
+    castling (DataFrame: castling_config, n_games, win_pct),
+    action_side (DataFrame: action_side, n_games, win_pct),
+    clock (DataFrame: bucket, n_moves, acpl, blunder_rate -- TIME_PRESSURE_BUCKETS).
+    Every DataFrame is empty (not None) when its underlying data is empty,
+    same convention as every other query function in this module.
+    """
+    cfg = get_config(config_path)
+    middlegame_ply = cfg["analytics"]["middlegame_ply"]
+    ratio = cfg["analytics"]["action_side_capture_ratio"]
+
+    n_games = duck_conn.execute(
+        "SELECT COUNT(*) FROM db.games WHERE opponent_name = ?", [opponent_name]).fetchone()[0]
+
+    openings = duck_conn.execute("""
+        SELECT g.opening_family, COUNT(DISTINCT g.id) AS n_games,
+               100.0 * SUM(CASE WHEN g.outcome_for_player='win' THEN 1 ELSE 0 END) / COUNT(DISTINCT g.id) AS win_pct,
+               AVG(m.cpl) AS acpl
+        FROM db.games g
+        LEFT JOIN db.moves m ON m.game_id = g.id AND m.is_player_move=1 AND m.cpl IS NOT NULL
+        WHERE g.opponent_name = ? AND g.opening_family IS NOT NULL AND g.outcome_for_player IS NOT NULL
+        GROUP BY g.opening_family
+        ORDER BY n_games DESC
+    """, [opponent_name]).fetchdf()
+
+    position_ctx = duck_conn.execute(f"""
+        SELECT m.game_id, m.fen_before, g.outcome_for_player
+        FROM db.moves m JOIN db.games g ON g.id = m.game_id
+        WHERE m.ply = {middlegame_ply} AND m.fen_before IS NOT NULL AND g.opponent_name = ?
+    """, [opponent_name]).fetchdf()
+    if position_ctx.empty:
+        position = pd.DataFrame(columns=["bucket", "n_games", "win_pct"])
+    else:
+        classified = pd.DataFrame(
+            position_ctx["fen_before"].apply(chess_utils.classify_position_character).tolist())
+        position_ctx = pd.concat(
+            [position_ctx.drop(columns=["fen_before"]), classified], axis=1)
+        sub = position_ctx.dropna(subset=["outcome_for_player"])
+        if sub.empty:
+            position = pd.DataFrame(columns=["bucket", "n_games", "win_pct"])
+        else:
+            position = sub.groupby("bucket").agg(
+                n_games=("game_id", "count"),
+                win_pct=("outcome_for_player", lambda s: 100.0 * (s == "win").sum() / len(s)),
+            ).reset_index()
+
+    side_ctx = duck_conn.execute("""
+        SELECT g.id AS game_id, g.outcome_for_player,
+               MAX(CASE WHEN m.is_castle=1 AND m.color='w' THEN m.to_square END) AS white_castle_sq,
+               MAX(CASE WHEN m.is_castle=1 AND m.color='b' THEN m.to_square END) AS black_castle_sq,
+               SUM(CASE WHEN m.is_capture=1 AND substr(m.to_square,1,1) IN ('a','b','c','d')
+                        THEN 1 ELSE 0 END) AS q_caps,
+               SUM(CASE WHEN m.is_capture=1 AND substr(m.to_square,1,1) IN ('e','f','g','h')
+                        THEN 1 ELSE 0 END) AS k_caps
+        FROM db.games g JOIN db.moves m ON m.game_id = g.id
+        WHERE g.opponent_name = ?
+        GROUP BY g.id, g.outcome_for_player
+    """, [opponent_name]).fetchdf()
+    if side_ctx.empty:
+        castling = pd.DataFrame(columns=["castling_config", "n_games", "win_pct"])
+        action_side = pd.DataFrame(columns=["action_side", "n_games", "win_pct"])
+    else:
+        side_ctx["castling_config"] = side_ctx.apply(
+            lambda r: _classify_castling_config(r["white_castle_sq"], r["black_castle_sq"]), axis=1)
+        side_ctx["action_side"] = side_ctx.apply(
+            lambda r: _classify_action_side(r["q_caps"], r["k_caps"], ratio), axis=1)
+        sub = side_ctx.dropna(subset=["outcome_for_player"])
+        if sub.empty:
+            castling = pd.DataFrame(columns=["castling_config", "n_games", "win_pct"])
+            action_side = pd.DataFrame(columns=["action_side", "n_games", "win_pct"])
+        else:
+            castling = sub.groupby("castling_config").agg(
+                n_games=("game_id", "count"),
+                win_pct=("outcome_for_player", lambda s: 100.0 * (s == "win").sum() / len(s)),
+            ).reset_index()
+            action_side = sub.groupby("action_side").agg(
+                n_games=("game_id", "count"),
+                win_pct=("outcome_for_player", lambda s: 100.0 * (s == "win").sum() / len(s)),
+            ).reset_index()
+
+    clock_df = duck_conn.execute("""
+        SELECT m.cpl, m.classification,
+               CAST(m.clock_seconds AS DOUBLE) / g.base_seconds AS time_fraction
+        FROM db.moves m JOIN db.games g ON g.id = m.game_id
+        WHERE m.is_player_move=1 AND m.cpl IS NOT NULL
+          AND m.clock_seconds IS NOT NULL AND g.base_seconds IS NOT NULL AND g.base_seconds > 0
+          AND g.opponent_name = ?
+    """, [opponent_name]).fetchdf()
+    clock = bucket_acpl_blunder_rate(clock_df, "time_fraction", TIME_PRESSURE_BUCKETS)
+
+    return {
+        "n_games": n_games,
+        "openings": openings,
+        "position": position,
+        "castling": castling,
+        "action_side": action_side,
+        "clock": clock,
+    }
+
+
+def get_opponent_swindle_rate(points_ledger, opponent_name):
+    """Pure pandas, no I/O -- points_ledger is the already-classified
+    ledger (points.get_points_ledger + points.classify_points_ledger,
+    fetched once and cached elsewhere as cached_queries.cached_points_ledger),
+    which already carries opponent_name and bucket per row. Filters to
+    this opponent's losses and reports what share were missed swindles.
+    Returns {n_losses, n_missed_swindle, swindle_rate_pct} --
+    swindle_rate_pct is None (not 0) when n_losses is 0, same
+    zero-vs-no-data discipline as every other rate in this codebase."""
+    sub = points_ledger[points_ledger.opponent_name == opponent_name]
+    losses = sub[sub.outcome_for_player == "loss"]
+    n_losses = len(losses)
+    if n_losses == 0:
+        return {"n_losses": 0, "n_missed_swindle": 0, "swindle_rate_pct": None}
+    n_missed = int((losses.bucket == "missed_swindle").sum())
+    return {"n_losses": n_losses, "n_missed_swindle": n_missed,
+            "swindle_rate_pct": 100.0 * n_missed / n_losses}
