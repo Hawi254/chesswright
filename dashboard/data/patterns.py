@@ -474,6 +474,124 @@ def get_clock_pressure_by_rating_bucket(duck_conn, config_path=None):
     return pd.concat(frames, ignore_index=True)
 
 
+def get_clock_pressure_by_outcome(duck_conn):
+    """Clock-pressure (TIME_PRESSURE_BUCKETS) ACPL/blunder-rate crossed
+    with game outcome -- same shape as get_clock_pressure_by_rating_bucket,
+    but the crossed dimension is outcome_for_player instead of the rating
+    bucket, restricted to 'win'/'loss' (draws excluded: this is a two-pane
+    won-vs-lost comparison, and a draw doesn't fit either pane). Reuses
+    bucket_acpl_blunder_rate the same way, once per outcome subset.
+
+    Returns a long-form DataFrame: outcome, time_bucket, n_moves, acpl,
+    blunder_rate."""
+    df = duck_conn.execute("""
+        SELECT g.outcome_for_player, m.cpl, m.classification,
+               CAST(m.clock_seconds AS DOUBLE) / g.base_seconds AS time_fraction
+        FROM db.moves m JOIN db.games g ON g.id = m.game_id
+        WHERE m.is_player_move=1 AND m.cpl IS NOT NULL
+          AND m.clock_seconds IS NOT NULL AND g.base_seconds IS NOT NULL AND g.base_seconds > 0
+          AND g.outcome_for_player IN ('win', 'loss')
+    """).fetchdf()
+
+    frames = []
+    for label in ["win", "loss"]:
+        sub = df[df.outcome_for_player == label]
+        bucketed = bucket_acpl_blunder_rate(sub, "time_fraction", TIME_PRESSURE_BUCKETS)
+        if not bucketed.empty:
+            bucketed = bucketed.rename(columns={"bucket": "time_bucket"})
+            bucketed.insert(0, "outcome", label)
+            frames.append(bucketed)
+    if not frames:
+        return pd.DataFrame(columns=["outcome", "time_bucket", "n_moves", "acpl", "blunder_rate"])
+    return pd.concat(frames, ignore_index=True)
+
+
+def get_clock_pressure_by_color(duck_conn):
+    """Clock-pressure (TIME_PRESSURE_BUCKETS) ACPL/blunder-rate crossed
+    with player_color -- same shape as get_clock_pressure_by_rating_bucket,
+    but the crossed dimension is which color was played. Both 'white' and
+    'black' are always meaningful (no filtering needed beyond the base
+    per-move WHERE), unlike the outcome variant's win/loss-only restriction.
+    Reuses bucket_acpl_blunder_rate once per color subset.
+
+    Returns a long-form DataFrame: color, time_bucket, n_moves, acpl,
+    blunder_rate."""
+    df = duck_conn.execute("""
+        SELECT g.player_color, m.cpl, m.classification,
+               CAST(m.clock_seconds AS DOUBLE) / g.base_seconds AS time_fraction
+        FROM db.moves m JOIN db.games g ON g.id = m.game_id
+        WHERE m.is_player_move=1 AND m.cpl IS NOT NULL
+          AND m.clock_seconds IS NOT NULL AND g.base_seconds IS NOT NULL AND g.base_seconds > 0
+    """).fetchdf()
+
+    frames = []
+    for label in ["white", "black"]:
+        sub = df[df.player_color == label]
+        bucketed = bucket_acpl_blunder_rate(sub, "time_fraction", TIME_PRESSURE_BUCKETS)
+        if not bucketed.empty:
+            bucketed = bucketed.rename(columns={"bucket": "time_bucket"})
+            bucketed.insert(0, "color", label)
+            frames.append(bucketed)
+    if not frames:
+        return pd.DataFrame(columns=["color", "time_bucket", "n_moves", "acpl", "blunder_rate"])
+    return pd.concat(frames, ignore_index=True)
+
+
+def get_clock_pressure_by_opening(duck_conn, config_path=None, top_n=None):
+    """Clock-pressure (TIME_PRESSURE_BUCKETS) ACPL/blunder-rate crossed
+    with opening_family -- same shape as get_clock_pressure_by_rating_bucket,
+    but the crossed dimension is opening family, capped to the top_n
+    opening families (default cfg["analytics"]["top_n_openings"], same
+    config key get_openings_by_rating_bucket uses) by total analyzed-move
+    count. Reuses bucket_acpl_blunder_rate once per family subset.
+
+    Unlike get_openings_by_rating_bucket, this deliberately does NOT add a
+    "family must be present in every bucket" completeness filter --
+    TIME_PRESSURE_BUCKETS has 5 buckets total, but the view layer only ever
+    compares 2 of them (the two most contrastive extremes: "critical (<5%)"
+    vs. "plenty (60-100%)"), so completeness-checking happens at the view
+    layer against just those two buckets, not all 5. Pre-filtering to
+    "present in all 5" here would be needlessly strict and would drop
+    openings that are fine for the actual 2-bucket comparison being
+    rendered.
+
+    Returns a long-form DataFrame: opening_family, time_bucket, n_moves,
+    acpl, blunder_rate -- sorted by (opening_family, time_bucket)."""
+    cfg = get_config(config_path)
+    top_n = top_n or cfg["analytics"]["top_n_openings"]
+
+    df = duck_conn.execute("""
+        SELECT g.opening_family, m.cpl, m.classification,
+               CAST(m.clock_seconds AS DOUBLE) / g.base_seconds AS time_fraction
+        FROM db.moves m JOIN db.games g ON g.id = m.game_id
+        WHERE m.is_player_move=1 AND m.cpl IS NOT NULL
+          AND m.clock_seconds IS NOT NULL AND g.base_seconds IS NOT NULL AND g.base_seconds > 0
+          AND g.opening_family IS NOT NULL
+    """).fetchdf()
+    cols = ["opening_family", "time_bucket", "n_moves", "acpl", "blunder_rate"]
+    if df.empty:
+        return pd.DataFrame(columns=cols)
+
+    counts = df.groupby("opening_family").size().sort_values(ascending=False)
+    top_families = set(counts.head(top_n).index)
+    df = df[df.opening_family.isin(top_families)]
+    if df.empty:
+        return pd.DataFrame(columns=cols)
+
+    frames = []
+    for label in sorted(top_families):
+        sub = df[df.opening_family == label]
+        bucketed = bucket_acpl_blunder_rate(sub, "time_fraction", TIME_PRESSURE_BUCKETS)
+        if not bucketed.empty:
+            bucketed = bucketed.rename(columns={"bucket": "time_bucket"})
+            bucketed.insert(0, "opening_family", label)
+            frames.append(bucketed)
+    if not frames:
+        return pd.DataFrame(columns=cols)
+    return pd.concat(frames, ignore_index=True).sort_values(
+        ["opening_family", "time_bucket"]).reset_index(drop=True)
+
+
 def get_openings_by_rating_bucket(duck_conn, config_path=None, top_n=None):
     """Win rate by (rating_bucket, opening_family) -- mirrors
     openings.get_openings_table's GROUP BY shape but crosses opening_family

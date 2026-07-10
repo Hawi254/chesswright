@@ -61,6 +61,7 @@ from .patterns import (
     get_position_character_performance, get_game_side_performance,
     get_square_blunder_heatmap,
     get_favorite_underdog_performance, get_clock_pressure_by_rating_bucket,
+    get_clock_pressure_by_outcome, get_clock_pressure_by_color, get_clock_pressure_by_opening,
     get_openings_by_rating_bucket, get_session_rollup,
 )
 from .matchups import (
@@ -151,6 +152,7 @@ __all__ = [
     "get_position_character_performance", "get_game_side_performance",
     "get_square_blunder_heatmap",
     "get_favorite_underdog_performance", "get_clock_pressure_by_rating_bucket",
+    "get_clock_pressure_by_outcome", "get_clock_pressure_by_color", "get_clock_pressure_by_opening",
     "get_openings_by_rating_bucket", "get_session_rollup",
     "get_win_rate_by_rating_diff", "get_comeback_collapse_counts",
     "get_color_performance_by_rating", "get_giant_killing_counts",

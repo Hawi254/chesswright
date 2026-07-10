@@ -138,6 +138,21 @@ def cached_clock_pressure_by_rating_bucket(_duck_conn):
     return data.get_clock_pressure_by_rating_bucket(_duck_conn)
 
 
+@st.cache_data(show_spinner="Computing clock pressure by win/loss…")
+def cached_clock_pressure_by_outcome(_duck_conn):
+    return data.get_clock_pressure_by_outcome(_duck_conn)
+
+
+@st.cache_data(show_spinner="Computing clock pressure by color…")
+def cached_clock_pressure_by_color(_duck_conn):
+    return data.get_clock_pressure_by_color(_duck_conn)
+
+
+@st.cache_data(show_spinner="Computing clock pressure by opening…")
+def cached_clock_pressure_by_opening(_duck_conn):
+    return data.get_clock_pressure_by_opening(_duck_conn)
+
+
 @st.cache_data(show_spinner="Computing openings by favorite/underdog…")
 def cached_openings_by_rating_bucket(_duck_conn):
     return data.get_openings_by_rating_bucket(_duck_conn)
@@ -360,6 +375,80 @@ def _render_tab_comparisons(sqlite_conn, duck_conn):
                     "n_games": "Games",
                     "win_pct": st.column_config.NumberColumn("Win %", format="%.1f"),
                 })
+
+    with st.container(border=True):
+        st.subheader("Clock pressure: wins vs. losses")
+        st.caption("Accuracy and blunder rate under time pressure, split by whether you won or "
+                   "lost the game. Draws are excluded -- this compares the two clearest outcomes.")
+        co_df = cached_clock_pressure_by_outcome(duck_conn)
+        if co_df.empty:
+            st.info(theme.thin_data_message(0, 1))
+        else:
+            win_cp = co_df[co_df.outcome == "win"]
+            loss_cp = co_df[co_df.outcome == "loss"]
+
+            st.write("**ACPL by clock pressure**")
+            fig = theme.render_comparison_panel(
+                [{"df": win_cp, "x": "time_bucket", "y": "acpl", "label": "Won"},
+                 {"df": loss_cp, "x": "time_bucket", "y": "acpl", "label": "Lost"}],
+                mode="overlay", x_title="Clock remaining", y_title="ACPL (lower = more accurate)")
+            st.plotly_chart(fig, theme=None)
+
+            st.write("**Blunder rate by clock pressure**")
+            fig2 = theme.render_comparison_panel(
+                [{"df": win_cp, "x": "time_bucket", "y": "blunder_rate", "label": "Won"},
+                 {"df": loss_cp, "x": "time_bucket", "y": "blunder_rate", "label": "Lost"}],
+                mode="overlay", x_title="Clock remaining", y_title="Blunder rate (% of moves)")
+            st.plotly_chart(fig2, theme=None)
+
+    with st.container(border=True):
+        st.subheader("Clock pressure: as White vs. as Black")
+        st.caption("Accuracy and blunder rate under time pressure, split by which color you "
+                   "played.")
+        cc_df = cached_clock_pressure_by_color(duck_conn)
+        if cc_df.empty:
+            st.info(theme.thin_data_message(0, 1))
+        else:
+            white_cp = cc_df[cc_df.color == "white"]
+            black_cp = cc_df[cc_df.color == "black"]
+
+            st.write("**ACPL by clock pressure**")
+            fig3 = theme.render_comparison_panel(
+                [{"df": white_cp, "x": "time_bucket", "y": "acpl", "label": "White"},
+                 {"df": black_cp, "x": "time_bucket", "y": "acpl", "label": "Black"}],
+                mode="overlay", x_title="Clock remaining", y_title="ACPL (lower = more accurate)")
+            st.plotly_chart(fig3, theme=None)
+
+            st.write("**Blunder rate by clock pressure**")
+            fig4 = theme.render_comparison_panel(
+                [{"df": white_cp, "x": "time_bucket", "y": "blunder_rate", "label": "White"},
+                 {"df": black_cp, "x": "time_bucket", "y": "blunder_rate", "label": "Black"}],
+                mode="overlay", x_title="Clock remaining", y_title="Blunder rate (% of moves)")
+            st.plotly_chart(fig4, theme=None)
+
+    with st.container(border=True):
+        st.subheader("Openings: accuracy under time pressure")
+        st.caption("ACPL by opening family, comparing your most critical clock situations "
+                   "(under 5% of your base time left) against comfortable ones (60%+ left) -- "
+                   "restricted to opening families with analyzed moves in both, and capped to "
+                   "your most-played opening families.")
+        cpo_df = cached_clock_pressure_by_opening(duck_conn)
+        if cpo_df.empty:
+            st.info(theme.thin_data_message(0, 1))
+        else:
+            critical_o = cpo_df[cpo_df.time_bucket == "critical (<5%)"]
+            plenty_o = cpo_df[cpo_df.time_bucket == "plenty (60-100%)"]
+            common_families = set(critical_o.opening_family) & set(plenty_o.opening_family)
+            critical_o = critical_o[critical_o.opening_family.isin(common_families)]
+            plenty_o = plenty_o[plenty_o.opening_family.isin(common_families)]
+            if critical_o.empty:
+                st.info(theme.thin_data_message(0, 1))
+            else:
+                fig5 = theme.render_comparison_panel(
+                    [{"df": critical_o, "x": "opening_family", "y": "acpl", "label": "Critical clock"},
+                     {"df": plenty_o, "x": "opening_family", "y": "acpl", "label": "Plenty of clock"}],
+                    mode="overlay", x_title="Opening", y_title="ACPL (lower = more accurate)")
+                st.plotly_chart(fig5, theme=None)
 
 
 @st.fragment
