@@ -7,6 +7,7 @@ import pandas as pd
 import analytics
 import chess_utils
 from _common import get_config
+from confidence import default_thresholds
 
 from ._shared import (TIME_PRESSURE_BUCKETS, THINKING_TIME_BUCKETS, bucket_acpl_blunder_rate,
                        _fetchone_scalar)
@@ -170,7 +171,15 @@ def get_material_structure_table(sqlite_conn, structure_type="endgame", config_p
     total, same reasoning as the get_openings_table fix above."""
     cfg = get_config(config_path)
     analytics.ensure_structure_ctx(sqlite_conn, cfg)
+    # Config-driven (not a hardcoded constant like this module's other
+    # thresholds), but still doubles as confidence.py's "low" tier
+    # threshold via default_thresholds() -- see confidence.py's module
+    # docstring for the shared 3x/8x scheme. Not attached to the returned
+    # frame as a column: patterns_view.py renders it via st.dataframe with
+    # no column allowlist, so a new column would leak into the UI -- left
+    # as a future badge hook, not wired in here.
     min_games = cfg["analytics"]["structure_min_games_per_group"]
+    _thresholds = default_thresholds(min_games)  # noqa: F841 (future badge hook)
     sig_col = "middlegame_sig" if structure_type == "middlegame" else "endgame_sig"
 
     counts = sqlite_conn.execute(f"""

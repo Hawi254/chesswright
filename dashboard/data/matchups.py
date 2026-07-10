@@ -2,6 +2,7 @@
 import pandas as pd
 
 from _common import get_config
+from confidence import confidence_tier, default_thresholds
 
 from ._shared import (
     GIANT_KILLING_UPSET_THRESHOLD, GIANT_KILLING_COLLAPSE_THRESHOLD,
@@ -127,7 +128,14 @@ def get_nemesis_opponents(duck_conn, min_games=5):
     expected_score_pct/surprise_pct are computed only from games with a
     recorded rating_diff (n_rated) -- NaN when n_rated is 0 for an
     opponent (only possible if this database ever has unrated games;
-    zero such rows exist on the real dev DB today)."""
+    zero such rows exist on the real dev DB today).
+
+    min_games remains the hard SQL gate below (unchanged); it doubles as
+    confidence.py's "low" tier threshold via default_thresholds(), so the
+    returned frame also carries a confidence_tier column (every row is
+    at least "low" by construction) for future badge use without
+    changing which opponents are returned."""
+    thresholds = default_thresholds(min_games)
     # all_lichess gates the Opponent Prep deep link: prep's fetch pipeline
     # (sync.py) is lichess-only, so a chess.com opponent's name pre-filled
     # into it would scout the wrong (or a nonexistent) player. Names are
@@ -151,6 +159,7 @@ def get_nemesis_opponents(duck_conn, min_games=5):
     df["score_pct"] = 100.0 * (df.wins + 0.5 * df.draws) / df.n
     df["expected_score_pct"] = 100.0 * df["expected_score_frac"]
     df["surprise_pct"] = df["score_pct"] - df["expected_score_pct"]
+    df["confidence_tier"] = df.n.map(lambda n: confidence_tier(n, thresholds))
     return df.drop(columns=["expected_score_frac"])
 
 

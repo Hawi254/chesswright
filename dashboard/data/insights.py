@@ -22,16 +22,27 @@ import pandas as pd
 from . import patterns, matchups, game_endings
 from ._shared import TIME_PRESSURE_BUCKETS, THINKING_TIME_BUCKETS, bucket_acpl_blunder_rate
 from _common import get_config
+from confidence import confidence_tier, default_thresholds
 
 # Minimum sample sizes below are deliberately conservative and ad hoc --
 # there's no statistical test here, just "enough rows that one outlier
 # move/game can't dominate the number," consistent with how thin a
-# starter dataset (BRIEF.md Phase B) is expected to be early on.
+# starter dataset (BRIEF.md Phase B) is expected to be early on. Each
+# constant is still the exact hard gate used below (unchanged); it now
+# also doubles as confidence.py's "low" tier threshold via
+# default_thresholds(), so medium/high tiers exist for future badge use
+# without changing which rows/findings pass the gate today.
 MIN_PIECE_MOVES = 20
 MIN_BUCKET_MOVES = 20
 MIN_BACKRANK_MOVES = 20
 MIN_OPPONENT_GAMES = 5
 MIN_CASTLE_GAMES = 5
+
+PIECE_MOVES_THRESHOLDS = default_thresholds(MIN_PIECE_MOVES)
+BUCKET_MOVES_THRESHOLDS = default_thresholds(MIN_BUCKET_MOVES)
+BACKRANK_MOVES_THRESHOLDS = default_thresholds(MIN_BACKRANK_MOVES)
+OPPONENT_GAMES_THRESHOLDS = default_thresholds(MIN_OPPONENT_GAMES)
+CASTLE_GAMES_THRESHOLDS = default_thresholds(MIN_CASTLE_GAMES)
 
 
 def _fetch_move_correlates(duck_conn):
@@ -65,7 +76,8 @@ def _piece_hotspot(moves_df, baseline_blunder_rate):
         n_moves=("cpl", "size"),
         blunder_rate=("classification", lambda s: 100.0 * (s == "blunder").sum() / len(s)),
     ).reset_index()
-    grouped = grouped[grouped.n_moves >= MIN_PIECE_MOVES]
+    grouped = grouped[grouped.n_moves.map(
+        lambda n: confidence_tier(n, PIECE_MOVES_THRESHOLDS) != "insufficient")]
     if grouped.empty:
         return None
     row = grouped.loc[grouped.blunder_rate.idxmax()]
@@ -82,7 +94,8 @@ def _piece_hotspot(moves_df, baseline_blunder_rate):
 def _sharpness(moves_df):
     df = moves_df.dropna(subset=["sharpness"])
     bucketed = bucket_acpl_blunder_rate(df, "sharpness", patterns.SHARPNESS_BUCKETS)
-    bucketed = bucketed[bucketed.n_moves >= MIN_BUCKET_MOVES]
+    bucketed = bucketed[bucketed.n_moves.map(
+        lambda n: confidence_tier(n, BUCKET_MOVES_THRESHOLDS) != "insufficient")]
     if len(bucketed) < 2:
         return None
     flat, forcing = bucketed.iloc[0], bucketed.iloc[-1]
@@ -98,7 +111,8 @@ def _sharpness(moves_df):
 def _thinking_time(moves_df):
     df = moves_df[moves_df.time_spent_seconds.notna() & (moves_df.time_spent_seconds >= 0)]
     bucketed = bucket_acpl_blunder_rate(df, "time_spent_seconds", THINKING_TIME_BUCKETS)
-    bucketed = bucketed[bucketed.n_moves >= MIN_BUCKET_MOVES]
+    bucketed = bucketed[bucketed.n_moves.map(
+        lambda n: confidence_tier(n, BUCKET_MOVES_THRESHOLDS) != "insufficient")]
     if len(bucketed) < 2:
         return None
     worst = bucketed.loc[bucketed.blunder_rate.idxmax()]
@@ -119,7 +133,8 @@ def _time_pressure(moves_df):
     df = df.copy()
     df["time_fraction"] = df.clock_seconds / df.base_seconds
     bucketed = bucket_acpl_blunder_rate(df, "time_fraction", TIME_PRESSURE_BUCKETS)
-    bucketed = bucketed[bucketed.n_moves >= MIN_BUCKET_MOVES]
+    bucketed = bucketed[bucketed.n_moves.map(
+        lambda n: confidence_tier(n, BUCKET_MOVES_THRESHOLDS) != "insufficient")]
     if len(bucketed) < 2:
         return None
     worst = bucketed.loc[bucketed.blunder_rate.idxmax()]
@@ -133,7 +148,8 @@ def _time_pressure(moves_df):
 
 def _castling(duck_conn, config_path=None):
     win_df, _acpl_df = patterns.get_castling_performance(duck_conn, config_path=config_path)
-    if win_df.empty or len(win_df) < 2 or (win_df.n_games < MIN_CASTLE_GAMES).any():
+    if win_df.empty or len(win_df) < 2 or win_df.n_games.map(
+            lambda n: confidence_tier(n, CASTLE_GAMES_THRESHOLDS) == "insufficient").any():
         return None
     castled = win_df[win_df.status == "castled"].iloc[0]
     not_castled = win_df[win_df.status == "did not castle"].iloc[0]
@@ -158,7 +174,8 @@ def _backrank(moves_df):
     back_rank_char = df.color.map({"w": "1", "b": "8"})
     df["is_back_rank"] = rank == back_rank_char
     result = df.groupby("is_back_rank").agg(n_moves=("cpl", "size"), acpl=("cpl", "mean")).reset_index()
-    result = result[result.n_moves >= MIN_BACKRANK_MOVES]
+    result = result[result.n_moves.map(
+        lambda n: confidence_tier(n, BACKRANK_MOVES_THRESHOLDS) != "insufficient")]
     if len(result) < 2:
         return None
     back = result[result.is_back_rank].iloc[0]

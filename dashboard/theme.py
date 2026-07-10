@@ -259,6 +259,15 @@ footer {{visibility: hidden;}}
     border-color: {ACCENT_GOLD};
     color: {ACCENT_GOLD};
 }}
+/* Muted variant (confidence.py's "low" tier badge) -- deliberately less
+   prominent than chip-neutral, which is also used for the "medium" tier
+   and story-worthiness badges elsewhere; low-confidence findings should
+   read as quieter, not equal-weight. */
+.chip-muted {{
+    background-color: {TEXT}14;
+    border-color: {TEXT}33;
+    color: {TEXT_MUTED};
+}}
 
 .narrative-quote {{
     background-color: {BG_SECONDARY};
@@ -326,17 +335,23 @@ h3 {{
     margin-bottom: {SPACE["md"]};
 }}
 
-/* Focus-for-next-session card on Overview -- gold-tinted, visually distinct
-   from .narrative-quote (which also uses a gold border) via the background
-   tint and the eyebrow label treatment. */
-.focus-card {{
+/* Generalized gold-tinted card treatment (roadmap Sec.15 unit #2) -- was
+   .focus-card, a one-off for Overview's "focus for next session" card;
+   renamed to .metric-card and extended (value/delta/label rows added
+   below) so render_metric_card() in this file can serve both that
+   eyebrow/headline/detail shape AND a KPI/value shape (big number +
+   delta + optional sparkline/confidence/sample-size), reusing exactly
+   this same background tint + left gold border rather than forking the
+   styling per shape. Visually distinct from .narrative-quote (also a
+   gold border) via the background tint and the eyebrow label treatment. */
+.metric-card {{
     background-color: {ACCENT_GOLD}0D;
     border-left: 3px solid {ACCENT_GOLD};
     border-radius: 4px;
     padding: 1rem 1.4rem;
     margin: 0 0 1rem 0;
 }}
-.focus-card-eyebrow {{
+.metric-card-eyebrow {{
     font-size: 0.75rem;
     font-weight: 700;
     letter-spacing: 0.08em;
@@ -344,15 +359,46 @@ h3 {{
     color: {ACCENT_GOLD};
     margin-bottom: 0.4rem;
 }}
-.focus-card-headline {{
+.metric-card-headline {{
     font-size: 1.05rem;
     font-weight: 600;
     color: {TEXT};
     margin-bottom: 0.25rem;
 }}
-.focus-card-detail {{
+.metric-card-detail {{
     font-size: 0.85rem;
     color: {TEXT_MUTED};
+}}
+/* KPI/value shape additions -- big value, optional colored delta next to
+   it (reuses POSITIVE/NEGATIVE per the module docstring's rule 1: color
+   is fine here since it's a large number, not small body text), optional
+   label underneath. */
+.metric-card-value-row {{
+    display: flex;
+    align-items: baseline;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+}}
+.metric-card-value {{
+    font-size: 1.8rem;
+    font-weight: 700;
+    color: {TEXT};
+    line-height: 1.1;
+}}
+.metric-card-delta-positive {{
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: {POSITIVE};
+}}
+.metric-card-delta-negative {{
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: {NEGATIVE};
+}}
+.metric-card-label {{
+    font-size: 0.8rem;
+    color: {TEXT_MUTED};
+    margin-top: 0.15rem;
 }}
 
 /* Engine-move explanation block in Game Detail -- italic lightbulb style,
@@ -398,3 +444,213 @@ def chip_row_html(flags) -> str:
         if bool(flags.get(col))
     ]
     return "".join(spans)
+
+
+def _confidence_html(confidence) -> str:
+    """confidence: None, a bare tier name (e.g. what
+    dashboard/confidence.py's confidence_tier() returns), or ready-made
+    badge HTML (confidence.confidence_badge_html()'s return value).
+    Deliberately no hard import of dashboard/confidence.py at module load
+    time -- render_metric_card() must degrade gracefully whether or not
+    that module is present, per roadmap Sec.15 unit #2's brief. A bare
+    string containing "<" is assumed to already be markup and passed
+    through as-is; otherwise this tries the real badge renderer and falls
+    back to a plain chip-neutral span if that module can't be imported or
+    doesn't recognize the tier name."""
+    if not confidence:
+        return ""
+    if "<" in confidence:
+        return confidence
+    try:
+        import confidence as confidence_mod
+        html = confidence_mod.confidence_badge_html(confidence)
+        if html:
+            return html
+    except Exception:
+        pass
+    return f'<span class="chip chip-neutral">{confidence}</span>'
+
+
+def _render_sparkline(sparkline, key=None) -> None:
+    """sparkline: a plotly Figure, or a plain sequence of y-values (plotted
+    as a minimal axis-free line). Always routed through
+    apply_plotly_theme() per this module's own house rule, then stripped
+    down further (no axes/gridlines/legend/modebar) since a sparkline's
+    only job is showing shape, not being read precisely."""
+    import plotly.graph_objects as go
+    import streamlit as st
+
+    if isinstance(sparkline, go.Figure):
+        fig = sparkline
+    else:
+        y = list(sparkline)
+        fig = go.Figure(go.Scatter(
+            x=list(range(len(y))), y=y, mode="lines",
+            line=dict(color=ACCENT_GOLD, width=2)))
+    fig = apply_plotly_theme(fig)
+    fig.update_layout(height=48, margin=dict(l=0, r=0, t=0, b=0), showlegend=False)
+    fig.update_xaxes(visible=False, showgrid=False)
+    fig.update_yaxes(visible=False, showgrid=False)
+    st.plotly_chart(fig, theme=None, use_container_width=True,
+                     config={"displayModeBar": False},
+                     key=f"metric_card_sparkline_{key}" if key else None)
+
+
+def render_metric_card(*, value=None, label=None, delta=None, sparkline=None,
+                        confidence=None, sample_size=None,
+                        eyebrow=None, headline=None, detail=None,
+                        key=None) -> None:
+    """One shared `.metric-card` treatment (gold-tinted background, left
+    gold border -- see the CSS block above) for two real shapes, so a
+    caller passes whichever param group matches what it needs and only
+    the non-None fields render:
+
+    KPI/value shape (net-new; roadmap Sec.15 unit #2's named target
+    signature, no current caller):
+        render_metric_card(value="62%", label="Win rate", delta="+4",
+                            sparkline=[54, 58, 55, 60, 62],
+                            confidence="high", sample_size="128 games")
+    Headline/detail shape (overview_view.py's "focus for your next
+    session" card -- the one real, existing call site, migrated here from
+    its old raw st.markdown(f'<div class="focus-card">...') block):
+        render_metric_card(eyebrow="Focus for your next session",
+                            headline="...", detail="...")
+    A caller needing a nav button below the card (overview_view.py's
+    "Explore in X ->") still renders that itself underneath -- button
+    placement/st.columns layout stays the caller's job, not this
+    component's.
+
+    `confidence` accepts either a bare tier name or ready-made badge HTML
+    -- see _confidence_html() above; works with or without
+    dashboard/confidence.py present. `delta` is shown in NEGATIVE if its
+    string form starts with "-", POSITIVE otherwise (per this module's
+    own contrast rule: color on a short badge-like span is fine, this is
+    not small body text). `sparkline` accepts a plotly Figure or a plain
+    sequence of y-values. `key` disambiguates the sparkline's Streamlit
+    element key when multiple KPI cards render on one page.
+    """
+    import streamlit as st
+
+    parts = ['<div class="metric-card">']
+    if eyebrow:
+        parts.append(f'<div class="metric-card-eyebrow">{eyebrow}</div>')
+    if headline:
+        parts.append(f'<div class="metric-card-headline">{headline}</div>')
+    if detail:
+        parts.append(f'<div class="metric-card-detail">{detail}</div>')
+
+    if value is not None:
+        delta_html = ""
+        if delta is not None:
+            delta_str = str(delta)
+            delta_cls = ("metric-card-delta-negative" if delta_str.strip().startswith("-")
+                         else "metric-card-delta-positive")
+            delta_html = f'<span class="{delta_cls}">{delta_str}</span>'
+        parts.append(
+            '<div class="metric-card-value-row">'
+            f'<span class="metric-card-value">{value}</span>'
+            f'{delta_html}{_confidence_html(confidence)}'
+            '</div>'
+        )
+        if label:
+            parts.append(f'<div class="metric-card-label">{label}</div>')
+
+    parts.append('</div>')
+    st.markdown("".join(parts), unsafe_allow_html=True)
+
+    if sparkline is not None:
+        _render_sparkline(sparkline, key=key)
+    if sample_size:
+        st.caption(sample_size)
+
+
+def render_comparison_panel(panes, mode="side_by_side", *, shared_caption=None,
+                             x_title=None, y_title=None, height=320):
+    """Generalizes the `col1, col2 = st.columns(2)` pattern duplicated
+    across patterns_view.py (win_pct/ACPL chart pairs, each followed by
+    ONE caption spanning both columns -- see `_coverage_caption`) and
+    matchups_view.py (metric pairs, each with its OWN caption underneath).
+    *panes* is a 2-item sequence of dicts; which keys matter depends on
+    *mode*.
+
+    mode="side_by_side" (the only mode with a real caller today):
+        pane["render"]: callable() -> None, rendering that pane's content
+            (a plotly chart, an st.metric, a table -- anything) into its
+            own column. Required.
+        pane["caption"]: optional str, rendered via st.caption() under
+            THAT column only (matchups_view.py's per-pane pattern).
+        *shared_caption*: optional str, rendered via st.caption() below
+            BOTH columns instead (patterns_view.py's pattern) -- takes
+            priority over per-pane captions if both are supplied, since
+            no current call site needs both at once.
+
+    mode="overlay" / "difference" (no current caller -- Phase 2's
+    Favorite vs Underdog comparison, roadmap Sec.15 unit #3, is the
+    first; kept deliberately simple since nothing exercises these yet).
+    Each pane instead needs pane["df"]/pane["x"]/pane["y"], long-form data
+    the same shape charts.py's other builders take, plus optional
+    pane["label"] (trace/series name) and pane["color"]:
+        "overlay": both panes' (x, y) series plotted as two grouped bar
+            traces on one chart -- e.g. favorite's win_pct next to
+            underdog's win_pct across the same x categories.
+        "difference": a single delta chart of pane[1].y - pane[0].y per
+            matching x category (outer-joined on x; a category missing
+            from one side is treated as 0 for that side).
+    Both non-side_by_side modes return the built, already-themed Figure
+    instead of rendering it (no st.plotly_chart call) -- the first real
+    caller decides how/whether to display it and add its own caption.
+    """
+    import streamlit as st
+
+    if len(panes) != 2:
+        raise ValueError("render_comparison_panel needs exactly 2 panes")
+
+    if mode == "side_by_side":
+        col1, col2 = st.columns(2)
+        for col, pane in zip((col1, col2), panes):
+            with col:
+                pane["render"]()
+                if shared_caption is None and pane.get("caption"):
+                    st.caption(pane["caption"])
+        if shared_caption:
+            st.caption(shared_caption)
+        return None
+
+    import pandas as pd
+    import plotly.graph_objects as go
+
+    pane_a, pane_b = panes
+    default_colors = [ACCENT_GOLD, POSITIVE]
+
+    if mode == "overlay":
+        fig = go.Figure()
+        for i, pane in enumerate((pane_a, pane_b)):
+            df, x, y = pane["df"], pane["x"], pane["y"]
+            color = pane.get("color", default_colors[i % len(default_colors)])
+            fig.add_trace(go.Bar(x=df[x], y=df[y],
+                                  name=pane.get("label", f"Series {i + 1}"),
+                                  marker_color=color))
+        fig.update_layout(barmode="group", height=height,
+                           xaxis=dict(title=x_title, automargin=True),
+                           yaxis=dict(title=y_title, automargin=True))
+        return apply_plotly_theme(fig)
+
+    if mode == "difference":
+        df_a, x_a, y_a = pane_a["df"], pane_a["x"], pane_a["y"]
+        df_b, x_b, y_b = pane_b["df"], pane_b["x"], pane_b["y"]
+        merged = pd.merge(
+            df_a[[x_a, y_a]].rename(columns={x_a: "_x", y_a: "_a"}),
+            df_b[[x_b, y_b]].rename(columns={x_b: "_x", y_b: "_b"}),
+            on="_x", how="outer").fillna(0)
+        merged["_delta"] = merged["_b"] - merged["_a"]
+        colors = [POSITIVE if v >= 0 else NEGATIVE for v in merged["_delta"]]
+        label_a = pane_a.get("label", "A")
+        label_b = pane_b.get("label", "B")
+        fig = go.Figure(go.Bar(x=merged["_x"], y=merged["_delta"], marker_color=colors))
+        fig.update_layout(height=height,
+                           xaxis=dict(title=x_title, automargin=True),
+                           yaxis=dict(title=y_title or f"{label_b} minus {label_a}",
+                                      automargin=True))
+        return apply_plotly_theme(fig)
+
+    raise ValueError(f"Unknown render_comparison_panel mode: {mode!r}")

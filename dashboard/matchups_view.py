@@ -114,21 +114,24 @@ def render(self_page, detail_page, prep_page=None):
                      if gk['n_underdog_games'] else None)
         collapse_pct = (100.0 * gk['n_collapses'] / gk['n_favorite_games']
                          if gk['n_favorite_games'] else None)
-        col1, col2 = st.columns(2)
         # Plain sentences, not st.metric deltas -- the delta arrow reads as
         # "up vs. some earlier period", which these shares are not.
-        col1.metric("Giant-killing wins (300+ underdog)",
-                    f"{gk['n_upsets']} / {gk['n_underdog_games']}",
-                    help="Games won when the opponent was rated 300+ points above you, "
-                         "out of all games against such opponents.")
-        if upset_pct is not None:
-            col1.caption(f"You win {upset_pct:.1f}% of games as a heavy underdog.")
-        col2.metric("Collapse losses (300+ favorite)",
-                    f"{gk['n_collapses']} / {gk['n_favorite_games']}",
-                    help="Games lost when the opponent was rated 300+ points below you, "
-                         "out of all games against such opponents.")
-        if collapse_pct is not None:
-            col2.caption(f"You lose {collapse_pct:.1f}% of games as a heavy favorite.")
+        theme.render_comparison_panel([
+            {"render": lambda: st.metric(
+                "Giant-killing wins (300+ underdog)",
+                f"{gk['n_upsets']} / {gk['n_underdog_games']}",
+                help="Games won when the opponent was rated 300+ points above you, "
+                     "out of all games against such opponents."),
+             "caption": (f"You win {upset_pct:.1f}% of games as a heavy underdog."
+                        if upset_pct is not None else None)},
+            {"render": lambda: st.metric(
+                "Collapse losses (300+ favorite)",
+                f"{gk['n_collapses']} / {gk['n_favorite_games']}",
+                help="Games lost when the opponent was rated 300+ points below you, "
+                     "out of all games against such opponents."),
+             "caption": (f"You lose {collapse_pct:.1f}% of games as a heavy favorite."
+                        if collapse_pct is not None else None)},
+        ])
 
     with st.container(border=True):
         st.subheader("Why collapses happen")
@@ -166,8 +169,7 @@ def render(self_page, detail_page, prep_page=None):
                                       x_title="Cause", y_title="% of explained collapses"),
                     theme=None)
 
-                col1, col2 = st.columns(2)
-                with col1:
+                def _render_piece_hung():
                     st.write("**Which piece hung**")
                     if piece_df.empty:
                         st.info(theme.thin_data_message(0, 1))
@@ -183,7 +185,8 @@ def render(self_page, detail_page, prep_page=None):
                                               x_title="Piece hung",
                                               y_title="% of hung-piece collapses"),
                             theme=None)
-                with col2:
+
+                def _render_moves_to_mate():
                     st.write("**How many moves to mate**")
                     if mate_df.empty:
                         st.info(theme.thin_data_message(0, 1))
@@ -193,6 +196,9 @@ def render(self_page, detail_page, prep_page=None):
                                               x_title="Forced mate distance",
                                               y_title="% of faced-mate collapses"),
                             theme=None)
+
+                theme.render_comparison_panel(
+                    [{"render": _render_piece_hung}, {"render": _render_moves_to_mate}])
 
     with st.container(border=True):
         st.subheader("Giant-killing rate over time")
@@ -218,9 +224,10 @@ def render(self_page, detail_page, prep_page=None):
                    "at some point. Collapse: the reverse. Open a list and tick a row's "
                    "checkbox to see that game's full story.")
         cc = cached_comeback_collapse_counts(duck_conn)
-        col1, col2 = st.columns(2)
-        col1.metric("Comebacks", cc["n_comebacks"])
-        col2.metric("Collapses", cc["n_collapses"])
+        theme.render_comparison_panel([
+            {"render": lambda: st.metric("Comebacks", cc["n_comebacks"])},
+            {"render": lambda: st.metric("Collapses", cc["n_collapses"])},
+        ])
         with st.expander(f"Comeback games ({cc['n_comebacks']})"):
             _clickable_game_ids(cc["comeback_game_ids"], "comeback_games", detail_page, self_page)
         with st.expander(f"Collapse games ({cc['n_collapses']})"):
@@ -326,14 +333,17 @@ def _render_nemesis_section(sqlite_conn, duck_conn, prep_page=None):
                          hide_index=True, column_order=col_order,
                          column_config=col_config)
 
-    col1, col2 = st.columns(2)
-    with col1:
+    def _render_toughest():
         st.write("Toughest opponents (lowest score%)")
         _nem_table(nem_display.sort_values("score_pct").head(10), "nem_toughest")
-    with col2:
+
+    def _render_favorite():
         st.write("Favorite opponents (highest score%)")
         _nem_table(nem_display.sort_values("score_pct", ascending=False).head(10),
                    "nem_favorite")
+
+    theme.render_comparison_panel(
+        [{"render": _render_toughest}, {"render": _render_favorite}])
 
     st.write("Most-played opponents overall")
     _nem_table(nem_display.sort_values("n", ascending=False).head(10), "nem_most_played")

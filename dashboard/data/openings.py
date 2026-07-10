@@ -4,6 +4,7 @@ import pandas as pd
 
 import config
 from chess_utils import signed_zobrist
+from confidence import confidence_tier, default_thresholds
 
 INITIAL_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
 
@@ -59,6 +60,14 @@ def get_opening_moves_from_fen(sqlite_conn, fen: str, ply: int, player_color: st
     """
     # games.player_color stores 'white'/'black'; convert 'w'/'b' shorthand
     db_color = "white" if player_color == "w" else "black"
+    # min_games is the hard SQL gate below (unchanged); it doubles as
+    # confidence.py's "low" tier threshold via default_thresholds() -- see
+    # confidence.py's module docstring for the shared 3x/8x scheme. Not
+    # attached to the returned frame as a visible column here: this
+    # result flows straight into st.dataframe calls (Opening Tree) with
+    # no column allowlist, so an extra column would leak into the UI --
+    # left as a future badge hook, not wired in by this change.
+    _thresholds = default_thresholds(min_games)  # noqa: F841 (future badge hook)
 
     if ply <= _MAX_CACHED_PLY:
         zobrist = signed_zobrist(chess.Board(fen))
@@ -100,6 +109,12 @@ def get_opening_moves_from_fen(sqlite_conn, fen: str, ply: int, player_color: st
 # with fewer than 6 total games can never satisfy >=3 games on each side of
 # a split, so pruning at 6 can't hide a result any slider value can reach.
 FLIP_SCAN_MIN_TOTAL_GAMES = 6
+# This is an internal SQL pre-filter, not a per-finding display gate (the
+# real confidence judgment happens downstream in
+# compute_dominant_move_flips via min_games_each_era) -- kept as a
+# derived thresholds dict for consistency/future use, same 3x/8x scheme
+# as confidence.py's other call sites.
+FLIP_SCAN_THRESHOLDS = default_thresholds(FLIP_SCAN_MIN_TOTAL_GAMES)
 
 _EMPTY_FLIPS = pd.DataFrame(columns=[
     "ply", "zobrist_hash", "fen", "total_games",
@@ -224,8 +239,11 @@ def compute_dominant_move_flips(year_stats: pd.DataFrame, split_year: int,
     before = dom[dom["era"] == "before"].drop(columns="era")
     after = dom[dom["era"] == "after"].drop(columns="era")
     m = before.merge(after, on=["ply", "zobrist_hash"], suffixes=("_b", "_a"))
-    m = m[(m["era_total_b"] >= min_games_each_era)
-          & (m["era_total_a"] >= min_games_each_era)
+    # min_games_each_era is the hard gate (unchanged); doubles as
+    # confidence.py's "low" tier threshold via default_thresholds().
+    era_thresholds = default_thresholds(min_games_each_era)
+    m = m[(m["era_total_b"].map(lambda n: confidence_tier(n, era_thresholds) != "insufficient"))
+          & (m["era_total_a"].map(lambda n: confidence_tier(n, era_thresholds) != "insufficient"))
           & (m["san_b"] != m["san_a"])]
     if m.empty:
         return _EMPTY_FLIPS.copy()
@@ -351,6 +369,12 @@ def get_openings_table(duck_conn, sqlite_conn, min_games=5):
     74 rows x ~0.5s/full-table-scan = ~39s. moves has no index on cpl/
     opening_family, so every targeted query scans all ~2M rows; one grouped
     pass over the same rows costs ~0.5s total instead of 74x that."""
+    # min_games is the hard SQL gate below (unchanged); it doubles as
+    # confidence.py's "low" tier threshold via default_thresholds(). Not
+    # attached to the returned frame as a column: openings_view.py renders
+    # it via st.dataframe with no column allowlist, so a new column would
+    # leak into the UI -- left as a future badge hook, not wired in here.
+    _thresholds = default_thresholds(min_games)  # noqa: F841 (future badge hook)
     counts = duck_conn.execute("""
         SELECT opening_family, player_color, COUNT(*) AS n,
                100.0 * SUM(CASE WHEN outcome_for_player='win' THEN 1 ELSE 0 END) / COUNT(*) AS win_pct,
@@ -420,7 +444,14 @@ def get_most_repeated_positions(sqlite_conn, top_n=20, min_games=5):
     node has reached min_games yet -- expected on a fresh install with few
     analyzed games (BRIEF.md's Phase B starter-batch onboarding makes this
     the COMMON case, not a rare edge case).
+
+    min_games is the hard SQL gate below (unchanged); it doubles as
+    confidence.py's "low" tier threshold via default_thresholds(). Not
+    attached to the returned frame as a column: openings_view.py renders
+    it via st.dataframe with no column allowlist, so a new column would
+    leak into the UI -- left as a future badge hook, not wired in here.
     """
+    _thresholds = default_thresholds(min_games)  # noqa: F841 (future badge hook)
     return pd.read_sql_query("""
         SELECT ply, zobrist_hash, n_games, win_pct, draw_pct, loss_pct, common_opening
         FROM repeated_positions_cache

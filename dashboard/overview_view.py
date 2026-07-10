@@ -44,13 +44,10 @@ def _render_focus_card(findings, page_refs: dict) -> None:
     dest_page = page_refs.get(ref_key) if ref_key else None
     tab_note = f" ({dest_tab})" if dest_tab else ""
 
-    st.markdown(
-        f'<div class="focus-card">'
-        f'<div class="focus-card-eyebrow">🎯 Focus for your next session</div>'
-        f'<div class="focus-card-headline">{top["headline"]}</div>'
-        f'<div class="focus-card-detail">{top["detail"]}</div>'
-        f'</div>',
-        unsafe_allow_html=True,
+    theme.render_metric_card(
+        eyebrow="🎯 Focus for your next session",
+        headline=top["headline"],
+        detail=top["detail"],
     )
     if dest_page is not None:
         col, _ = st.columns([3, 5])

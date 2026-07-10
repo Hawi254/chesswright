@@ -357,18 +357,14 @@ def _render_tab_position(sqlite_conn, duck_conn):
             if n_short:
                 st.caption(f"{n_short} of {pc['n_total_games']} games ended before this "
                            "checkpoint and aren't classified here.")
-            col1, col2 = st.columns(2)
-            with col1:
-                st.plotly_chart(charts.bar_chart(pc["bucket_win"], "bucket", "win_pct", theme.POSITIVE,
-                                                  x_title="Position type", y_title="Win rate (%)"),
-                                 theme=None)
-            with col2:
-                st.plotly_chart(charts.bar_chart(pc["bucket_acpl"], "bucket", "acpl", theme.NEGATIVE,
-                                                  x_title="Position type", y_title="ACPL (lower = more accurate)"),
-                                 theme=None)
-            caption = _coverage_caption(pc["bucket_win"], pc["bucket_acpl"], "bucket")
-            if caption:
-                st.caption(caption)
+            theme.render_comparison_panel(
+                [{"render": lambda: st.plotly_chart(
+                    charts.bar_chart(pc["bucket_win"], "bucket", "win_pct", theme.POSITIVE,
+                                      x_title="Position type", y_title="Win rate (%)"), theme=None)},
+                 {"render": lambda: st.plotly_chart(
+                    charts.bar_chart(pc["bucket_acpl"], "bucket", "acpl", theme.NEGATIVE,
+                                      x_title="Position type", y_title="ACPL (lower = more accurate)"), theme=None)}],
+                shared_caption=_coverage_caption(pc["bucket_win"], pc["bucket_acpl"], "bucket"))
             if pc["central_tension_pct"] is not None:
                 st.caption(f"Within semi-open games, {pc['central_tension_pct']:.1f}% still had "
                            "unresolved central pawn tension (adjacent pawns that could still "
@@ -383,19 +379,14 @@ def _render_tab_position(sqlite_conn, duck_conn):
         if pc["n_classified"] == 0:
             st.info(theme.thin_data_message(0, 1))
         else:
-            col1, col2 = st.columns(2)
-            with col1:
-                st.plotly_chart(
+            theme.render_comparison_panel(
+                [{"render": lambda: st.plotly_chart(
                     charts.bar_chart(pc["symmetric_win"], "symmetry_label", "win_pct", theme.POSITIVE,
-                                      x_title="Pawn structure", y_title="Win rate (%)"), theme=None)
-            with col2:
-                st.plotly_chart(
+                                      x_title="Pawn structure", y_title="Win rate (%)"), theme=None)},
+                 {"render": lambda: st.plotly_chart(
                     charts.bar_chart(pc["symmetric_acpl"], "symmetry_label", "acpl", theme.NEGATIVE,
-                                      x_title="Pawn structure", y_title="ACPL (lower = more accurate)"),
-                    theme=None)
-            caption = _coverage_caption(pc["symmetric_win"], pc["symmetric_acpl"], "symmetry_label")
-            if caption:
-                st.caption(caption)
+                                      x_title="Pawn structure", y_title="ACPL (lower = more accurate)"), theme=None)}],
+                shared_caption=_coverage_caption(pc["symmetric_win"], pc["symmetric_acpl"], "symmetry_label"))
 
     with st.container(border=True):
         st.subheader("Castling configuration")
@@ -406,19 +397,14 @@ def _render_tab_position(sqlite_conn, duck_conn):
         if gs["castling_win"].empty:
             st.info(theme.thin_data_message(0, 1))
         else:
-            col1, col2 = st.columns(2)
-            with col1:
-                st.plotly_chart(
+            theme.render_comparison_panel(
+                [{"render": lambda: st.plotly_chart(
                     charts.bar_chart(gs["castling_win"], "castling_config", "win_pct", theme.POSITIVE,
-                                      x_title="Castling configuration", y_title="Win rate (%)"), theme=None)
-            with col2:
-                st.plotly_chart(
+                                      x_title="Castling configuration", y_title="Win rate (%)"), theme=None)},
+                 {"render": lambda: st.plotly_chart(
                     charts.bar_chart(gs["castling_acpl"], "castling_config", "acpl", theme.NEGATIVE,
-                                      x_title="Castling configuration", y_title="ACPL (lower = more accurate)"),
-                    theme=None)
-            caption = _coverage_caption(gs["castling_win"], gs["castling_acpl"], "castling_config")
-            if caption:
-                st.caption(caption)
+                                      x_title="Castling configuration", y_title="ACPL (lower = more accurate)"), theme=None)}],
+                shared_caption=_coverage_caption(gs["castling_win"], gs["castling_acpl"], "castling_config"))
 
     with st.container(border=True):
         st.subheader("Where did the fight happen: queenside or kingside?")
@@ -428,19 +414,14 @@ def _render_tab_position(sqlite_conn, duck_conn):
         if gs["action_win"].empty:
             st.info(theme.thin_data_message(0, 1))
         else:
-            col1, col2 = st.columns(2)
-            with col1:
-                st.plotly_chart(
+            theme.render_comparison_panel(
+                [{"render": lambda: st.plotly_chart(
                     charts.bar_chart(gs["action_win"], "action_side", "win_pct", theme.POSITIVE,
-                                      x_title="Where the fight happened", y_title="Win rate (%)"), theme=None)
-            with col2:
-                st.plotly_chart(
+                                      x_title="Where the fight happened", y_title="Win rate (%)"), theme=None)},
+                 {"render": lambda: st.plotly_chart(
                     charts.bar_chart(gs["action_acpl"], "action_side", "acpl", theme.NEGATIVE,
-                                      x_title="Where the fight happened", y_title="ACPL (lower = more accurate)"),
-                    theme=None)
-            caption = _coverage_caption(gs["action_win"], gs["action_acpl"], "action_side")
-            if caption:
-                st.caption(caption)
+                                      x_title="Where the fight happened", y_title="ACPL (lower = more accurate)"), theme=None)}],
+                shared_caption=_coverage_caption(gs["action_win"], gs["action_acpl"], "action_side"))
 
 
 @st.fragment
@@ -449,16 +430,13 @@ def _render_tab_pieces(sqlite_conn, duck_conn):
         st.subheader("Piece-handling: which piece do you misplay most")
         st.caption("Blunder rate and accuracy broken down by which piece was moved.")
         piece_df = cached_piece_movement_patterns(duck_conn)
-        col1, col2 = st.columns(2)
-        with col1:
-            st.plotly_chart(
+        theme.render_comparison_panel(
+            [{"render": lambda: st.plotly_chart(
                 charts.bar_chart(piece_df, "piece_name", "acpl", theme.NEGATIVE,
-                                  x_title="Piece moved", y_title="ACPL (lower = more accurate)"), theme=None)
-        with col2:
-            st.plotly_chart(
+                                  x_title="Piece moved", y_title="ACPL (lower = more accurate)"), theme=None)},
+             {"render": lambda: st.plotly_chart(
                 charts.bar_chart(piece_df, "piece_name", "blunder_rate", theme.NEGATIVE,
-                                  x_title="Piece moved", y_title="Blunder rate (% of moves)"),
-                theme=None)
+                                  x_title="Piece moved", y_title="Blunder rate (% of moves)"), theme=None)}])
 
     with st.container(border=True):
         st.subheader("Piece-handling by game phase and position sharpness")
@@ -561,8 +539,7 @@ def _render_tab_turning(duck_conn):
                 f"Decisive moment profile ({n_losses} losses with a contested position)",
                 f"Typically move {median_move} ({most_common_phase})")
 
-            col_mn, col_ph = st.columns(2)
-            with col_mn:
+            def _render_by_move_number():
                 st.write("**By move number**")
                 bins = [0, 6, 11, 16, 21, 26, 31, 41, 60, 9999]
                 labels = ["1–5", "6–10", "11–15", "16–20", "21–25",
@@ -577,7 +554,7 @@ def _render_tab_turning(duck_conn):
                                      x_title="Move number", y_title="Losses"),
                     theme=None)
 
-            with col_ph:
+            def _render_by_phase():
                 st.write("**By game phase**")
                 phase_order = ["opening", "middlegame", "endgame"]
                 ph_df = (dm_df.groupby("phase").size().reset_index(name="n_losses")
@@ -588,6 +565,9 @@ def _render_tab_turning(duck_conn):
                                      theme.NEGATIVE, height=240,
                                      x_title="Game phase", y_title="Losses"),
                     theme=None)
+
+            theme.render_comparison_panel(
+                [{"render": _render_by_move_number}, {"render": _render_by_phase}])
 
             clock_df = dm_df.dropna(subset=["clock_fraction"])
             if not clock_df.empty:

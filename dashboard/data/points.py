@@ -32,6 +32,7 @@ a single @st.cache_data'd call, no materialized cache needed.
 import pandas as pd
 
 from _common import get_config
+from confidence import confidence_tier, default_thresholds
 
 from ._shared import TIME_PRESSURE_BUCKETS
 from .game_endings import MATE_DISTANCE_BUCKETS
@@ -219,7 +220,12 @@ def monthly_points(classified, min_games=3):
            .reset_index()
            .sort_values("period", ignore_index=True))
     out["potential"] = out.actual + out.leaked
-    out = out[out.n_games >= min_games].drop(columns="leaked").reset_index(drop=True)
+    # min_games is the hard gate (unchanged); it doubles as confidence.py's
+    # "low" tier threshold via default_thresholds().
+    month_thresholds = default_thresholds(min_games)
+    out = out[out.n_games.map(
+        lambda n: confidence_tier(n, month_thresholds) != "insufficient")]
+    out = out.drop(columns="leaked").reset_index(drop=True)
     out["actual_pct"] = 100.0 * out.actual / out.n_games
     out["potential_pct"] = 100.0 * out.potential / out.n_games
     out["month"] = pd.to_datetime(out.period, format="%Y.%m")

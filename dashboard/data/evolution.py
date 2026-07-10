@@ -16,6 +16,8 @@ chart top-N) is pure pandas on top of that frame.
 """
 import pandas as pd
 
+from confidence import confidence_tier, default_thresholds
+
 # Quarterly buckets: with this user base's volume (hundreds to thousands
 # of games/year) quarters are the finest grain where shares aren't noise.
 QUARTERS_WINDOW = 4        # "early"/"late" comparison windows: ~1 year each
@@ -224,7 +226,11 @@ def family_win_trend(filtered: pd.DataFrame, family: str,
     if fam.empty:
         return pd.DataFrame(columns=["label", "n_games", "win_pct", "period"])
     out = fam.groupby("period", as_index=False)[["n_games", "n_wins"]].sum()
-    out = out[out["n_games"] >= min_games_per_quarter]
+    # min_games_per_quarter is the hard gate (unchanged); it doubles as
+    # confidence.py's "low" tier threshold via default_thresholds().
+    quarter_thresholds = default_thresholds(min_games_per_quarter)
+    out = out[out["n_games"].map(
+        lambda n: confidence_tier(n, quarter_thresholds) != "insufficient")]
     out["win_pct"] = 100.0 * out["n_wins"] / out["n_games"]
     out["label"] = out["period"].map(_period_label)
     return out.sort_values("period").reset_index(drop=True)
