@@ -335,6 +335,25 @@ h3 {{
     margin-bottom: {SPACE["md"]};
 }}
 
+/* st.spinner (23 call sites app-wide) -- last piece of native Streamlit
+   chrome with zero custom styling in an otherwise fully-themed dark app.
+   Confirmed live (Streamlit 1.58.0) it's a CSS border-ring, not an SVG:
+   [data-testid="stSpinnerIcon"] is a bare <span> whose rotating ring is
+   drawn via the border-color 3-value shorthand (top / left+right /
+   bottom), solid on top and 20%-opacity on the other two sides. That
+   border-color comes from an emotion-generated class of matching
+   specificity, so !important is needed to reliably win. Message text
+   already inherits {TEXT} from this app's .streamlit/config.toml
+   textColor, but set it explicitly here too so the whole element's
+   theming lives in one place rather than half in config.toml, half
+   implicit. */
+[data-testid="stSpinner"] {{
+    color: {TEXT};
+}}
+[data-testid="stSpinnerIcon"] {{
+    border-color: {ACCENT_GOLD} {ACCENT_GOLD}33 {ACCENT_GOLD}33 !important;
+}}
+
 /* Generalized gold-tinted card treatment (roadmap Sec.15 unit #2) -- was
    .focus-card, a one-off for Overview's "focus for next session" card;
    renamed to .metric-card and extended (value/delta/label rows added
