@@ -100,7 +100,7 @@ def get_giant_killing_counts(duck_conn):
             "n_collapses": collapses, "n_favorite_games": favorite_total}
 
 
-def get_nemesis_opponents(duck_conn, min_games=5):
+def get_nemesis_opponents(duck_conn, min_games: int | None = None, config_path=None):
     """Mirrors analysis/nemesis_opponents.py -- ranked by score% (win +
     0.5*draw, standard tournament scoring) so repeated draws aren't
     misread as losses. Real finding: 17.1% score against a specific
@@ -133,11 +133,14 @@ def get_nemesis_opponents(duck_conn, min_games=5):
     opponent (only possible if this database ever has unrated games;
     zero such rows exist on the real dev DB today).
 
-    min_games remains the hard SQL gate below (unchanged); it doubles as
+    min_games defaults to analytics.min_sample_size when not passed
+    explicitly. It remains the hard SQL gate below; it doubles as
     confidence.py's "low" tier threshold via default_thresholds(), so the
     returned frame also carries a confidence_tier column (every row is
     at least "low" by construction) for future badge use without
     changing which opponents are returned."""
+    if min_games is None:
+        min_games = get_config(config_path)["analytics"]["min_sample_size"]
     thresholds = default_thresholds(min_games)
     # all_lichess gates the Opponent Prep deep link: prep's fetch pipeline
     # (sync.py) is lichess-only, so a chess.com opponent's name pre-filled

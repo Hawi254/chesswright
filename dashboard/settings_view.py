@@ -317,6 +317,24 @@ def _render_analytics_display_tab():
         st.toast("Timezone saved.", icon="✅")
         st.rerun()
 
+    st.divider()
+    st.subheader("Confidence threshold")
+    st.caption(
+        "The minimum sample size (games/positions) a stat needs before "
+        "it's shown as trustworthy instead of flagged '(small sample)' "
+        "across Insights, Openings, Matchups, and other pages. One shared "
+        "threshold, not a per-page setting.")
+    min_sample_size = st.number_input(
+        "Minimum sample size", min_value=1, max_value=100, step=1,
+        value=int(cfg["analytics"]["min_sample_size"]),
+        help="Groups below this many analyzed games are shown but marked "
+             "as a small sample, rather than hidden.")
+    if st.button("Save confidence threshold"):
+        config.set_analytics_setting("min_sample_size", int(min_sample_size))
+        st.cache_data.clear()
+        st.toast("Confidence threshold saved.", icon="✅")
+        st.rerun()
+
 
 def _render_account_data_tab():
     st.subheader("Import an existing database")

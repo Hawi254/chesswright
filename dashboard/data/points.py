@@ -201,7 +201,7 @@ def summarize_buckets(classified):
     return out
 
 
-def monthly_points(classified, min_games=3):
+def monthly_points(classified, min_games: int | None = None, config_path=None):
     """Per month: actual score vs. score with leaks recovered, both as
     raw point sums and per-game percentages (the chart plots the
     percentages -- monthly game volume varies by two orders of magnitude
@@ -209,7 +209,11 @@ def monthly_points(classified, min_games=3):
     a real datetime: the 'YYYY.MM' period strings LOOK numeric to plotly,
     which coerces them onto a fractional-year continuous axis (confirmed
     on the rendered chart, axis read 2018..2026). Months under min_games
-    are dropped -- same single-game-noise guard as get_progress_by_month."""
+    are dropped -- same single-game-noise guard as get_progress_by_month.
+    min_games defaults to analytics.min_sample_size when not passed
+    explicitly."""
+    if min_games is None:
+        min_games = get_config(config_path)["analytics"]["min_sample_size"]
     df = classified[classified.period.notna() & (classified.period != "")]
     if df.empty:
         return pd.DataFrame(columns=["period", "month", "n_games", "actual",
@@ -220,8 +224,6 @@ def monthly_points(classified, min_games=3):
            .reset_index()
            .sort_values("period", ignore_index=True))
     out["potential"] = out.actual + out.leaked
-    # min_games is the hard gate (unchanged); it doubles as confidence.py's
-    # "low" tier threshold via default_thresholds().
     month_thresholds = default_thresholds(min_games)
     out = out[out.n_games.map(
         lambda n: confidence_tier(n, month_thresholds) != "insufficient")]

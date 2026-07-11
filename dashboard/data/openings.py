@@ -363,17 +363,24 @@ def get_opening_ply_accuracy(duck_conn, opening_family, player_color, min_appear
     """, [opening_family, player_color, min_appearances]).fetchdf()
 
 
-def get_openings_table(duck_conn, sqlite_conn, min_games=5):
+def get_openings_table(duck_conn, sqlite_conn, min_games: int | None = None):
     """Single bulk GROUP BY for the ACPL side, not one acpl_and_blunder_rate
     call per (opening, color) row -- measured cost of the per-row version:
     74 rows x ~0.5s/full-table-scan = ~39s. moves has no index on cpl/
     opening_family, so every targeted query scans all ~2M rows; one grouped
-    pass over the same rows costs ~0.5s total instead of 74x that."""
-    # min_games is the hard SQL gate below (unchanged); it doubles as
-    # confidence.py's "low" tier threshold via default_thresholds(). Not
-    # attached to the returned frame as a column: openings_view.py renders
-    # it via st.dataframe with no column allowlist, so a new column would
-    # leak into the UI -- left as a future badge hook, not wired in here.
+    pass over the same rows costs ~0.5s total instead of 74x that.
+
+    min_games defaults to analytics.min_sample_size when not passed
+    explicitly (this file's own config.load_config() precedent, matching
+    this file's existing interactive_engine lookup elsewhere, rather than
+    the get_config() convention used in the rest of dashboard/data/). It
+    doubles as confidence.py's "low" tier threshold via
+    default_thresholds(). Not attached to the returned frame as a column:
+    openings_view.py renders it via st.dataframe with no column allowlist,
+    so a new column would leak into the UI -- left as a future badge hook,
+    not wired in here."""
+    if min_games is None:
+        min_games = config.load_config()["analytics"]["min_sample_size"]
     _thresholds = default_thresholds(min_games)  # noqa: F841 (future badge hook)
     counts = duck_conn.execute("""
         SELECT opening_family, player_color, COUNT(*) AS n,

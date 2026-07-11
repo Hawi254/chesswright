@@ -179,3 +179,23 @@ class TestFamilyWinTrend:
         df = _rows([(2018, 1, "X", 10, 6)])
         out = family_win_trend(df, "Nonexistent")
         assert out.empty
+
+    def test_uses_config_min_sample_size_when_not_passed(self, monkeypatch):
+        from data import evolution as evolution_module
+        monkeypatch.setattr(
+            evolution_module, "get_config",
+            lambda config_path=None: {"analytics": {"min_sample_size": 2}})
+        df = _rows([(2018, 1, "X", 3, 2)])  # 3 games >= min_sample_size=2
+        out = family_win_trend(df, "X")
+        assert len(out) == 1
+        assert out.iloc[0].label == "2018 Q1"
+
+    def test_explicit_override_still_wins(self, monkeypatch):
+        from data import evolution as evolution_module
+        monkeypatch.setattr(
+            evolution_module, "get_config",
+            lambda config_path=None: {"analytics": {"min_sample_size": 100}})
+        df = _rows([(2018, 1, "X", 3, 2)])
+        out = family_win_trend(df, "X", min_games_per_quarter=2)  # explicit 2 overrides config's 100
+        assert len(out) == 1
+        assert out.iloc[0].label == "2018 Q1"

@@ -946,7 +946,7 @@ def get_event_type_performance(duck_conn, config_path=None) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=cols)
 
 
-def get_event_name_breakdown(duck_conn, min_games=20, config_path=None) -> pd.DataFrame:
+def get_event_name_breakdown(duck_conn, min_games: int | None = None, config_path=None) -> pd.DataFrame:
     """Win/draw/loss% and ACPL for each individually-NAMED tournament/arena
     (e.g. "Hourly SuperBlitz Arena", "Weekly Rapid Arena") -- the specific-
     events half of the Event Type Breakdown. Reuses
@@ -954,13 +954,16 @@ def get_event_name_breakdown(duck_conn, min_games=20, config_path=None) -> pd.Da
     then restricts to the "Tournament / Arena" category and groups by the
     raw `event` name instead of the 2-way category, so the generic "Rated
     <category> game" casual buckets (already covered by the 2-category
-    summary) never appear here. Gated at `min_games` (default 20) so one-off
-    or rarely-played events don't clutter the table -- this is a per-EVENT-
-    NAME rollup, not per-tournament-instance (see module comment above for
-    why the latter isn't feasible from the data Lichess gives us).
+    summary) never appear here. min_games defaults to
+    analytics.min_sample_size when not passed explicitly, gating one-off
+    or rarely-played events from cluttering the table -- this is a
+    per-EVENT-NAME rollup, not per-tournament-instance (see module comment
+    above for why the latter isn't feasible from the data Lichess gives us).
 
     Returns event, n_games, win_pct, draw_pct, loss_pct, acpl, n_analyzed --
     sorted by n_games descending."""
+    if min_games is None:
+        min_games = get_config(config_path)["analytics"]["min_sample_size"]
     cols = ["event", "n_games", "win_pct", "draw_pct", "loss_pct", "acpl", "n_analyzed"]
     df = _event_perf_rows(duck_conn)
     if df.empty:

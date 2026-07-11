@@ -179,6 +179,23 @@ class TestOpeningsData:
         finally:
             duck.close(); disk.close(); os.unlink(tmp)
 
+    def test_get_openings_table_uses_config_min_sample_size(self, migrated_db, monkeypatch):
+        from data import openings as openings_module
+        monkeypatch.setattr(
+            openings_module.config, "load_config",
+            lambda *a, **kw: {"analytics": {"min_sample_size": 1}})
+        migrated_db.execute(
+            "INSERT INTO games (id, white, black, outcome_for_player, "
+            "opening_family, player_color) VALUES "
+            "('g1', 'W', 'B', 'win', 'Sicilian', 'white')")
+        migrated_db.commit()
+        duck, disk, tmp = _duck_from_conn(migrated_db)
+        try:
+            df = openings_module.get_openings_table(duck, migrated_db)
+            assert "Sicilian" in df.opening_family.values  # 1 game qualifies at min_sample_size=1
+        finally:
+            duck.close(); disk.close(); os.unlink(tmp)
+
     def test_get_most_repeated_positions_empty_is_safe(self, migrated_db):
         """Phase A bug fix shape, preserved: a fresh DB must not raise.
         Takes sqlite_conn since the 2026-07-04 materialization -- reads
@@ -522,6 +539,22 @@ class TestMatchupsData:
         finally:
             duck.close(); disk.close(); os.unlink(tmp)
 
+    def test_get_nemesis_opponents_uses_config_min_sample_size(self, migrated_db, monkeypatch):
+        from data import matchups as matchups_module
+        monkeypatch.setattr(
+            matchups_module, "get_config",
+            lambda config_path=None: {"analytics": {"min_sample_size": 1}})
+        migrated_db.execute(
+            "INSERT INTO games (id, white, black, outcome_for_player, "
+            "opponent_name, rating_diff) VALUES ('g1', 'W', 'B', 'loss', 'Bob', 0)")
+        migrated_db.commit()
+        duck, disk, tmp = _duck_from_conn(migrated_db)
+        try:
+            df = matchups_module.get_nemesis_opponents(duck)
+            assert "Bob" in df.opponent_name.values  # 1 game qualifies at min_sample_size=1
+        finally:
+            duck.close(); disk.close(); os.unlink(tmp)
+
     def test_get_opponent_swindle_rate(self):
         """Pure pandas, no DB -- covers the WHERE-opponent filter, the
         loss-only filter, and the missed_swindle share, plus the
@@ -728,6 +761,27 @@ class TestPatternsData:
             win_pivot, _ = patterns_module.get_day_hour_heatmap(duck)
             assert 1 in win_pivot.columns
             assert 23 not in win_pivot.columns
+        finally:
+            duck.close(); disk.close(); os.unlink(tmp)
+
+    def test_get_event_name_breakdown_uses_config_min_sample_size(self, migrated_db, monkeypatch):
+        from data import patterns as patterns_module
+        monkeypatch.setattr(
+            patterns_module, "get_config",
+            lambda config_path=None: {"analytics": {"min_sample_size": 1}})
+        migrated_db.execute(
+            "INSERT INTO games (id, white, black, outcome_for_player, event) "
+            "VALUES ('g1', 'W', 'B', 'win', 'Weekly Rapid Arena')")
+        # _event_perf_rows INNER JOINs moves -- a game needs at least one
+        # move row to appear in that scan at all.
+        migrated_db.execute(
+            "INSERT INTO moves (game_id, ply, move_number, color, san) "
+            "VALUES ('g1', 1, 1, 'w', 'e4')")
+        migrated_db.commit()
+        duck, disk, tmp = _duck_from_conn(migrated_db)
+        try:
+            df = patterns_module.get_event_name_breakdown(duck)
+            assert "Weekly Rapid Arena" in df.event.values  # 1 game qualifies at min_sample_size=1
         finally:
             duck.close(); disk.close(); os.unlink(tmp)
 
@@ -1070,6 +1124,18 @@ class TestPointsData:
             assert reason_lookup.get("blown_mate", 0) == 0
         finally:
             duck.close(); disk.close(); os.unlink(tmp)
+
+    def test_monthly_points_uses_config_min_sample_size(self, monkeypatch):
+        import pandas as pd
+        from data import points as points_module
+        monkeypatch.setattr(
+            points_module, "get_config",
+            lambda config_path=None: {"analytics": {"min_sample_size": 1}})
+        classified = pd.DataFrame({
+            "game_id": ["g1"], "period": ["2026.01"], "points": [1.0], "leaked": [0.0],
+        })
+        out = points_module.monthly_points(classified)
+        assert len(out) == 1  # 1 game qualifies at min_sample_size=1
 
 
 @pytest.mark.integration
