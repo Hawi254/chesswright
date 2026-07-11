@@ -396,3 +396,72 @@ def set_engine_path(engine_path, path=None):
         raise ValueError(
             f"Could not find an engine.path line to update in {path}.")
     path.write_text(new_text)
+
+
+# ---------------------------------------------------------------------------
+# Engine Profiles -- named snapshots of engine.*/interactive_engine.* only
+# (batch depth/multipv/threads/hash_mb + all interactive_engine fields).
+# Distinct from the Pro profile machinery above (PROFILES_DIR/list_profiles/
+# initialize_profile/remove_profile), which snapshots a whole separate
+# student database + config -- these are just speed/depth presets like
+# "Laptop" vs "Deep Analysis", stored in one small YAML file, not a
+# directory per profile.
+# ---------------------------------------------------------------------------
+
+ENGINE_PROFILES_PATH = CHESSWRIGHT_DIR / "engine_profiles.yaml"
+
+_ENGINE_PROFILE_FIELDS = {
+    "engine": ["depth", "multipv", "threads", "hash_mb"],
+    "interactive_engine": ["time_sec", "depth", "threads", "hash_mb",
+                            "store_threshold", "use_lichess_cloud_eval"],
+}
+
+
+def _load_engine_profiles() -> dict:
+    if not ENGINE_PROFILES_PATH.exists():
+        return {}
+    with open(ENGINE_PROFILES_PATH) as f:
+        return yaml.safe_load(f) or {}
+
+
+def save_engine_profile(name: str, path=None) -> None:
+    """Snapshots the CURRENT engine.*/interactive_engine.* values (from
+    the live config, or *path* if given) under *name*. Overwrites any
+    existing profile of the same name."""
+    cfg = load_config(path)
+    snapshot = {}
+    for section, keys in _ENGINE_PROFILE_FIELDS.items():
+        for key in keys:
+            snapshot[f"{section}.{key}"] = cfg[section][key]
+    profiles = _load_engine_profiles()
+    profiles[name] = snapshot
+    CHESSWRIGHT_DIR.mkdir(exist_ok=True)
+    ENGINE_PROFILES_PATH.write_text(yaml.dump(profiles, default_flow_style=False))
+
+
+def list_engine_profiles() -> list[str]:
+    return sorted(_load_engine_profiles().keys())
+
+
+def apply_engine_profile(name: str, path=None) -> None:
+    """Writes a saved profile's engine.*/interactive_engine.* values back
+    into config.yaml (or *path*) in one action. Raises KeyError if *name*
+    doesn't exist."""
+    snapshot = _load_engine_profiles()[name]
+    engine_settings = {}
+    interactive_settings = {}
+    for dotted_key, value in snapshot.items():
+        section, key = dotted_key.split(".", 1)
+        if section == "engine":
+            engine_settings[key] = value
+        else:
+            interactive_settings[key] = value
+    for key, value in engine_settings.items():
+        set_engine_setting(key, value, path=path)
+    save_interactive_engine(interactive_settings, path=path)
+
+
+def delete_engine_profile(name: str) -> None:
+    profiles = _load_engine_profiles()
+    profiles.pop(name, None)
+    ENGINE_PROFILES_PATH.write_text(yaml.dump(profiles, default_flow_style=False))

@@ -303,6 +303,44 @@ def _render_analysis_engine_tab():
         except Exception as e:
             st.error(f"Could not save settings: {e}")
 
+    st.divider()
+    st.subheader("Engine Profiles")
+    st.caption(
+        "Save your current engine speed/depth settings under a name you "
+        "choose, and switch between them later -- e.g. 'Laptop' vs. "
+        "'Desktop' vs. 'Deep Analysis'. Not the same as Chesswright Pro's "
+        "student profiles further down this page, which are separate "
+        "databases for different players.")
+
+    profile_names = config.list_engine_profiles()
+    col1, col2 = st.columns(2)
+    with col1:
+        new_profile_name = st.text_input("Save current settings as…",
+                                          key="new_engine_profile_name")
+        if st.button("Save profile") and new_profile_name.strip():
+            config.save_engine_profile(new_profile_name.strip())
+            st.success(f"Saved profile '{new_profile_name.strip()}'.")
+            st.rerun()
+    with col2:
+        if profile_names:
+            selected_profile = st.selectbox("Saved profiles", profile_names,
+                                             key="selected_engine_profile")
+            apply_col, delete_col = st.columns(2)
+            if apply_col.button("Apply", key="apply_engine_profile"):
+                config.apply_engine_profile(selected_profile)
+                live_engine.get_engine_service.clear()
+                st.success(f"Applied '{selected_profile}'.")
+                st.rerun()
+            confirm_delete = delete_col.checkbox(
+                "Confirm delete", key="confirm_delete_engine_profile")
+            if delete_col.button("Delete", key="delete_engine_profile",
+                                  disabled=not confirm_delete):
+                config.delete_engine_profile(selected_profile)
+                st.success(f"Deleted '{selected_profile}'.")
+                st.rerun()
+        else:
+            st.caption("No saved profiles yet.")
+
 
 def _render_analytics_display_tab():
     st.subheader("Local timezone")

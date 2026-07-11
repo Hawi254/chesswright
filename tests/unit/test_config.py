@@ -95,27 +95,40 @@ class TestBackfillMissingKeys:
     was added to the template" shape this function exists to fix."""
 
     def test_backfills_missing_key_in_existing_section(self, config_yaml):
+        # NOTE: config_yaml's engine: section was widened (Task 7, Phase 6
+        # Settings) to include multipv/threads/hash_mb, so those keys no
+        # longer exercise the "missing key" case. Swapped to worker.max_games,
+        # which the fixture's worker: section still genuinely omits -- same
+        # original intent (a key present in the template but absent from an
+        # existing section gets backfilled), different still-missing key.
         cfg = config.load_config(config_yaml)
-        assert "multipv" not in cfg["engine"]
+        assert "max_games" not in cfg["worker"]
 
         config.backfill_missing_keys(path=config_yaml)
 
         cfg = config.load_config(config_yaml)
-        assert cfg["engine"]["multipv"] == 3
+        assert cfg["worker"]["max_games"] == 100
 
-    def test_backfills_engine_threads_default(self, config_yaml):
-        """engine.threads (and other keys added to config.yaml's engine:
-        section after a user's install was created) must reach existing
-        installs via this same mechanism -- an install missing the key
-        gets the template's own default backfilled, not a KeyError in
-        worker.py's __main__ config read."""
+    def test_backfills_worker_max_duration_default(self, config_yaml):
+        """worker.max_duration (and other keys added to config.yaml's
+        worker: section after a user's install was created) must reach
+        existing installs via this same mechanism -- an install missing the
+        key gets the template's own default backfilled, not a KeyError
+        somewhere deep in a worker.py or dashboard config read.
+
+        NOTE: originally probed engine.threads, but config_yaml's engine:
+        section was widened (Task 7, Phase 6 Settings) to include threads
+        (and multipv/hash_mb) as part of the Engine Profiles fixture setup,
+        so that key is no longer "missing" here. Swapped to
+        worker.max_duration, which is still genuinely absent from the
+        fixture's worker: section -- same intent, different key."""
         cfg = config.load_config(config_yaml)
-        assert "threads" not in cfg["engine"]
+        assert "max_duration" not in cfg["worker"]
 
         config.backfill_missing_keys(path=config_yaml)
 
         cfg = config.load_config(config_yaml)
-        assert cfg["engine"]["threads"] == 4
+        assert cfg["worker"]["max_duration"] is None
 
     def test_preserves_existing_values(self, config_yaml):
         config.backfill_missing_keys(path=config_yaml)
@@ -185,3 +198,30 @@ class TestPick:
         # 0 and False are legitimate CLI values, not "not given"
         assert config.pick(0, 99) == 0
         assert config.pick(False, True) is False
+
+
+@pytest.mark.unit
+class TestEngineProfiles:
+    def test_save_and_list(self, config_yaml, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "ENGINE_PROFILES_PATH", tmp_path / "engine_profiles.yaml")
+        config.save_engine_profile("Laptop", path=config_yaml)
+        assert config.list_engine_profiles() == ["Laptop"]
+
+    def test_apply_writes_back_engine_and_interactive_settings(self, config_yaml, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "ENGINE_PROFILES_PATH", tmp_path / "engine_profiles.yaml")
+        config.set_engine_setting("depth", 30, path=config_yaml)
+        config.save_engine_profile("Deep", path=config_yaml)
+        config.set_engine_setting("depth", 14, path=config_yaml)
+        config.apply_engine_profile("Deep", path=config_yaml)
+        cfg = config.load_config(config_yaml)
+        assert cfg["engine"]["depth"] == 30
+
+    def test_delete_removes_profile(self, config_yaml, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "ENGINE_PROFILES_PATH", tmp_path / "engine_profiles.yaml")
+        config.save_engine_profile("Temp", path=config_yaml)
+        config.delete_engine_profile("Temp")
+        assert config.list_engine_profiles() == []
+
+    def test_list_empty_when_no_file(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "ENGINE_PROFILES_PATH", tmp_path / "engine_profiles.yaml")
+        assert config.list_engine_profiles() == []
