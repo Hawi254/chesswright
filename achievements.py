@@ -69,3 +69,72 @@ def evaluate(conn, trigger, config_path=None):
     if newly_unlocked:
         conn.commit()
     return newly_unlocked
+
+
+# ---------------------------------------------------------------------------
+# Seed catalog, batch A: one-time board/outcome events.
+# ---------------------------------------------------------------------------
+
+GIANT_KILLING_UPSET_THRESHOLD = -300   # keep aligned with dashboard/data/_shared.py's copy
+COMEBACK_WP_THRESHOLD = 0.10           # keep aligned with dashboard/data/_shared.py's copy
+
+
+def _check_first_win(conn, cfg):
+    row = conn.execute(
+        "SELECT id FROM games WHERE outcome_for_player='win' "
+        "ORDER BY utc_date, utc_time, id LIMIT 1"
+    ).fetchone()
+    return row[0] if row else None
+
+
+def _check_giant_killer(conn, cfg):
+    row = conn.execute(
+        "SELECT id FROM games WHERE rating_diff <= ? AND outcome_for_player='win' "
+        "ORDER BY utc_date, utc_time, id LIMIT 1",
+        (GIANT_KILLING_UPSET_THRESHOLD,)
+    ).fetchone()
+    return row[0] if row else None
+
+
+def _first_game_with_min_wp_at_most(conn, threshold, outcomes):
+    """Shared by comeback_kid (batch A) and swindle_artist (batch D,
+    Task 6) -- same "how low did the player's win probability go in this
+    game" shape, differing only in the threshold and which final
+    outcomes count. min_wp reuses the exact mover-POV-flip expression
+    dashboard/data/game_explorer.get_game_badges uses for is_comeback,
+    but as a plain SQLite GROUP BY (no window function needed for a MIN,
+    unlike that function's LAG-based lead-change count), so it works
+    outside the dashboard's DuckDB-only process."""
+    placeholders = ",".join("?" * len(outcomes))
+    row = conn.execute(f"""
+        SELECT g.id
+        FROM games g
+        JOIN (
+            SELECT game_id,
+                   MIN(CASE WHEN is_player_move=1 THEN win_prob_before
+                            ELSE 1 - win_prob_before END) AS min_wp
+            FROM moves
+            WHERE win_prob_before IS NOT NULL
+            GROUP BY game_id
+        ) m ON m.game_id = g.id
+        WHERE m.min_wp <= ? AND g.outcome_for_player IN ({placeholders})
+        ORDER BY g.utc_date, g.utc_time, g.id
+        LIMIT 1
+    """, (threshold, *outcomes)).fetchone()
+    return row[0] if row else None
+
+
+def _check_comeback_kid(conn, cfg):
+    return _first_game_with_min_wp_at_most(conn, COMEBACK_WP_THRESHOLD, ("win", "draw"))
+
+
+CATALOG.extend([
+    Achievement("first_win", "First Win", "Win your first recorded game.",
+                "milestone", frozenset({"sync"}), _check_first_win),
+    Achievement("giant_killer", "Giant Killer",
+                "Beat an opponent rated 300+ points above you.",
+                "narrative", frozenset({"sync"}), _check_giant_killer),
+    Achievement("comeback_kid", "Comeback Kid",
+                "Win or draw a game you were nearly lost in.",
+                "narrative", frozenset({"analysis"}), _check_comeback_kid),
+])
