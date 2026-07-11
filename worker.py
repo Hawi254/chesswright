@@ -645,12 +645,15 @@ def run(db_path, depth, multipv, threads, hash_mb, pv_max_len, engine_path,
         joblock.release()
 
     if games_done > 0:
+        achievements_conn = None
         try:
             achievements_conn = get_connection(db_path)
             achievements.evaluate(achievements_conn, "analysis")
-            achievements_conn.close()
         except Exception as e:
             print(f"WARNING: achievement evaluation failed (analysis batch unaffected): {e}")
+        finally:
+            if achievements_conn is not None:
+                achievements_conn.close()
 
     summary_cache_fragment = ""
     if cache_stats["eligible"] > 0:

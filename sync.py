@@ -195,12 +195,15 @@ def run(db_path, player_name, queue_strategy, berserk_max_fraction, variant_poli
     conn.commit()
     conn.close()
 
+    achievements_conn = None
     try:
         achievements_conn = get_connection(db_path)
         achievements.evaluate(achievements_conn, "sync")
-        achievements_conn.close()
     except Exception as e:
         print(f"WARNING: achievement evaluation failed (sync unaffected): {e}")
+    finally:
+        if achievements_conn is not None:
+            achievements_conn.close()
 
     print(f"Synced {n} game(s) ({len(truly_new_ids)} genuinely new, "
           f"{n - len(truly_new_ids)} already-known re-fetched at the sync boundary).")
