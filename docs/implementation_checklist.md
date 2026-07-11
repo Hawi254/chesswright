@@ -136,7 +136,7 @@ Pro-gated. This means most "build a trainer" work is really "add a new
 | Endgame Trainer | ⚠️ | Shipped **MVP only** (`be8f945`/`chesswright-pro@bb9991c`): a `phase="endgame"` filter on the existing Decisive Moment source, additionally verified against real material count (fixed a 15.6% mislabeling rate the plain move-number heuristic had). This is **decisive-loss turning points that happen to be in a real endgame** — not a general endgame-technique curriculum (rook endings, opposition, king activity as taught subjects). Say so explicitly if this line is ever re-scoped as "done." |
 | Time Management Trainer | ✅ (as a source, not a distinct UI) | New `get_time_pressure_drill_positions` (mirrors `get_motif_drill_positions`'s shape: same `is_player_move=1`/`classification IN ('mistake','blunder')`/`fen_before`+`best_move_san IS NOT NULL` gates, sorted by `cpl DESC`) gates on the player's own clock being in `TIME_PRESSURE_BUCKETS`' "critical (<5%)" band at the move, feeding a new `time_pressure` source into `build_drill_cards`. Verified against the real dev DB: **145 rows** qualify (comparable to Endgame's 180 and Collapse's 304). Concrete practical advantage over Missed Tactics: this is NOT motif-gated, so it works today even though `moves.motif IS NOT NULL` is currently 0 rows on this DB (the motif backfill hasn't run) — Missed Tactics is empty right now, this source isn't. |
 | Conversion Trainer | ✅ (as a source, not a distinct UI) | New `get_conversion_drill_positions` (`dashboard/data/points.py`) reuses `get_failed_conversion_causes`'s exact `last_hang`/`last_blown_mate` CTE machinery, extended to select `fen_before`/`best_move_san`/`actual_move_san` -- the per-position rows the aggregate-only version never returned -- feeding a new `conversion` source into `build_drill_cards`. Verified against the real dev DB: of 221 total failed-conversion games, **53 hung_piece + 26 blown_mate = 79 rows** qualify, both with **100% `fen_before`/`best_move_san` coverage** at the identified ply. Deliberately scoped to those two reasons only -- `time_pressure` (51 games) and `other` (91 games) have no clean single-ply signal (`last_player_clock` only finds the *last* move with clock data in the post-winning window, not necessarily the move that lost the win), so they are excluded from this function's output entirely, not merely unlabeled. |
-| Defense Trainer | ⛔ | Same gap class — no per-position extraction exists. |
+| Defense Trainer | ✅ (as a source, not a distinct UI) | New `get_defense_drill_positions` (`dashboard/data/points.py`) resolves what had been an open product question this session: the signal is **"the worst mistake made while the position was already worse-or-equal"** (`cpl`-ranked, one row per game via a `ROW_NUMBER()` rank mirroring `get_decisive_moment_positions`'s `ranked`/`rn=1` shape), scoped to games in the `failed_hold`/`missed_swindle` buckets — a lost-or-even position that was handed a real chance, or held into the middlegame, and still lost. This is Conversion's mirror image ("you were better and let it go" vs. "you were worse and needed to find the saving/holding resource") and a **different signal shape**: a raw positional-quality score (`cpl`), not a categorical hang/mate/clock cause-ladder, needing zero new engine analysis (`cpl`/`win_prob_before` already populated on every analyzed move). Uses `points.py`'s existing `EVEN_WP` constant (0.45) as the "already worse" threshold rather than a new magic number. Verified against the real dev DB: of **143** `failed_hold`/`missed_swindle` games, **101** have at least one qualifying row — comparable to this session's other three trainers (Collapse 304, Time Management 145, Conversion 79). Feeds a new `defense` source into `build_drill_cards`, positioned right after `conversion`. **This closes out all four trainer units from this session's handoff** (Time Management, Conversion, Defense, and Giant-Killer/Collapse — shipped as "Collapse Trainer"). |
 | Giant Killer & Collapse Trainer | ✅ (as "Collapse Trainer" — source-only, not a distinct UI) | Shipped as **"Collapse Trainer"**, not "Giant-Killer & Collapse Trainer": `get_decisive_moment_positions`'s new `collapse_only` param (`rating_diff >= GIANT_KILLING_COLLAPSE_THRESHOLD`, 300) feeds a new `collapse_moments` source into `build_drill_cards`. Upset **wins** (the "Giant-Killing" half, `rating_diff <= -300`) have zero possible drill content — `get_decisive_moment_positions` is loss-only by construction (a win has no losing move to learn from) — so no upset-win-side feature was built. Verified against the real dev DB: **304 rows** qualify (comparable to Endgame's 180 and Time Management's 145). |
 | Training Plans, Adaptive Training, Daily/Weekly goals | ⛔ | Blocked on multiple trainers above existing first — correctly still parked, not re-scored. |
 | **Achievements Service** | ⛔ | **Confirmed a pure, clean gap** (re-verified this session: `grep -ril achievement` across `dashboard/` and the private `chesswright_pro/` returns exactly one hit, a code comment in `app.py`, zero actual sketches/fields/tables). Building it now would be speculative — zero real callers exist yet (Overview Highlights, Insights badges, Training Center achievements are all themselves unbuilt). Wait for a first real consumer before scoping. |
@@ -224,13 +224,20 @@ ordering):
    Start with the `pywebview` print-to-PDF investigation (§7) before
    writing any report-assembly code — it could eliminate the PDF
    dependency risk entirely.
-2. **Endgame Trainer's siblings** (Conversion / Defense / Time-management /
-   Giant-Killer trainers) — real new backend each, no shortcut found; do
-   these only after Reporting, since none of them carry launch-gate
-   pressure.
+2. ~~**Endgame Trainer's siblings** (Conversion / Defense / Time-management /
+   Giant-Killer trainers)~~ — **done, later this same session (2026-07-11)**:
+   all four shipped as new `build_drill_cards` sources (Time Management,
+   Conversion, Defense, and Giant-Killer/Collapse as "Collapse Trainer") —
+   see the Phase 5 table above. The "real new backend each, no shortcut
+   found" framing this line originally carried didn't survive closer
+   investigation: two of the four turned out to be a filter on an
+   existing query, one a small query variant, and one a surgical
+   extension to an existing aggregate query. Only Defense needed a
+   genuinely new signal, and it turned out to need no new engine
+   analysis either.
 3. **Phase 6** (Settings/Help/Onboarding maturation) — broad-but-shallow,
-   lowest engineering leverage of the remaining phases; pick up once 1–2
-   are exhausted or blocked.
+   lowest engineering leverage of the remaining phases; pick up once 1
+   is exhausted or blocked.
 4. **Achievements Service** — deliberately last: still a real gap, but
    still zero real callers exist to design its data model against.
 5. **Command Palette v2** (true global Ctrl+K) — only if a specific need

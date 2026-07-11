@@ -513,3 +513,86 @@ def get_conversion_drill_positions(duck_conn, top_n: int = 20, config_path=None)
     """, params).fetchdf()
 
     return df if not df.empty else empty
+
+
+def get_defense_drill_positions(duck_conn, top_n: int = 20) -> pd.DataFrame:
+    """Drill positions for the Defense Trainer: one row per game, the
+    single worst mistake/blunder (by cpl) made WHILE THE POSITION WAS
+    ALREADY WORSE-OR-EVEN (win_prob_before <= EVEN_WP, 0.45 -- "still
+    holding the balance", the same constant this module already uses for
+    the failed_hold bucket's own threshold, reused here rather than
+    hardcoded as a second 0.45 magic number).
+
+    Scoped to games in the failed_hold / missed_swindle buckets --
+    together, "a lost-or-even position that was handed a real chance, or
+    held into the middlegame, and still lost": the natural "you were
+    worse and needed to find the saving/holding resource" counterpart to
+    get_conversion_drill_positions's "you were better and let it go".
+
+    This is a DIFFERENT signal shape from get_conversion_drill_positions
+    (and get_failed_conversion_causes): a raw positional-quality score
+    (cpl), not a categorical hang/blown-mate/clock cause-ladder, and it
+    needs zero new engine analysis -- cpl and win_prob_before are already
+    populated on every analyzed move, so there is no hung-piece/blown-mate
+    CTE machinery here, just a per-game ROW_NUMBER() ranked by cpl DESC
+    (mirrors get_decisive_moment_positions's ranked/rn=1 shape).
+
+    Verified against the real dev DB (2026-07-11): 143 games sit in the
+    failed_hold/missed_swindle buckets combined; of those, 101 have at
+    least one qualifying "worst mistake while already worse" row -- a
+    real, usable population, comparable to this session's other three
+    trainers (Collapse 304, Time Management 145, Conversion 79).
+
+    Self-contained like get_conversion_drill_positions (this is a
+    build_drill_cards() source, with no classified ledger lying around):
+    computes ledger = get_points_ledger(duck_conn); classified =
+    classify_points_ledger(ledger) internally. No config_path param --
+    unlike Conversion's min_material_delta, EVEN_WP is a fixed module
+    constant, not config-driven.
+
+    Includes opening/move_number/cpl (unlike get_conversion_drill_positions,
+    which doesn't) -- these feed chess_display._drill_context()'s
+    human-readable context string, and are available for free via the
+    same games join every sibling function already does.
+
+    Returns columns: game_id, fen_before, best_move_san, actual_move_san,
+    move_number, opening, cpl. Empty DataFrame with these columns when no
+    game qualifies (mirrors get_conversion_drill_positions's empty-shape
+    handling) rather than running a query with an empty IN (...) clause.
+    """
+    empty = pd.DataFrame(columns=["game_id", "fen_before", "best_move_san",
+                                   "actual_move_san", "move_number", "opening", "cpl"])
+
+    ledger = get_points_ledger(duck_conn)
+    classified = classify_points_ledger(ledger)
+    defense_games = classified[classified.bucket.isin(['failed_hold', 'missed_swindle'])].game_id.tolist()
+    if not defense_games:
+        return empty
+
+    placeholders = ", ".join(["?"] * len(defense_games))
+    params = defense_games + [top_n]
+
+    df = duck_conn.execute(f"""
+        WITH ranked AS (
+            SELECT m.game_id, m.fen_before, m.best_move_san,
+                   m.san AS actual_move_san, m.move_number,
+                   ROUND(m.cpl, 0) AS cpl,
+                   g.opening_family AS opening,
+                   ROW_NUMBER() OVER (PARTITION BY m.game_id ORDER BY m.cpl DESC) AS rn
+            FROM db.moves m
+            JOIN db.games g ON g.id = m.game_id
+            WHERE m.is_player_move = 1
+              AND m.classification IN ('mistake', 'blunder')
+              AND m.fen_before     IS NOT NULL
+              AND m.best_move_san  IS NOT NULL
+              AND m.win_prob_before IS NOT NULL
+              AND m.win_prob_before <= {EVEN_WP}
+              AND m.game_id IN ({placeholders})
+        )
+        SELECT game_id, fen_before, best_move_san, actual_move_san, move_number, opening, cpl
+        FROM ranked WHERE rn = 1
+        ORDER BY cpl DESC
+        LIMIT ?
+    """, params).fetchdf()
+
+    return df if not df.empty else empty

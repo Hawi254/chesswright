@@ -375,6 +375,59 @@ class TestBuildDrillCardsConversion:
             pathlib.Path(tmp_path).unlink(missing_ok=True)
 
 
+def _seed_defense_hold_game(conn, game_id, fen_before="fen_defense_hold",
+                             best_move_san="Rd1", actual_move_san="Re1"):
+    """One failed_hold game (held even at move 15, blunders while already
+    worse-or-equal at move 17, fades to a loss without ever recovering
+    from a lost position) -- shaped like points.py's own
+    TestGetDefenseDrillPositions "def_hold" scenario, duplicated locally
+    per this file's own convention of not cross-importing test helpers
+    between test files."""
+    conn.execute("""
+        INSERT INTO games (id, site, white, black, result,
+            outcome_for_player, analysis_status, utc_date,
+            base_seconds, time_control_category, opening_family,
+            player_color, opponent_name)
+        VALUES (?, 'https://lichess.org/' || ?, 'me', 'them', '0-1',
+                'loss', 'done', '2026.01.05', 300, 'blitz', 'Test Opening',
+                'white', 'them')
+    """, (game_id, game_id))
+    conn.executemany(
+        "INSERT INTO moves (game_id, ply, move_number, color, san, "
+        "is_player_move, win_prob_before, classification, cpl, "
+        "fen_before, best_move_san) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+            (game_id, 1, 1, "w", "e4", 1, 0.50, None, None, None, None),
+            (game_id, 29, 15, "w", "Kg1", 1, 0.48, None, None, None, None),
+            (game_id, 33, 17, "w", actual_move_san, 1, 0.30, "blunder", 150,
+             fen_before, best_move_san),
+            (game_id, 41, 21, "w", "Kh2", 1, 0.10, None, None, None, None),
+        ])
+    conn.commit()
+
+
+@pytest.mark.integration
+class TestBuildDrillCardsDefense:
+    def test_defense_produces_labeled_cards(self, migrated_db):
+        from data.drills import build_drill_cards
+
+        _seed_defense_hold_game(migrated_db, "g_def")
+
+        duck, disk, tmp_path = _duck_from_conn(migrated_db)
+        try:
+            cards = build_drill_cards(
+                migrated_db, duck, sources={"defense"}, top_n=20)
+            assert len(cards) == 1
+            assert cards[0]["source"] == "Defense"
+            assert cards[0]["fen"] == "fen_defense_hold"
+            assert cards[0]["best_move_san"] == "Rd1"
+        finally:
+            duck.close()
+            disk.close()
+            pathlib.Path(tmp_path).unlink(missing_ok=True)
+
+
 @pytest.mark.integration
 class TestGetTimePressureDrillPositions:
     def test_critical_clock_blunder_included(self, migrated_db):

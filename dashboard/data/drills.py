@@ -30,22 +30,24 @@ from _common import get_config
 
 from ._shared import GIANT_KILLING_COLLAPSE_THRESHOLD, TIME_PRESSURE_BUCKETS
 from .openings import get_repertoire_holes
-from .points import get_conversion_drill_positions
+from .points import get_conversion_drill_positions, get_defense_drill_positions
 
 # Ordered list of valid build_drill_cards() source keys, and the display
 # label each produces on a card's "source" field. Order is meaningful --
 # it is the collection order in build_drill_cards, which in turn decides
 # which label wins when add_cards() dedupes by UNIQUE(fen) (INSERT OR
-# IGNORE: first occurrence in the list wins). Leave room to append new
-# keys here as future trainers (Defense) land -- nothing else in this
-# module hardcodes the list's length.
-_SOURCE_ORDER = ["motifs", "endgame_moments", "collapse_moments", "time_pressure", "conversion", "moments", "holes"]
+# IGNORE: first occurrence in the list wins). This list is stable/complete
+# for this session -- Time Management, Conversion, Defense, and Collapse
+# (the four trainers scoped in this handoff) have all landed; no more
+# slots are pending.
+_SOURCE_ORDER = ["motifs", "endgame_moments", "collapse_moments", "time_pressure", "conversion", "defense", "moments", "holes"]
 _SOURCE_LABELS = {
     "motifs": "Missed Tactics",
     "endgame_moments": "Endgame Turning Point",
     "collapse_moments": "Collapse",
     "time_pressure": "Time Pressure",
     "conversion": "Failed Conversion",
+    "defense": "Defense",
     "moments": "Decisive Moment",
     "holes": "Repertoire Hole",
 }
@@ -268,21 +270,25 @@ def build_drill_cards(sqlite_conn, duck_conn, sources: set[str],
 
     Sources are collected in _SOURCE_ORDER: motifs, then endgame_moments,
     then collapse_moments, then time_pressure, then conversion, then
-    moments, then holes. add_cards() dedupes by UNIQUE(fen) via INSERT OR
-    IGNORE, so when a position qualifies for more than one source,
-    whichever is collected first wins the label. collapse_moments sits
-    between endgame_moments and time_pressure because it's more specific
-    than a generic decisive moment but less specific than a real-material
-    endgame turning point -- mirrors the existing endgame-vs-moments
-    ordering (endgame first, since it's the more specific label).
-    time_pressure sits right after collapse_moments because it's a
-    specific "why" signal read straight off the moves table (like Missed
-    Tactics), more specific than a generic Decisive Moment. conversion
-    sits right after time_pressure and before moments for the same
-    reason -- it's a specific "why" (hung a piece or blew a forced mate
-    after reaching a winning position), more specific than a generic
-    Decisive Moment -- and leaves the same slot open for Defense (a
-    future trainer) to land right after conversion too.
+    defense, then moments, then holes. add_cards() dedupes by UNIQUE(fen)
+    via INSERT OR IGNORE, so when a position qualifies for more than one
+    source, whichever is collected first wins the label. collapse_moments
+    sits between endgame_moments and time_pressure because it's more
+    specific than a generic decisive moment but less specific than a
+    real-material endgame turning point -- mirrors the existing
+    endgame-vs-moments ordering (endgame first, since it's the more
+    specific label). time_pressure sits right after collapse_moments
+    because it's a specific "why" signal read straight off the moves
+    table (like Missed Tactics), more specific than a generic Decisive
+    Moment. conversion sits right after time_pressure and before defense
+    for the same reason -- it's a specific "why" (hung a piece or blew a
+    forced mate after reaching a winning position), more specific than a
+    generic Decisive Moment. defense sits right after conversion and
+    before moments -- it's conversion's mirror image (worst mistake while
+    already worse-or-equal, rather than while winning), similarly more
+    specific than a generic Decisive Moment. This is the last trainer
+    landing this session -- the source list is stable/complete, no more
+    slots need to stay open.
     """
     unknown = sources - set(_SOURCE_ORDER)
     if unknown:
@@ -304,6 +310,8 @@ def build_drill_cards(sqlite_conn, duck_conn, sources: set[str],
             df = get_time_pressure_drill_positions(sqlite_conn, top_n=top_n)
         elif source == "conversion":
             df = get_conversion_drill_positions(duck_conn, top_n=top_n)
+        elif source == "defense":
+            df = get_defense_drill_positions(duck_conn, top_n=top_n)
         elif source == "moments":
             df = get_decisive_moment_positions(duck_conn, top_n=top_n)
         elif source == "holes":

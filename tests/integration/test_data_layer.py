@@ -1163,6 +1163,144 @@ class TestGetConversionDrillPositions:
 
 
 @pytest.mark.integration
+class TestGetDefenseDrillPositions:
+    """dashboard/data/points.py's get_defense_drill_positions -- the
+    Defense Trainer's drill-card source: the worst mistake/blunder (by
+    cpl) made while win_prob_before <= EVEN_WP (0.45), scoped to games in
+    the failed_hold/missed_swindle buckets. A different signal shape from
+    get_conversion_drill_positions (raw cpl, not a hang/mate cause-ladder)
+    but the same self-contained ledger-computation pattern, so reuses
+    TestPointsData._seed_causes_game (ply-indexed win_prob_before/
+    classification/cpl/fen_before/best_move_san rows)."""
+
+    _seed_causes_game = TestPointsData._seed_causes_game
+
+    def test_failed_hold_bucket_produces_qualifying_row(self, migrated_db):
+        from data import points
+
+        # Held even (wp 0.48 >= EVEN_WP at move 15) then a real blunder at
+        # wp 0.30 (<= EVEN_WP, "already worse") before fading to a loss.
+        # peak_wp stays < WINNING_WP (not conversion); never recovers from
+        # <= LOST_WP so post_lost_peak_wp stays NULL (not swindle) ->
+        # failed_hold.
+        self._seed_causes_game(migrated_db, "def_hold", "loss", [
+            {"ply": 1, "win_prob_before": 0.50},
+            {"ply": 29, "win_prob_before": 0.48},   # move 15
+            {"ply": 33, "win_prob_before": 0.30, "classification": "blunder", "cpl": 150,
+             "san": "Re1", "fen_before": "fen_def_hold", "best_move_san": "Rd1"},
+            {"ply": 41, "win_prob_before": 0.10},
+        ])
+        duck, disk, tmp = _duck_from_conn(migrated_db)
+        try:
+            classified = points.classify_points_ledger(points.get_points_ledger(duck))
+            assert classified.set_index("game_id").loc["def_hold"].bucket == "failed_hold"
+
+            df = points.get_defense_drill_positions(duck, top_n=20).set_index("game_id")
+            row = df.loc["def_hold"]
+            assert row.fen_before == "fen_def_hold"
+            assert row.best_move_san == "Rd1"
+            assert row.actual_move_san == "Re1"
+            assert row.cpl == 150
+            assert row.opening == "Test Opening"
+            assert row.move_number == 17
+        finally:
+            duck.close(); disk.close(); os.unlink(tmp)
+
+    def test_missed_swindle_bucket_produces_qualifying_row(self, migrated_db):
+        from data import points
+
+        # Drops to wp 0.10 (<= LOST_WP), blunders again at wp 0.40 (<=
+        # EVEN_WP, still "already worse"), then is handed a real chance
+        # (wp 0.55 >= SWINDLE_CHANCE_WP, with a prior min <= LOST_WP) and
+        # still loses -> missed_swindle.
+        self._seed_causes_game(migrated_db, "def_swindle", "loss", [
+            {"ply": 1, "win_prob_before": 0.50},
+            {"ply": 11, "win_prob_before": 0.10},   # move 6, triggers prior_min <= LOST_WP
+            {"ply": 15, "win_prob_before": 0.40, "classification": "blunder", "cpl": 180,
+             "san": "Nb1", "fen_before": "fen_def_swindle", "best_move_san": "Nc3"},
+            {"ply": 25, "win_prob_before": 0.55},   # the swindle chance
+            {"ply": 35, "win_prob_before": 0.05},
+        ])
+        duck, disk, tmp = _duck_from_conn(migrated_db)
+        try:
+            classified = points.classify_points_ledger(points.get_points_ledger(duck))
+            assert classified.set_index("game_id").loc["def_swindle"].bucket == "missed_swindle"
+
+            df = points.get_defense_drill_positions(duck, top_n=20).set_index("game_id")
+            row = df.loc["def_swindle"]
+            assert row.fen_before == "fen_def_swindle"
+            assert row.best_move_san == "Nc3"
+            assert row.cpl == 180
+            assert row.opening == "Test Opening"
+        finally:
+            duck.close(); disk.close(); os.unlink(tmp)
+
+    def test_non_qualifying_bucket_excluded_despite_low_wp_mistake(self, migrated_db):
+        """A plain loss (never held even, never recovers into swindle
+        range -> bucket 'none') must be excluded even though it has a
+        low-win-prob (<= EVEN_WP) blunder somewhere in its curve."""
+        from data import points
+
+        self._seed_causes_game(migrated_db, "def_none", "loss", [
+            {"ply": 1, "win_prob_before": 0.50},
+            {"ply": 9, "win_prob_before": 0.30, "classification": "blunder", "cpl": 300,
+             "san": "Qd3", "fen_before": "fen_def_none", "best_move_san": "Qd2"},
+            {"ply": 19, "win_prob_before": 0.05},
+            {"ply": 39, "win_prob_before": 0.02},
+        ])
+        duck, disk, tmp = _duck_from_conn(migrated_db)
+        try:
+            classified = points.classify_points_ledger(points.get_points_ledger(duck))
+            assert classified.set_index("game_id").loc["def_none"].bucket == "none"
+
+            df = points.get_defense_drill_positions(duck, top_n=20)
+            assert "def_none" not in set(df.game_id)
+        finally:
+            duck.close(); disk.close(); os.unlink(tmp)
+
+    def test_multiple_qualifying_mistakes_highest_cpl_wins(self, migrated_db):
+        """Two qualifying (win_prob_before <= EVEN_WP, mistake/blunder)
+        rows in the same failed_hold game -- the higher-cpl one must win
+        (rn=1 behavior), not the later or earlier one."""
+        from data import points
+
+        self._seed_causes_game(migrated_db, "def_multi", "loss", [
+            {"ply": 1, "win_prob_before": 0.50},
+            {"ply": 29, "win_prob_before": 0.48},   # move 15, held even
+            {"ply": 33, "win_prob_before": 0.30, "classification": "blunder", "cpl": 150,
+             "san": "Re1", "fen_before": "fen_def_multi_high", "best_move_san": "Rd1"},
+            {"ply": 37, "win_prob_before": 0.20, "classification": "mistake", "cpl": 80,
+             "san": "Qc3", "fen_before": "fen_def_multi_low", "best_move_san": "Qc2"},
+            {"ply": 41, "win_prob_before": 0.10},
+        ])
+        duck, disk, tmp = _duck_from_conn(migrated_db)
+        try:
+            classified = points.classify_points_ledger(points.get_points_ledger(duck))
+            assert classified.set_index("game_id").loc["def_multi"].bucket == "failed_hold"
+
+            df = points.get_defense_drill_positions(duck, top_n=20)
+            matching = df[df.game_id == "def_multi"]
+            assert len(matching) == 1
+            assert matching.iloc[0].fen_before == "fen_def_multi_high"
+            assert matching.iloc[0].cpl == 150
+        finally:
+            duck.close(); disk.close(); os.unlink(tmp)
+
+    def test_empty_when_no_defense_games(self, migrated_db):
+        from data import points
+
+        duck, disk, tmp = _duck_from_conn(migrated_db)
+        try:
+            df = points.get_defense_drill_positions(duck, top_n=20)
+            assert df.empty
+            assert list(df.columns) == [
+                "game_id", "fen_before", "best_move_san", "actual_move_san",
+                "move_number", "opening", "cpl"]
+        finally:
+            duck.close(); disk.close(); os.unlink(tmp)
+
+
+@pytest.mark.integration
 class TestSrsEfficacy:
     """dashboard/data/srs.py efficacy readers -- the first SELECTs
     srs_reviews has ever had. Reviews are inserted with controlled
