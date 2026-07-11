@@ -338,3 +338,27 @@ def test_sync_run_calls_achievements_evaluate_after_new_games(tmp_path, monkeypa
              berserk_max_fraction=1.0, variant_policy="skip", timeout_seconds=5)
 
     assert calls == ["sync"]
+
+
+@pytest.mark.integration
+def test_backfill_achievements_is_idempotent(migrated_db_path):
+    import backfill_achievements
+
+    conn = sqlite3.connect(migrated_db_path)
+    conn.execute(
+        "INSERT INTO games (id, white, black, outcome_for_player, utc_date, utc_time) "
+        "VALUES ('g1', 'W', 'B', 'win', '2025.01.01', '12:00:00')")
+    conn.commit()
+    conn.close()
+
+    backfill_achievements.backfill(migrated_db_path)
+    conn = sqlite3.connect(migrated_db_path)
+    first_count = conn.execute("SELECT COUNT(*) FROM achievements_unlocked").fetchone()[0]
+    conn.close()
+    assert first_count >= 1  # at least first_win
+
+    backfill_achievements.backfill(migrated_db_path)
+    conn = sqlite3.connect(migrated_db_path)
+    second_count = conn.execute("SELECT COUNT(*) FROM achievements_unlocked").fetchone()[0]
+    conn.close()
+    assert second_count == first_count
