@@ -201,6 +201,15 @@ class TestPick:
 
 
 @pytest.mark.unit
+class TestResetEnginePath:
+    def test_clears_back_to_null(self, config_yaml):
+        config.set_engine_path("/usr/bin/stockfish", path=config_yaml)
+        config.reset_engine_path(path=config_yaml)
+        cfg = config.load_config(config_yaml)
+        assert cfg["engine"]["path"] is None
+
+
+@pytest.mark.unit
 class TestEngineProfiles:
     def test_save_and_list(self, config_yaml, tmp_path, monkeypatch):
         monkeypatch.setattr(config, "ENGINE_PROFILES_PATH", tmp_path / "engine_profiles.yaml")

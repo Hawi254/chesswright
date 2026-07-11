@@ -341,6 +341,16 @@ def _render_analysis_engine_tab():
         else:
             st.caption("No saved profiles yet.")
 
+    st.divider()
+    if st.button("Reset engine settings to defaults", key="reset_engine_defaults"):
+        template_path = pathlib.Path(config.__file__).resolve().parent / "config.yaml"
+        template_cfg = config.load_config(template_path)
+        config.reset_engine_path()
+        config.save_interactive_engine(template_cfg["interactive_engine"])
+        live_engine.get_engine_service.clear()
+        st.success("Engine settings reset to defaults.")
+        st.rerun()
+
 
 def _render_analytics_display_tab():
     st.subheader("Local timezone")
@@ -378,6 +388,16 @@ def _render_analytics_display_tab():
         st.toast("Confidence threshold saved.", icon="✅")
         st.rerun()
 
+    st.divider()
+    if st.button("Reset analytics & display settings to defaults", key="reset_analytics_defaults"):
+        template_path = pathlib.Path(config.__file__).resolve().parent / "config.yaml"
+        template_cfg = config.load_config(template_path)
+        config.set_analytics_setting("utc_offset_hours", template_cfg["analytics"]["utc_offset_hours"])
+        config.set_analytics_setting("min_sample_size", template_cfg["analytics"]["min_sample_size"])
+        st.cache_data.clear()
+        st.success("Analytics & Display settings reset to defaults.")
+        st.rerun()
+
 
 def _render_ingestion_tab():
     st.subheader("New game ingestion")
@@ -412,6 +432,15 @@ def _render_ingestion_tab():
         config.set_ingestion_setting("variant_policy", variant_policy)
         config.set_ingestion_setting("queue_strategy", queue_strategy)
         st.toast("Ingestion settings saved.", icon="✅")
+        st.rerun()
+
+    st.divider()
+    if st.button("Reset ingestion settings to defaults", key="reset_ingestion_defaults"):
+        template_path = pathlib.Path(config.__file__).resolve().parent / "config.yaml"
+        template_cfg = config.load_config(template_path)
+        config.set_ingestion_setting("variant_policy", template_cfg["ingestion"]["variant_policy"])
+        config.set_ingestion_setting("queue_strategy", template_cfg["ingestion"]["queue_strategy"])
+        st.success("Ingestion settings reset to defaults.")
         st.rerun()
 
 

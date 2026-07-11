@@ -398,6 +398,15 @@ def set_engine_path(engine_path, path=None):
     path.write_text(new_text)
 
 
+def reset_engine_path(path=None) -> None:
+    """Clears engine.path back to null (auto-detect) -- the Settings
+    page's 'Reset to defaults' action for the Engine location control.
+    Distinct from set_engine_path() (which always quotes a real path
+    string) since null must render as the bare YAML null literal, not
+    the string "None"."""
+    _set_section_scalar("engine", "path", None, path)
+
+
 # ---------------------------------------------------------------------------
 # Engine Profiles -- named snapshots of engine.*/interactive_engine.* only
 # (batch depth/multipv/threads/hash_mb + all interactive_engine fields).
