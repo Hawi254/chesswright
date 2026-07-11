@@ -53,6 +53,19 @@ class TestSetDatabasePath:
 
 
 @pytest.mark.unit
+class TestSetAnalyticsSetting:
+    def test_sets_utc_offset_hours(self, config_yaml):
+        config.set_analytics_setting("utc_offset_hours", -5, path=config_yaml)
+        cfg = config.load_config(config_yaml)
+        assert cfg["analytics"]["utc_offset_hours"] == -5
+
+    def test_does_not_touch_other_analytics_keys(self, config_yaml):
+        config.set_analytics_setting("utc_offset_hours", 3, path=config_yaml)
+        cfg = config.load_config(config_yaml)
+        assert cfg["analytics"]["min_sample_size"] == 5
+
+
+@pytest.mark.unit
 class TestLoadConfig:
     def test_loads_all_expected_sections(self, config_yaml):
         cfg = config.load_config(config_yaml)
@@ -112,12 +125,12 @@ class TestBackfillMissingKeys:
 
     def test_does_not_add_new_top_level_section(self, config_yaml):
         cfg = config.load_config(config_yaml)
-        assert "analytics" not in cfg
+        assert "worker" not in cfg
 
         config.backfill_missing_keys(path=config_yaml)
 
         cfg = config.load_config(config_yaml)
-        assert "analytics" not in cfg
+        assert "worker" not in cfg
 
     def test_idempotent(self, config_yaml):
         config.backfill_missing_keys(path=config_yaml)

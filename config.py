@@ -226,6 +226,13 @@ def set_worker_setting(key: str, value, path=None):
     _set_section_scalar("worker", key, value, path)
 
 
+def set_analytics_setting(key: str, value, path=None):
+    """key in {min_sample_size, utc_offset_hours, ...} -- any bare-scalar
+    key under analytics:. Same _set_section_scalar mechanism as
+    set_engine_setting/set_worker_setting."""
+    _set_section_scalar("analytics", key, value, path)
+
+
 def save_interactive_engine(settings: dict, path=None):
     """Replace the interactive_engine: block with the supplied settings dict.
 

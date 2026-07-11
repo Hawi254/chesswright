@@ -15,7 +15,7 @@ import charts
 import chess_display
 import data
 import theme
-from _common import get_connections, persist_filter, render_where_next, restore_filter_default
+from _common import get_connections, get_config, persist_filter, render_where_next, restore_filter_default
 
 
 @st.cache_data(show_spinner="Computing blunder rates under time pressure…")
@@ -495,7 +495,8 @@ def _render_tab_rhythm(sqlite_conn, duck_conn):
                          theme=None)
 
     with st.container(border=True):
-        st.subheader("Win rate heatmap: day of week × hour of day (UTC)")
+        offset = get_config()["analytics"]["utc_offset_hours"]
+        st.subheader(f"Win rate heatmap: day of week × hour of day (UTC{offset:+d})")
         st.caption("Hover a cell to see your average rating difference at that day/hour too -- "
                    "win rate varies partly because who you face varies by time of day, not "
                    "only how you play then.")
@@ -511,7 +512,7 @@ def _render_tab_rhythm(sqlite_conn, duck_conn):
             lambda v: "--" if pd.isna(v) else f"{v:+.0f}")
         st.plotly_chart(
             charts.heatmap(heatmap_df, theme.DIVERGING_COLORSCALE, value_suffix="%",
-                           x_title="Hour of day (UTC)", y_title="Day of week",
+                           x_title=f"Hour of day (UTC{offset:+d})", y_title="Day of week",
                            colorbar_title="Win %",
                            hover_extra=(rating_df, "Avg rating diff")),
             theme=None)

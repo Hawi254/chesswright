@@ -87,6 +87,9 @@ def config_yaml(tmp_path):
         '  time_sec: 0.5\n'
         '  depth: 20\n'
         '  store_threshold: 20\n'
+        'analytics:\n'
+        '  min_sample_size: 5\n'
+        '  utc_offset_hours: 0\n'
     )
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text(cfg_text)

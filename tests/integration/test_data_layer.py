@@ -710,6 +710,27 @@ class TestPatternsData:
         finally:
             duck.close(); disk.close(); os.unlink(tmp)
 
+    def test_get_day_hour_heatmap_applies_utc_offset(self, migrated_db, monkeypatch):
+        """hour_utc=23 with a +2 offset lands in hour_local=1 (wraps past
+        midnight) -- shifts hour only, leaves day_of_week alone, matching
+        this app's existing CLI report_by_hour_bucket convention
+        (analytics.py) rather than inventing a new cross-adjustment."""
+        from data import patterns as patterns_module
+        migrated_db.execute(
+            "INSERT INTO games (id, white, black, outcome_for_player, "
+            "day_of_week, hour_utc, rating_diff) VALUES ('g1', 'W', 'B', 'win', 3, 23, 0)")
+        migrated_db.commit()
+        duck, disk, tmp = _duck_from_conn(migrated_db)
+        monkeypatch.setattr(
+            patterns_module, "get_config",
+            lambda config_path=None: {"analytics": {"utc_offset_hours": 2}})
+        try:
+            win_pivot, _ = patterns_module.get_day_hour_heatmap(duck)
+            assert 1 in win_pivot.columns
+            assert 23 not in win_pivot.columns
+        finally:
+            duck.close(); disk.close(); os.unlink(tmp)
+
 
 @pytest.mark.integration
 class TestVariationsData:

@@ -25,15 +25,17 @@ import components.native_file_picker as native_file_picker
 def render():
     st.title("Settings")
 
-    tab_account, tab_engine, tab_api, tab_pro, tab_support = st.tabs([
-        "Account & Data", "Analysis Engine", "Anthropic API key",
-        "Chesswright Pro", "Support",
+    tab_account, tab_engine, tab_analytics, tab_api, tab_pro, tab_support = st.tabs([
+        "Account & Data", "Analysis Engine", "Analytics & Display",
+        "Anthropic API key", "Chesswright Pro", "Support",
     ])
 
     with tab_account:
         _render_account_data_tab()
     with tab_engine:
         _render_analysis_engine_tab()
+    with tab_analytics:
+        _render_analytics_display_tab()
     with tab_api:
         _render_api_key_tab()
     with tab_pro:
@@ -295,6 +297,25 @@ def _render_analysis_engine_tab():
             st.toast("Live engine settings saved.", icon="✅")
         except Exception as e:
             st.error(f"Could not save settings: {e}")
+
+
+def _render_analytics_display_tab():
+    st.subheader("Local timezone")
+    st.caption(
+        "Your local UTC offset, used to show 'time of day' findings "
+        "(like the day-of-week × hour win-rate map on Patterns & "
+        "Tendencies) in your own local time instead of raw UTC.")
+    cfg = config.load_config()
+    offset = st.number_input(
+        "UTC offset (hours)", min_value=-12, max_value=14, step=1,
+        value=int(cfg["analytics"]["utc_offset_hours"]),
+        help="E.g. -5 for US Eastern Standard Time, +1 for Central "
+             "European Time.")
+    if st.button("Save timezone"):
+        config.set_analytics_setting("utc_offset_hours", int(offset))
+        st.cache_data.clear()
+        st.toast("Timezone saved.", icon="✅")
+        st.rerun()
 
 
 def _render_account_data_tab():
