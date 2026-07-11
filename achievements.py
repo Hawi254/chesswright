@@ -62,7 +62,7 @@ def evaluate(conn, trigger, config_path=None):
             continue
         source_game_id = result if isinstance(result, str) else None
         conn.execute(
-            "INSERT INTO achievements_unlocked (achievement_id, unlocked_at, source_game_id) "
+            "INSERT OR IGNORE INTO achievements_unlocked (achievement_id, unlocked_at, source_game_id) "
             "VALUES (?, ?, ?)",
             (achievement.id, datetime.datetime.now(datetime.timezone.utc).isoformat(),
              source_game_id))
