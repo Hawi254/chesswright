@@ -28,7 +28,7 @@ import chess_utils
 from chess_display import _drill_context
 from _common import get_config
 
-from ._shared import GIANT_KILLING_COLLAPSE_THRESHOLD
+from ._shared import GIANT_KILLING_COLLAPSE_THRESHOLD, TIME_PRESSURE_BUCKETS
 from .openings import get_repertoire_holes
 
 # Ordered list of valid build_drill_cards() source keys, and the display
@@ -36,13 +36,14 @@ from .openings import get_repertoire_holes
 # it is the collection order in build_drill_cards, which in turn decides
 # which label wins when add_cards() dedupes by UNIQUE(fen) (INSERT OR
 # IGNORE: first occurrence in the list wins). Leave room to append new
-# keys here as future trainers (Time Management, Conversion, Defense)
-# land -- nothing else in this module hardcodes the list's length.
-_SOURCE_ORDER = ["motifs", "endgame_moments", "collapse_moments", "moments", "holes"]
+# keys here as future trainers (Conversion, Defense) land -- nothing else
+# in this module hardcodes the list's length.
+_SOURCE_ORDER = ["motifs", "endgame_moments", "collapse_moments", "time_pressure", "moments", "holes"]
 _SOURCE_LABELS = {
     "motifs": "Missed Tactics",
     "endgame_moments": "Endgame Turning Point",
     "collapse_moments": "Collapse",
+    "time_pressure": "Time Pressure",
     "moments": "Decisive Moment",
     "holes": "Repertoire Hole",
 }
@@ -98,6 +99,55 @@ def get_motif_drill_positions(sqlite_conn, motif: str | None = None,
           AND m.fen_before     IS NOT NULL
           AND m.best_move_san  IS NOT NULL
           {motif_clause}
+        ORDER BY m.cpl DESC
+        {limit_clause}
+    """, sqlite_conn, params=params)
+
+
+def get_time_pressure_drill_positions(sqlite_conn, top_n: int | None = 20) -> pd.DataFrame:
+    """Positions where the player made a mistake/blunder while their own
+    clock was already in TIME_PRESSURE_BUCKETS' "critical (<5%)" band,
+    sorted by CPL descending.
+
+    Verified against the real dev DB: **145 rows** qualify -- a real,
+    usable drill source. Unlike get_motif_drill_positions, this does NOT
+    gate on m.motif -- the practical advantage is real today, not just in
+    principle: moves.motif IS NOT NULL is currently 0 rows on this DB (the
+    motif backfill hasn't run), which makes Missed Tactics empty, while
+    this source works right now off classification/cpl/clock_seconds
+    alone, columns worker.py and annotate.py already populate.
+
+    top_n=None returns every qualifying row -- same client-cache-then-slice
+    rationale as get_motif_drill_positions.
+
+    Takes sqlite_conn, not duck_conn, for the same reason
+    get_motif_drill_positions does: this is a small point-lookup-shaped
+    query (mistakes/blunders only, via idx_moves_player_cpl's
+    is_player_move filter) against a real sqlite connection, vs. a full
+    SQLITE_SCAN through DuckDB's ATTACH boundary, which never uses
+    sqlite indexes anyway.
+    """
+    limit_clause = "" if top_n is None else "LIMIT ?"
+    critical_fraction = TIME_PRESSURE_BUCKETS[0][2]  # 0.05, "critical (<5%)"
+    params = [critical_fraction] + ([] if top_n is None else [top_n])
+    return pd.read_sql_query(f"""
+        SELECT
+            m.fen_before,
+            m.best_move_san,
+            m.san             AS actual_move_san,
+            ROUND(m.cpl, 0)   AS cpl,
+            g.opening_family  AS opening,
+            m.game_id,
+            m.move_number
+        FROM moves m
+        JOIN games g ON g.id = m.game_id
+        WHERE m.is_player_move = 1
+          AND m.classification IN ('mistake', 'blunder')
+          AND m.fen_before     IS NOT NULL
+          AND m.best_move_san  IS NOT NULL
+          AND m.clock_seconds  IS NOT NULL
+          AND g.base_seconds   IS NOT NULL AND g.base_seconds > 0
+          AND CAST(m.clock_seconds AS DOUBLE) / g.base_seconds < ?
         ORDER BY m.cpl DESC
         {limit_clause}
     """, sqlite_conn, params=params)
@@ -215,14 +265,19 @@ def build_drill_cards(sqlite_conn, duck_conn, sources: set[str],
     wanting a spinner around that put it around this whole call.
 
     Sources are collected in _SOURCE_ORDER: motifs, then endgame_moments,
-    then collapse_moments, then moments, then holes. add_cards() dedupes
-    by UNIQUE(fen) via INSERT OR IGNORE, so when a position qualifies for
-    more than one source, whichever is collected first wins the label.
-    collapse_moments sits between endgame_moments and moments because
-    it's more specific than a generic decisive moment but less specific
-    than a real-material endgame turning point -- mirrors the existing
-    endgame-vs-moments ordering (endgame first, since it's the more
-    specific label).
+    then collapse_moments, then time_pressure, then moments, then holes.
+    add_cards() dedupes by UNIQUE(fen) via INSERT OR IGNORE, so when a
+    position qualifies for more than one source, whichever is collected
+    first wins the label. collapse_moments sits between endgame_moments
+    and time_pressure because it's more specific than a generic decisive
+    moment but less specific than a real-material endgame turning point
+    -- mirrors the existing endgame-vs-moments ordering (endgame first,
+    since it's the more specific label). time_pressure sits right after
+    collapse_moments and before moments because it's a specific "why"
+    signal read straight off the moves table (like Missed Tactics), more
+    specific than a generic Decisive Moment -- and leaves room for
+    Conversion and Defense (future trainers) to slot in between
+    time_pressure and moments too.
     """
     unknown = sources - set(_SOURCE_ORDER)
     if unknown:
@@ -240,6 +295,8 @@ def build_drill_cards(sqlite_conn, duck_conn, sources: set[str],
             df = get_decisive_moment_positions(duck_conn, top_n=top_n, phase="endgame")
         elif source == "collapse_moments":
             df = get_decisive_moment_positions(duck_conn, top_n=top_n, collapse_only=True)
+        elif source == "time_pressure":
+            df = get_time_pressure_drill_positions(sqlite_conn, top_n=top_n)
         elif source == "moments":
             df = get_decisive_moment_positions(duck_conn, top_n=top_n)
         elif source == "holes":

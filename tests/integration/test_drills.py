@@ -50,6 +50,29 @@ _LIGHT_MATERIAL_SIG = "R1B1P6vR1B1P6"           # non_pawn_piece_count == 4
 _FULL_MATERIAL_SIG = "Q1R2B2N2P7vQ1R2B2N2P7"    # non_pawn_piece_count == 14
 
 
+def _seed_time_pressure_move(conn, game_id, clock_seconds, base_seconds,
+                              classification, cpl=100, fen_before=None,
+                              best_move_san="Nf3", actual_move_san="Ng1",
+                              move_number=20):
+    """One game (base_seconds set for the time-pressure fraction), one
+    move row shaped for get_time_pressure_drill_positions (classification/
+    cpl/clock_seconds, NOT the win_prob columns _seed_loss_game seeds --
+    that helper is decisive-moment-shaped, this query is motif-drill-
+    positions-shaped, mirroring get_motif_drill_positions)."""
+    conn.execute(
+        "INSERT INTO games (id, white, black, outcome_for_player, player_color, base_seconds) "
+        "VALUES (?, 'W', 'B', 'loss', 'white', ?)",
+        (game_id, base_seconds))
+    fen_before = fen_before or f"fen_{game_id}"
+    conn.execute(
+        "INSERT INTO moves (game_id, ply, move_number, color, san, fen_before, "
+        "best_move_san, clock_seconds, cpl, classification, is_player_move) "
+        "VALUES (?, ?, ?, 'w', ?, ?, ?, ?, ?, ?, 1)",
+        (game_id, move_number * 2 - 1, move_number, actual_move_san,
+         fen_before, best_move_san, clock_seconds, cpl, classification))
+    conn.commit()
+
+
 def _seed_loss_game(conn, game_id, wp_before, wp_after, move_number,
                      material_sig, fen_before=None, best_move_san="Nf3",
                      actual_move_san="Ng1", rating_diff=None):
@@ -293,6 +316,67 @@ class TestBuildDrillCardsCollapseMoments:
             with pytest.raises(ValueError):
                 build_drill_cards(
                     migrated_db, duck, sources={"not_a_real_source"}, top_n=20)
+        finally:
+            duck.close()
+            disk.close()
+            pathlib.Path(tmp_path).unlink(missing_ok=True)
+
+
+@pytest.mark.integration
+class TestGetTimePressureDrillPositions:
+    def test_critical_clock_blunder_included(self, migrated_db):
+        """clock_seconds/base_seconds < 0.05 (critical band) with a
+        blunder classification must be returned."""
+        from data.drills import get_time_pressure_drill_positions
+
+        _seed_time_pressure_move(
+            migrated_db, "g_critical", clock_seconds=10, base_seconds=300,
+            classification="blunder", fen_before="fen_g_critical")
+
+        df = get_time_pressure_drill_positions(migrated_db, top_n=20)
+        assert "fen_g_critical" in set(df.fen_before)
+
+    def test_comfortable_clock_excluded(self, migrated_db):
+        """Same classification, but a comfortable clock fraction (0.5)
+        must be excluded."""
+        from data.drills import get_time_pressure_drill_positions
+
+        _seed_time_pressure_move(
+            migrated_db, "g_comfortable", clock_seconds=150, base_seconds=300,
+            classification="blunder", fen_before="fen_g_comfortable")
+
+        df = get_time_pressure_drill_positions(migrated_db, top_n=20)
+        assert "fen_g_comfortable" not in set(df.fen_before)
+
+    def test_non_mistake_classification_excluded(self, migrated_db):
+        """Critical clock but a classification outside ('mistake',
+        'blunder') must be excluded."""
+        from data.drills import get_time_pressure_drill_positions
+
+        _seed_time_pressure_move(
+            migrated_db, "g_best", clock_seconds=10, base_seconds=300,
+            classification="best", fen_before="fen_g_best")
+
+        df = get_time_pressure_drill_positions(migrated_db, top_n=20)
+        assert "fen_g_best" not in set(df.fen_before)
+
+
+@pytest.mark.integration
+class TestBuildDrillCardsTimePressure:
+    def test_time_pressure_produces_labeled_cards(self, migrated_db):
+        from data.drills import build_drill_cards
+
+        _seed_time_pressure_move(
+            migrated_db, "g_critical", clock_seconds=10, base_seconds=300,
+            classification="blunder", fen_before="fen_g_critical")
+
+        duck, disk, tmp_path = _duck_from_conn(migrated_db)
+        try:
+            cards = build_drill_cards(
+                migrated_db, duck, sources={"time_pressure"}, top_n=20)
+            assert len(cards) == 1
+            assert cards[0]["source"] == "Time Pressure"
+            assert cards[0]["fen"] == "fen_g_critical"
         finally:
             duck.close()
             disk.close()
