@@ -31,6 +31,24 @@ def cached_career_findings(_duck_conn, _sqlite_conn, baseline_blunder_rate):
     return data.get_career_findings(_duck_conn, _sqlite_conn, baseline_blunder_rate)
 
 
+@st.cache_data(show_spinner="Loading your opening statistics…")
+def cached_openings_table_full(_duck_conn, _sqlite_conn):
+    """Deliberately NOT keyed on the min-games slider -- the expensive
+    half of get_openings_table (a ~0.3s GROUP BY over all analyzed moves
+    for the ACPL column) never depended on min_games, only the HAVING on
+    the games-count half did, so keying on it made every slider move a
+    fresh cache miss (~0.4s measured). One unfiltered fetch per session;
+    callers filter `n >= min_games` in pandas. Also collapses what used
+    to be two separate cache entries (section 1's slider value and
+    section 4's fixed min_games=1) into one.
+
+    Moved here from openings_view.py (roadmap §25, Global Search) so it
+    has one cache entry shared by both openings_view.py and app.py's
+    sidebar search, rather than a second copy-pasted wrapper -- see this
+    module's own docstring for why that matters."""
+    return data.get_openings_table(_duck_conn, _sqlite_conn, min_games=1)
+
+
 @st.cache_data(show_spinner="Reading every game's win-probability curve…")
 def cached_points_ledger(_duck_conn):
     return data.classify_points_ledger(data.get_points_ledger(_duck_conn))

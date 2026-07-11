@@ -25,8 +25,12 @@ import streamlit as st
 from version import __version__
 
 import analytics
+import data
 import theme
 from _common import get_config, get_connections
+from cached_queries import (
+    cached_headline_stats, cached_openings_table_full, cached_career_findings,
+)
 import overview_view
 import patterns_view
 import openings_view
@@ -308,6 +312,88 @@ batch_impact_page = st.Page(
 onboarding_page = st.Page(lambda: onboarding_view.render(overview_page),
                            title="Setup" if NEEDS_ONBOARDING else "Sync Games",
                            url_path="setup", default=NEEDS_ONBOARDING)
+
+# ---------- Global Search (roadmap §25) ----------
+# Pinned sidebar search box, not a global Ctrl+K -- Streamlit custom
+# components render inside their own sandboxed iframe and can't capture
+# keydown events fired anywhere else on the page, so a true global
+# keybind isn't achievable with this codebase's existing custom-component
+# pattern (see docs/implementation_roadmap.md §25 for the full
+# reasoning). Placed here, after every *_page variable above exists (the
+# url_path -> page lookup below needs them) and before st.navigation()/
+# pg.run() -- Streamlit still renders sidebar elements in script-
+# execution order regardless of where in the file the call happens, so
+# this appears below "Refresh data" in the actual sidebar despite being
+# defined near the bottom of the file. Gated on NEEDS_ONBOARDING like
+# the other data-dependent sidebar bits above (_sidebar_job_status, the
+# active-profile indicator) -- a fresh install with zero games has
+# nothing worth searching, and the onboarding wizard has its own
+# explicit navigation that a stray search hit shouldn't be able to skip
+# past.
+if not NEEDS_ONBOARDING:
+    _url_path_to_page = {
+        "overview": overview_page, "patterns": patterns_page, "openings": openings_page,
+        "matchups": matchups_page, "game-endings": endings_page,
+        "tactical-highlights": highlights_page, "insights": insights_page,
+        "points": points_page, "evolution": evolution_page,
+        "game-explorer": explorer_page, "drill-export": drill_export_page,
+        "training-queue": training_queue_page, "srs-drills": srs_drill_page,
+        "opening-tree": opening_tree_page, "opponent-prep": prep_page,
+        "ask": ask_page, "settings": settings_page,
+        "analysis-jobs": analysis_jobs_page, "batch-impact": batch_impact_page,
+    }
+    _search_candidates_static = list(data.PAGE_CANDIDATES) + list(data.SETTINGS_CANDIDATES)
+
+    if _pro_nav_groups:
+        # chesswright_pro is a separate proprietary repo -- dashboard/data
+        # stays free of any import from it, so its one nav page (Coach
+        # Mode) is handled entirely here rather than in data/search.py.
+        # Title/url_path below are hardcoded to match the real page
+        # object chesswright_pro/__init__.py constructs for its Coach
+        # view (title "Coach Mode", url path "coach") -- not introspected
+        # off that Pro page object itself (unverified/fragile Streamlit-
+        # internals territory). NOTE: deliberately not written here as a
+        # literal `st.Page(...)`-shaped snippet -- tests/unit/test_app_
+        # capabilities.py's regex scans this whole file's raw text
+        # (including comments) for that exact shape to find real pages;
+        # spelling out the Pro call that way here previously caused it to
+        # false-positive-match a page that doesn't actually exist in this
+        # file. The lookup below is wrapped in try/except: Pro is
+        # optional, so search must degrade gracefully (skip Coach Mode)
+        # rather than crash if anything about resolving the real page
+        # object fails.
+        _search_candidates_static.append(
+            {"category": "page", "title": "Coach Mode", "url_path": "coach"})
+        try:
+            for _pro_pages in _pro_nav_groups.values():
+                for _pro_page in _pro_pages:
+                    if getattr(_pro_page, "title", None) == "Coach Mode":
+                        _url_path_to_page["coach"] = _pro_page
+                        break
+        except Exception:
+            pass
+
+    search_query = st.sidebar.text_input(
+        "Search", key="_global_search_query",
+        placeholder="Search pages, openings, findings, settings…")
+    if search_query:
+        _search_stats = cached_headline_stats(duck_conn, sqlite_conn)
+        _search_openings_df = cached_openings_table_full(duck_conn, sqlite_conn)
+        _search_findings = cached_career_findings(
+            duck_conn, sqlite_conn, _search_stats.get("blunder_rate"))
+        _search_candidates = _search_candidates_static + data.build_dynamic_candidates(
+            _search_openings_df, _search_findings)
+        _search_results = data.rank_candidates(search_query, _search_candidates)
+        if not _search_results:
+            st.sidebar.caption("No matches.")
+        for _i, _r in enumerate(_search_results):
+            if st.sidebar.button(f"{_r['category'].capitalize()} · {_r['title']}",
+                                  key=f"_search_result_{_i}"):
+                if _r.get("preset"):
+                    st.session_state[f"_{_r['url_path']}_preset"] = _r["preset"]
+                _target = _url_path_to_page.get(_r["url_path"])
+                if _target:
+                    st.switch_page(_target)
 
 pg = st.navigation({
     "Career": [overview_page, patterns_page, openings_page, matchups_page,

@@ -125,6 +125,10 @@ from .variations import (
     save_variation, update_variation_moves, delete_variation,
     list_variations, get_variation_annotations, upsert_annotation,
 )
+from .search import (
+    PAGE_CANDIDATES, SETTINGS_CANDIDATES,
+    build_dynamic_candidates, rank_candidates,
+)
 
 __all__ = [
     "TIME_PRESSURE_BUCKETS", "THINKING_TIME_BUCKETS",
@@ -192,4 +196,6 @@ __all__ = [
     "start_conversation", "add_turn", "record_feedback", "get_conversation_messages",
     "get_all_turns", "get_profile", "upsert_profile", "count_turns_since",
     "record_capability_gap", "get_capability_gaps",
+    "PAGE_CANDIDATES", "SETTINGS_CANDIDATES",
+    "build_dynamic_candidates", "rank_candidates",
 ]
