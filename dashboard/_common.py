@@ -517,3 +517,42 @@ def render_finding_actions(finding, drill_export_page, prep_page) -> None:
                      help="Open Opponent Prep with this player's username pre-filled."):
             st.session_state["_prep_username"] = finding["opponent_name"]
             st.switch_page(prep_page)
+
+
+def render_where_next(links) -> None:
+    """Bottom-of-page cross-link panel (roadmap §28 Q1). `links` is a
+    list of (label, target_page) pairs; entries whose target_page is
+    None are skipped (same "page might not be wired in yet" guard as
+    render_finding_actions above)."""
+    live_links = [(label, page) for label, page in links if page is not None]
+    if not live_links:
+        return
+    st.divider()
+    st.subheader("Where next?")
+    cols = st.columns(len(live_links))
+    for col, (label, page) in zip(cols, live_links):
+        with col:
+            if st.button(label, key=f"where_next_{label}", width="stretch"):
+                st.switch_page(page)
+
+
+def persist_filter(key: str) -> None:
+    """Mirror a keyed widget's current value into a plain (non-widget)
+    session_state entry so it survives st.navigation's page-switch
+    widget-state garbage collection -- confirmed live 2026-07-11 (roadmap
+    §28 Q3): keyed widget state does NOT survive page-away-and-back on
+    its own in this app. Call this right after creating a keyed widget
+    whose value should persist across navigation."""
+    st.session_state[f"_persist_{key}"] = st.session_state[key]
+
+
+def restore_filter_default(key: str, fallback) -> None:
+    """Call BEFORE a keyed widget is created (Streamlit requires a
+    widget's key be set in session_state before the widget call, not
+    after). Seeds session_state[key] from the mirror persist_filter()
+    wrote the last time this filter was touched, but only if
+    session_state[key] isn't already present this run -- i.e. exactly
+    the nav-away-and-back case; a value already present this run (e.g.
+    from the widget's own rerun) must not be clobbered."""
+    if key not in st.session_state:
+        st.session_state[key] = st.session_state.get(f"_persist_{key}", fallback)

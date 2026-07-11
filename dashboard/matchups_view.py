@@ -18,7 +18,7 @@ import charts
 import claude_narrative
 import data
 import theme
-from _common import get_connections, navigate_on_row_click
+from _common import get_connections, navigate_on_row_click, persist_filter, restore_filter_default
 from cached_queries import cached_headline_stats, cached_opponent_profile, cached_points_ledger
 
 _GK_REASON_LABELS = {
@@ -274,7 +274,10 @@ def _render_nemesis_section(sqlite_conn, duck_conn, prep_page=None):
         caption += (" Tick the checkbox at the left of a row to scout that player "
                     "in Opponent Prep.")
     st.caption(caption)
-    nem_min_games = st.slider("Minimum games against this opponent", 3, 50, 5)
+    restore_filter_default("matchups_nem_min_games", 5)
+    nem_min_games = st.slider("Minimum games against this opponent", 3, 50, 5,
+                               key="matchups_nem_min_games")
+    persist_filter("matchups_nem_min_games")
     nem_df = cached_nemesis_opponents(duck_conn, nem_min_games)
 
     # One combined W-D-L record column instead of three separate ones --

@@ -13,7 +13,7 @@ import streamlit as st
 import charts
 import data
 import theme
-from _common import get_connections
+from _common import get_connections, persist_filter, render_where_next, restore_filter_default
 
 _TC_ORDER = ["bullet", "blitz", "rapid", "classical", "correspondence"]
 _ALL_TC = "All time controls"
@@ -47,7 +47,7 @@ def _pct_arrow(early, late) -> str:
     return f"{fmt(early)} → {fmt(late)}"
 
 
-def render():
+def render(openings_page=None):
     _, duck_conn = get_connections()
     st.title("Repertoire Evolution")
     st.caption(
@@ -62,17 +62,22 @@ def render():
 
     ctrl_color, ctrl_tc, ctrl_group = st.columns(3)
     with ctrl_color:
+        restore_filter_default("ev_color", "white")
         color = st.radio(
             "Playing as", options=["white", "black"],
             format_func=lambda c: "⬜ White" if c == "white" else "⬛ Black",
             horizontal=True, key="ev_color",
         )
+        persist_filter("ev_color")
     with ctrl_tc:
         present = [tc for tc in _TC_ORDER
                    if tc in set(counts["time_control_category"].dropna())]
+        restore_filter_default("ev_tc", _ALL_TC)
         tc_choice = st.selectbox("Time control", [_ALL_TC] + present, key="ev_tc")
+        persist_filter("ev_tc")
         tc = None if tc_choice == _ALL_TC else tc_choice
     with ctrl_group:
+        restore_filter_default("ev_grouping", "Opening family")
         group_choice = st.selectbox(
             "Group openings by", ["Opening family", "ECO section (A–E)"],
             key="ev_grouping",
@@ -80,6 +85,7 @@ def render():
                  "catch-all buckets (e.g. “Zukertort Opening” is mostly "
                  "1.Nf3 lines). ECO sections are coarser but steadier.",
         )
+        persist_filter("ev_grouping")
         grouping = "family" if group_choice == "Opening family" else "eco"
 
     filtered = data.filter_counts(counts, color, tc, grouping)
@@ -94,6 +100,8 @@ def render():
     _render_share_section(filtered, color, tc_choice)
     _render_ledger_section(filtered)
     _render_deep_dive(counts, duck_conn, color, tc, tc_choice)
+
+    render_where_next([("→ Openings & Repertoire", openings_page)])
 
 
 # ── Section 1: share over time ────────────────────────────────────────────────

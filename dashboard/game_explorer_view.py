@@ -10,7 +10,7 @@ import streamlit as st
 import chess_display
 import data
 import theme
-from _common import get_connections
+from _common import get_connections, persist_filter, restore_filter_default
 
 
 @st.cache_data(show_spinner="Loading your games…")
@@ -46,13 +46,20 @@ def render(self_page, detail_page):
         st.subheader("Filter")
         badge_labels = {label: col for col, (label, _cls) in theme.BADGE_CHIPS.items()}
         st.caption(theme.BADGE_LEGEND)
+        restore_filter_default("explorer_badge_pills", [])
         selected_badges = st.pills("Filter by story badge", list(badge_labels.keys()),
-                                    selection_mode="multi")
-        opponent_search = st.text_input("Opponent name contains")
+                                    selection_mode="multi", key="explorer_badge_pills")
+        persist_filter("explorer_badge_pills")
+        restore_filter_default("explorer_opponent_search", "")
+        opponent_search = st.text_input("Opponent name contains", key="explorer_opponent_search")
+        persist_filter("explorer_opponent_search")
+        restore_filter_default("explorer_analyzed_only", False)
         analyzed_only = st.checkbox(
             "Only show analyzed games",
+            key="explorer_analyzed_only",
             help="Hide games that can't earn any badge but Giant-killing "
                  "because they haven't been analyzed yet.")
+        persist_filter("explorer_analyzed_only")
 
     filtered = explorer_df
     for label in selected_badges:

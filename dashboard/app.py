@@ -249,8 +249,10 @@ overview_page = st.Page(
         openings_page=openings_page,
     ),
     title="Overview", url_path="overview", default=not NEEDS_ONBOARDING)
-patterns_page = st.Page(patterns_view.render, title="Patterns & Tendencies",
-                         url_path="patterns")
+patterns_page = st.Page(
+    lambda: patterns_view.render(endings_page=endings_page, matchups_page=matchups_page,
+                                  training_queue_page=training_queue_page),
+    title="Patterns & Tendencies", url_path="patterns")
 openings_page = st.Page(
     lambda: openings_view.render(drill_export_page=drill_export_page),
     title="Openings & Repertoire", url_path="openings",
@@ -258,8 +260,9 @@ openings_page = st.Page(
 matchups_page = st.Page(lambda: matchups_view.render(matchups_page, detail_page,
                                                      prep_page=prep_page),
                          title="Matchups & Opponents", url_path="matchups")
-endings_page = st.Page(game_endings_view.render, title="Game Endings",
-                        url_path="game-endings")
+endings_page = st.Page(
+    lambda: game_endings_view.render(patterns_page=patterns_page),
+    title="Game Endings", url_path="game-endings")
 highlights_page = st.Page(
     lambda: tactical_highlights_view.render(
         highlights_page, detail_page, drill_export_page=drill_export_page,
@@ -272,12 +275,14 @@ insights_page = st.Page(
 )
 points_page = st.Page(lambda: points_view.render(points_page, detail_page),
                        title="Where Your Points Go", url_path="points")
-evolution_page = st.Page(evolution_view.render, title="Repertoire Evolution",
-                          url_path="evolution")
+evolution_page = st.Page(
+    lambda: evolution_view.render(openings_page=openings_page),
+    title="Repertoire Evolution", url_path="evolution")
 explorer_page = st.Page(lambda: game_explorer_view.render(explorer_page, detail_page),
                          title="Game Explorer", url_path="game-explorer")
-drill_export_page = st.Page(drill_export_view.render, title="Drill Export",
-                             url_path="drill-export")
+drill_export_page = st.Page(
+    lambda: drill_export_view.render(srs_drill_page=srs_drill_page),
+    title="Drill Export", url_path="drill-export")
 # Training Center MVP (roadmap S17 Q4 / S19) -- placed in "Explore" next to
 # the practice tools it feeds into (Drill Export, Opponent Prep), not in
 # "Career" alongside the read-only reporting pages it draws its findings

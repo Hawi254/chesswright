@@ -15,7 +15,7 @@ import charts
 import chess_display
 import data
 import theme
-from _common import get_connections
+from _common import get_connections, persist_filter, render_where_next, restore_filter_default
 
 
 @st.cache_data(show_spinner="Computing blunder rates under time pressure…")
@@ -203,7 +203,7 @@ def _coverage_caption(win_df, acpl_df, key_col, label_map=None):
             + "; ".join(parts) + ".")
 
 
-def render():
+def render(endings_page=None, matchups_page=None, training_queue_page=None):
     sqlite_conn, duck_conn = get_connections()
     st.title("Patterns & Tendencies")
     st.caption("ACPL (average centipawn loss) measures move accuracy -- lower is better. "
@@ -240,6 +240,12 @@ def render():
         _render_tab_pieces(sqlite_conn, duck_conn)
     with tab_turning:
         _render_tab_turning(duck_conn)
+
+    render_where_next([
+        ("→ Game Endings", endings_page),
+        ("→ Matchups & Opponents", matchups_page),
+        ("→ Training Queue", training_queue_page),
+    ])
 
 
 @st.fragment
@@ -627,8 +633,10 @@ def _render_tab_position(sqlite_conn, duck_conn):
                    "a tendency in your own play, not about who you were facing.")
         col_type, col_group = st.columns([3, 2])
         with col_type:
+            restore_filter_default("material_structure_type", "endgame")
             structure_type = st.radio("Structure type", ["endgame", "middlegame"], horizontal=True,
                                        key="material_structure_type")
+            persist_filter("material_structure_type")
         with col_group:
             # Grouped view reuses the same taxonomy game_endings.py's
             # "Endgame type" table already ships (Queen/Rook/Minor
@@ -642,10 +650,12 @@ def _render_tab_position(sqlite_conn, duck_conn):
             # chess_display.material_sig_str's docstring's "both views
             # have a place" is honored by one click away, not by always-on
             # duplication.
+            restore_filter_default("material_structure_grouped", False)
             grouped = st.checkbox("Group into broad categories", key="material_structure_grouped",
                                    help="Queen/Rook/Minor piece/King & pawn for endgame; "
                                         "No/Light/Moderate/Heavy trades for middlegame -- vs. "
                                         "the exact material signature below.")
+            persist_filter("material_structure_grouped")
         if grouped:
             structure_df = cached_material_structure_bucket_table(sqlite_conn, structure_type)
             label_col, label_header = "bucket", "Category"
@@ -814,8 +824,10 @@ def _render_tab_pieces(sqlite_conn, duck_conn):
         st.caption("How each piece's blunder rate varies by game phase and position sharpness -- "
                    "look for whether the piece patterns above hold in every context or shift "
                    "depending on when in the game you're playing.")
+        restore_filter_default("piece_view_by", "game phase")
         view_by = st.radio("View by", ["game phase", "position sharpness"], horizontal=True,
                             key="piece_view_by")
+        persist_filter("piece_view_by")
         if view_by == "game phase":
             piece_phase_df = cached_piece_blunder_by_phase(sqlite_conn)
             st.plotly_chart(
