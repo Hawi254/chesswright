@@ -933,10 +933,10 @@ class TestPointsData:
         """moves: list of dicts, one per ply, with whichever of
         win_prob_before/classification/cpl/eval_mate/best_move_san/
         piece/to_square/is_capture/material_delta/clock_seconds/
-        is_player_move (color-derived default: white=player, matching
-        this game's player_color='white') the scenario needs -- unlisted
-        fields default to NULL/0, matching a real ingest row that never
-        reached a given analysis stage."""
+        fen_before/is_player_move (color-derived default: white=player,
+        matching this game's player_color='white') the scenario needs --
+        unlisted fields default to NULL/0, matching a real ingest row
+        that never reached a given analysis stage."""
         conn.execute("""
             INSERT INTO games (id, site, white, black, result,
                 outcome_for_player, analysis_status, utc_date,
@@ -954,13 +954,13 @@ class TestPointsData:
                 INSERT INTO moves (game_id, ply, move_number, color, san,
                     is_player_move, win_prob_before, clock_seconds,
                     classification, cpl, eval_mate, best_move_san,
-                    piece, to_square, is_capture, material_delta)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    piece, to_square, is_capture, material_delta, fen_before)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (game_id, ply, (ply + 1) // 2, color, mv.get("san", "e4"),
                   is_player_move, mv.get("win_prob_before"), mv.get("clock_seconds"),
                   mv.get("classification"), mv.get("cpl"), mv.get("eval_mate"),
                   mv.get("best_move_san"), mv.get("piece"), mv.get("to_square"),
-                  mv.get("is_capture", 0), mv.get("material_delta")))
+                  mv.get("is_capture", 0), mv.get("material_delta"), mv.get("fen_before")))
         conn.commit()
 
     def test_get_failed_conversion_causes_on_empty_ledger(self, migrated_db):
@@ -1047,6 +1047,117 @@ class TestPointsData:
             reason_lookup = dict(zip(reason_df.reason, reason_df.n))
             assert reason_lookup["hung_piece"] == 1
             assert reason_lookup.get("blown_mate", 0) == 0
+        finally:
+            duck.close(); disk.close(); os.unlink(tmp)
+
+
+@pytest.mark.integration
+class TestGetConversionDrillPositions:
+    """dashboard/data/points.py's get_conversion_drill_positions -- the
+    drill-card counterpart to get_failed_conversion_causes, scoped to
+    hung_piece/blown_mate only (the two reasons with an unambiguous
+    single ply). Reuses TestPointsData._seed_causes_game, now extended
+    to also accept fen_before."""
+
+    _seed_causes_game = TestPointsData._seed_causes_game
+
+    def test_hung_piece_and_blown_mate_produce_positions(self, migrated_db):
+        from data import points
+
+        # Same scenarios as test_get_failed_conversion_causes_classifies_reasons,
+        # with fen_before/best_move_san added to the qualifying ply of each.
+        self._seed_causes_game(migrated_db, "fc_hang", "loss", [
+            {"ply": 1, "win_prob_before": 0.50},
+            {"ply": 3, "win_prob_before": 0.75},
+            {"ply": 5, "win_prob_before": 0.75, "classification": "blunder", "cpl": 250,
+             "san": "Qe5", "piece": "Q", "to_square": "e5",
+             "fen_before": "fen_fc_hang", "best_move_san": "Nf3"},
+            {"ply": 6, "is_player_move": 0, "is_capture": 1, "to_square": "e5",
+             "material_delta": 900, "san": "Rxe5"},
+            {"ply": 7, "win_prob_before": 0.10},
+        ])
+        self._seed_causes_game(migrated_db, "fc_mate", "draw", [
+            {"ply": 1, "win_prob_before": 0.50},
+            {"ply": 3, "win_prob_before": 0.75},
+            {"ply": 5, "win_prob_before": 0.75, "eval_mate": 5,
+             "san": "Nf3", "best_move_san": "Qxh7#", "fen_before": "fen_fc_mate"},
+            {"ply": 7, "win_prob_before": 0.40},
+        ])
+        duck, disk, tmp = _duck_from_conn(migrated_db)
+        try:
+            df = points.get_conversion_drill_positions(duck, top_n=20).set_index("game_id")
+            assert df.loc["fc_hang"].reason == "hung_piece"
+            assert df.loc["fc_hang"].fen_before == "fen_fc_hang"
+            assert df.loc["fc_hang"].best_move_san == "Nf3"
+            assert df.loc["fc_mate"].reason == "blown_mate"
+            assert df.loc["fc_mate"].fen_before == "fen_fc_mate"
+            assert df.loc["fc_mate"].best_move_san == "Qxh7#"
+        finally:
+            duck.close(); disk.close(); os.unlink(tmp)
+
+    def test_time_pressure_and_other_excluded(self, migrated_db):
+        """time_pressure and other failed-conversion games have no clean
+        single-ply signal here (unlike get_failed_conversion_causes,
+        which still classifies/counts them) -- they must produce NO row
+        at all, the deliberate scope exclusion."""
+        from data import points
+
+        self._seed_causes_game(migrated_db, "fc_timepressure", "loss", [
+            {"ply": 1, "win_prob_before": 0.50},
+            {"ply": 3, "win_prob_before": 0.75},
+            {"ply": 5, "win_prob_before": 0.70, "clock_seconds": 10},
+            {"ply": 7, "win_prob_before": 0.20},
+        ])
+        self._seed_causes_game(migrated_db, "fc_other", "draw", [
+            {"ply": 1, "win_prob_before": 0.50},
+            {"ply": 3, "win_prob_before": 0.75},
+            {"ply": 5, "win_prob_before": 0.72},
+            {"ply": 7, "win_prob_before": 0.40},
+        ])
+        duck, disk, tmp = _duck_from_conn(migrated_db)
+        try:
+            df = points.get_conversion_drill_positions(duck, top_n=20)
+            assert set(df.game_id) == set()
+        finally:
+            duck.close(); disk.close(); os.unlink(tmp)
+
+    def test_hang_beats_blown_mate(self, migrated_db):
+        """Both a qualifying hang AND a qualifying blown mate exist after
+        the win was reached -- hung_piece must win (same priority as
+        get_failed_conversion_causes), and the returned position must be
+        the HANG's fen_before/best_move_san, not the mate's."""
+        from data import points
+
+        self._seed_causes_game(migrated_db, "fc_priority", "loss", [
+            {"ply": 1, "win_prob_before": 0.50},
+            {"ply": 3, "win_prob_before": 0.75},
+            {"ply": 5, "win_prob_before": 0.75, "eval_mate": 5,
+             "san": "Nf3", "best_move_san": "Qxh7#", "fen_before": "fen_mate_ply"},
+            {"ply": 7, "win_prob_before": 0.72, "classification": "blunder", "cpl": 250,
+             "san": "Qe5", "piece": "Q", "to_square": "e5",
+             "fen_before": "fen_hang_ply", "best_move_san": "Rd1"},
+            {"ply": 8, "is_player_move": 0, "is_capture": 1, "to_square": "e5",
+             "material_delta": 900, "san": "Rxe5"},
+            {"ply": 9, "win_prob_before": 0.10},
+        ])
+        duck, disk, tmp = _duck_from_conn(migrated_db)
+        try:
+            df = points.get_conversion_drill_positions(duck, top_n=20).set_index("game_id")
+            assert df.loc["fc_priority"].reason == "hung_piece"
+            assert df.loc["fc_priority"].fen_before == "fen_hang_ply"
+            assert df.loc["fc_priority"].best_move_san == "Rd1"
+        finally:
+            duck.close(); disk.close(); os.unlink(tmp)
+
+    def test_empty_ledger_returns_empty_dataframe(self, migrated_db):
+        from data import points
+
+        duck, disk, tmp = _duck_from_conn(migrated_db)
+        try:
+            df = points.get_conversion_drill_positions(duck, top_n=20)
+            assert df.empty
+            assert list(df.columns) == [
+                "game_id", "fen_before", "best_move_san", "actual_move_san", "reason"]
         finally:
             duck.close(); disk.close(); os.unlink(tmp)
 

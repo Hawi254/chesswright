@@ -30,20 +30,22 @@ from _common import get_config
 
 from ._shared import GIANT_KILLING_COLLAPSE_THRESHOLD, TIME_PRESSURE_BUCKETS
 from .openings import get_repertoire_holes
+from .points import get_conversion_drill_positions
 
 # Ordered list of valid build_drill_cards() source keys, and the display
 # label each produces on a card's "source" field. Order is meaningful --
 # it is the collection order in build_drill_cards, which in turn decides
 # which label wins when add_cards() dedupes by UNIQUE(fen) (INSERT OR
 # IGNORE: first occurrence in the list wins). Leave room to append new
-# keys here as future trainers (Conversion, Defense) land -- nothing else
-# in this module hardcodes the list's length.
-_SOURCE_ORDER = ["motifs", "endgame_moments", "collapse_moments", "time_pressure", "moments", "holes"]
+# keys here as future trainers (Defense) land -- nothing else in this
+# module hardcodes the list's length.
+_SOURCE_ORDER = ["motifs", "endgame_moments", "collapse_moments", "time_pressure", "conversion", "moments", "holes"]
 _SOURCE_LABELS = {
     "motifs": "Missed Tactics",
     "endgame_moments": "Endgame Turning Point",
     "collapse_moments": "Collapse",
     "time_pressure": "Time Pressure",
+    "conversion": "Failed Conversion",
     "moments": "Decisive Moment",
     "holes": "Repertoire Hole",
 }
@@ -265,19 +267,22 @@ def build_drill_cards(sqlite_conn, duck_conn, sources: set[str],
     wanting a spinner around that put it around this whole call.
 
     Sources are collected in _SOURCE_ORDER: motifs, then endgame_moments,
-    then collapse_moments, then time_pressure, then moments, then holes.
-    add_cards() dedupes by UNIQUE(fen) via INSERT OR IGNORE, so when a
-    position qualifies for more than one source, whichever is collected
-    first wins the label. collapse_moments sits between endgame_moments
-    and time_pressure because it's more specific than a generic decisive
-    moment but less specific than a real-material endgame turning point
-    -- mirrors the existing endgame-vs-moments ordering (endgame first,
-    since it's the more specific label). time_pressure sits right after
-    collapse_moments and before moments because it's a specific "why"
-    signal read straight off the moves table (like Missed Tactics), more
-    specific than a generic Decisive Moment -- and leaves room for
-    Conversion and Defense (future trainers) to slot in between
-    time_pressure and moments too.
+    then collapse_moments, then time_pressure, then conversion, then
+    moments, then holes. add_cards() dedupes by UNIQUE(fen) via INSERT OR
+    IGNORE, so when a position qualifies for more than one source,
+    whichever is collected first wins the label. collapse_moments sits
+    between endgame_moments and time_pressure because it's more specific
+    than a generic decisive moment but less specific than a real-material
+    endgame turning point -- mirrors the existing endgame-vs-moments
+    ordering (endgame first, since it's the more specific label).
+    time_pressure sits right after collapse_moments because it's a
+    specific "why" signal read straight off the moves table (like Missed
+    Tactics), more specific than a generic Decisive Moment. conversion
+    sits right after time_pressure and before moments for the same
+    reason -- it's a specific "why" (hung a piece or blew a forced mate
+    after reaching a winning position), more specific than a generic
+    Decisive Moment -- and leaves the same slot open for Defense (a
+    future trainer) to land right after conversion too.
     """
     unknown = sources - set(_SOURCE_ORDER)
     if unknown:
@@ -297,6 +302,8 @@ def build_drill_cards(sqlite_conn, duck_conn, sources: set[str],
             df = get_decisive_moment_positions(duck_conn, top_n=top_n, collapse_only=True)
         elif source == "time_pressure":
             df = get_time_pressure_drill_positions(sqlite_conn, top_n=top_n)
+        elif source == "conversion":
+            df = get_conversion_drill_positions(duck_conn, top_n=top_n)
         elif source == "moments":
             df = get_decisive_moment_positions(duck_conn, top_n=top_n)
         elif source == "holes":

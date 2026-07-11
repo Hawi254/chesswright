@@ -322,6 +322,59 @@ class TestBuildDrillCardsCollapseMoments:
             pathlib.Path(tmp_path).unlink(missing_ok=True)
 
 
+def _seed_conversion_hang_game(conn, game_id, fen_before="fen_conv_hang",
+                                best_move_san="Nf3", actual_move_san="Qe5"):
+    """One failed-conversion game (reaches win_prob_before >= 0.70 then
+    loses) with a hung-piece move after the winning ply -- shaped like
+    points.py's own TestPointsData._seed_causes_game "fc_hang" scenario,
+    duplicated locally per this file's own convention of not
+    cross-importing test helpers between test files."""
+    conn.execute("""
+        INSERT INTO games (id, site, white, black, result,
+            outcome_for_player, analysis_status, utc_date,
+            base_seconds, time_control_category, opening_family,
+            player_color, opponent_name)
+        VALUES (?, 'https://lichess.org/' || ?, 'me', 'them', '1-0',
+                'loss', 'done', '2026.01.05', 300, 'blitz', 'Test Opening',
+                'white', 'them')
+    """, (game_id, game_id))
+    conn.executemany(
+        "INSERT INTO moves (game_id, ply, move_number, color, san, "
+        "is_player_move, win_prob_before, classification, cpl, piece, "
+        "to_square, is_capture, material_delta, fen_before, best_move_san) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+            (game_id, 1, 1, "w", "e4", 1, 0.50, None, None, None, None, 0, None, None, None),
+            (game_id, 3, 2, "w", "Qb3", 1, 0.75, None, None, None, None, 0, None, None, None),
+            (game_id, 5, 3, "w", actual_move_san, 1, 0.75, "blunder", 250,
+             "Q", "e5", 0, None, fen_before, best_move_san),
+            (game_id, 6, 3, "b", "Rxe5", 0, None, None, None, None, "e5", 1, 900, None, None),
+            (game_id, 7, 4, "w", "Kh1", 1, 0.10, None, None, None, None, 0, None, None, None),
+        ])
+    conn.commit()
+
+
+@pytest.mark.integration
+class TestBuildDrillCardsConversion:
+    def test_conversion_produces_labeled_cards(self, migrated_db):
+        from data.drills import build_drill_cards
+
+        _seed_conversion_hang_game(migrated_db, "g_conv")
+
+        duck, disk, tmp_path = _duck_from_conn(migrated_db)
+        try:
+            cards = build_drill_cards(
+                migrated_db, duck, sources={"conversion"}, top_n=20)
+            assert len(cards) == 1
+            assert cards[0]["source"] == "Failed Conversion"
+            assert cards[0]["fen"] == "fen_conv_hang"
+            assert cards[0]["best_move_san"] == "Nf3"
+        finally:
+            duck.close()
+            disk.close()
+            pathlib.Path(tmp_path).unlink(missing_ok=True)
+
+
 @pytest.mark.integration
 class TestGetTimePressureDrillPositions:
     def test_critical_clock_blunder_included(self, migrated_db):

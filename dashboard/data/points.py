@@ -401,3 +401,115 @@ def get_failed_conversion_causes(duck_conn, classified, config_path=None):
     mate_df = pd.DataFrame(mate_rows, columns=["bucket", "n", "pct"])
 
     return reason_df, piece_df, mate_df
+
+
+def get_conversion_drill_positions(duck_conn, top_n: int = 20, config_path=None) -> pd.DataFrame:
+    """Drill positions for failed-conversion games, one row per game: the
+    hung-piece or blown-mate move that turned a winning position into a
+    non-win -- the drills.py counterpart to get_failed_conversion_causes,
+    which only returns aggregate classification counts. Reuses that
+    function's exact last_hang/last_blown_mate CTE definitions (same
+    fw(game_id, first_winning_ply) VALUES-list construction, same
+    min_material_delta config lookup, same window-function/QUALIFY
+    shape), extended to also select m.fen_before, m.best_move_san, and
+    m.san AS actual_move_san -- the position and moves a drill card
+    needs, which the aggregate-only version never selected.
+
+    Self-contained (unlike get_failed_conversion_causes, which takes an
+    already-classified ledger the Points page keeps cached): this is a
+    build_drill_cards() source, which has no classified DataFrame lying
+    around, so it computes ledger = get_points_ledger(duck_conn);
+    classified = classify_points_ledger(ledger) internally. Same
+    ~0.78s-on-2.3M-rows cost this module's own docstring already
+    documents as acceptable for a single call -- acceptable here too for
+    an "Add to deck" button click.
+
+    Verified against the real dev DB (2026-07-11): of 221 total
+    failed-conversion games, 53 classify as hung_piece and 26 as
+    blown_mate (79 total), both with 100% fen_before/best_move_san
+    coverage at the identified ply -- these columns are populated by
+    worker.py for every analyzed move, not motif-gated.
+
+    Deliberately scoped to hung_piece/blown_mate only -- the two
+    get_failed_conversion_causes reasons with an unambiguous single ply.
+    time_pressure (51 games) and other (91 games) do NOT have a clean
+    single-ply signal the same way: last_player_clock (the CTE
+    get_failed_conversion_causes uses to classify time_pressure) only
+    finds the LAST move with clock data in the post-first-winning-ply
+    window, not necessarily the move that lost the win, so there's no
+    reliable single fen/move to drill for those two reasons -- they are
+    excluded from this function's output entirely, not merely unlabeled.
+    The last_player_clock CTE itself is dropped here for the same reason.
+
+    reason: 'hung_piece' or 'blown_mate', same priority as
+    get_failed_conversion_causes -- hung_piece wins when a game
+    qualifies for both (the closer-to-the-end hang is what actually
+    ended the game; keeps the tie-break identical to the aggregate
+    version so a game's card and its Points-page classification always
+    agree).
+
+    No natural single numeric severity score exists across both reason
+    types (cpl and eval_mate aren't the same scale), so results are
+    ordered by game_id for determinism rather than inventing an
+    unmotivated cross-scale sort.
+
+    Returns columns: game_id, fen_before, best_move_san,
+    actual_move_san, reason.
+    """
+    empty = pd.DataFrame(columns=["game_id", "fen_before", "best_move_san",
+                                   "actual_move_san", "reason"])
+
+    ledger = get_points_ledger(duck_conn)
+    classified = classify_points_ledger(ledger)
+    conv = classified[classified.bucket == "failed_conversion"]
+    if conv.empty:
+        return empty
+
+    cfg = get_config(config_path)
+    min_material_delta = cfg["analytics"]["hallucination_min_material_delta"]
+
+    pairs = list(zip(conv.game_id, conv.first_winning_ply.astype(int)))
+    values_sql = ", ".join(["(?, ?)"] * len(pairs))
+    params = [v for pair in pairs for v in pair] + [top_n]
+
+    df = duck_conn.execute(f"""
+        WITH fw(game_id, first_winning_ply) AS (VALUES {values_sql}),
+        last_hang AS (
+            SELECT fw.game_id, m.piece AS hung_piece,
+                   m.fen_before, m.best_move_san, m.san AS actual_move_san,
+                   ROW_NUMBER() OVER (PARTITION BY fw.game_id ORDER BY m.ply DESC) AS rn
+            FROM db.moves m
+            JOIN db.moves m2 ON m2.game_id = m.game_id AND m2.ply = m.ply + 1
+            JOIN fw ON fw.game_id = m.game_id
+            WHERE m.is_player_move = 1 AND m.classification = 'blunder' AND m.cpl IS NOT NULL
+              AND m.ply >= fw.first_winning_ply
+              AND m2.is_capture = 1 AND m2.to_square = m.to_square
+              AND m2.material_delta >= {min_material_delta}
+            QUALIFY rn = 1
+        ),
+        last_blown_mate AS (
+            SELECT fw.game_id, m.eval_mate,
+                   m.fen_before, m.best_move_san, m.san AS actual_move_san,
+                   ROW_NUMBER() OVER (PARTITION BY fw.game_id ORDER BY m.ply DESC) AS rn
+            FROM db.moves m
+            JOIN fw ON fw.game_id = m.game_id
+            WHERE m.is_player_move = 1 AND m.eval_mate IS NOT NULL AND m.eval_mate > 0
+              AND m.san != m.best_move_san
+              AND m.ply >= fw.first_winning_ply
+            QUALIFY rn = 1
+        )
+        SELECT fw.game_id                                              AS game_id,
+               COALESCE(h.fen_before, bm.fen_before)                    AS fen_before,
+               COALESCE(h.best_move_san, bm.best_move_san)              AS best_move_san,
+               COALESCE(h.actual_move_san, bm.actual_move_san)          AS actual_move_san,
+               CASE WHEN h.hung_piece IS NOT NULL THEN 'hung_piece'
+                    ELSE 'blown_mate' END                               AS reason
+        FROM fw
+        LEFT JOIN last_hang h ON h.game_id = fw.game_id
+        LEFT JOIN last_blown_mate bm ON bm.game_id = fw.game_id
+        WHERE h.hung_piece IS NOT NULL OR bm.game_id IS NOT NULL
+        ORDER BY fw.game_id
+        LIMIT ?
+    """, params).fetchdf()
+
+    return df if not df.empty else empty
