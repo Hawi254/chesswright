@@ -22,6 +22,24 @@ import components.native_file_picker as native_file_picker
 def render():
     st.title("Settings")
 
+    tab_account, tab_engine, tab_api, tab_pro, tab_support = st.tabs([
+        "Account & Data", "Analysis Engine", "Anthropic API key",
+        "Chesswright Pro", "Support",
+    ])
+
+    with tab_account:
+        _render_account_data_tab()
+    with tab_engine:
+        _render_analysis_engine_tab()
+    with tab_api:
+        _render_api_key_tab()
+    with tab_pro:
+        _render_pro_section()
+    with tab_support:
+        _render_support_section()
+
+
+def _render_api_key_tab():
     st.subheader("Anthropic API key")
     st.caption(
         "Optional. Powers the on-demand 'richer narrative' / commentary "
@@ -83,16 +101,14 @@ def render():
             st.success("Saved key removed.")
             st.rerun()
 
-    st.divider()
+
+def _render_analysis_engine_tab():
     st.subheader("Live engine settings")
     st.caption(
         "Controls the on-demand Stockfish analysis in the position browser and "
         "game detail panels. The live engine is always paused when the batch "
         "worker is running — these settings only affect interactive probes.")
     ie_cfg = config.load_config().get("interactive_engine", {})
-    # Seed session_state from config on the very first render so explicit
-    # keys below initialise correctly, but don't overwrite values the user
-    # has already submitted (session_state persists across page navigation).
     _ie_defaults = {
         "ie_time_sec":        float(ie_cfg.get("time_sec", 0.5)),
         "ie_depth":           int(ie_cfg.get("depth", 20)),
@@ -170,7 +186,8 @@ def render():
         except Exception as e:
             st.error(f"Could not save settings: {e}")
 
-    st.divider()
+
+def _render_account_data_tab():
     st.subheader("Import an existing database")
     st.caption(
         "For returning users: point at a chesswright-compatible database "
@@ -184,23 +201,9 @@ def render():
 
     if not pending_path:
         col1, col2 = st.columns([5, 1])
-        # Rendered (and its session_state applied) before the text_input
-        # below is instantiated -- Streamlit raises if a widget's key is
-        # written to AFTER that widget exists this run, confirmed live.
-        # col2 still lands visually on the right regardless of this code
-        # order, since column position comes from the column object, not
-        # execution order.
         with col2:
-            # Real native OS file dialog when running in the packaged
-            # desktop app; renders nothing in the plain `streamlit run`
-            # dev workflow, where the text input below is the only way
-            # in -- see components/native_file_picker for the mechanism.
             st.markdown("<div style='height:1.7rem'></div>", unsafe_allow_html=True)
             picked = native_file_picker.pick("database", key="import_native_picker")
-        # A component's return value persists across reruns until the JS
-        # sends a new one -- guard against reapplying the same pick on
-        # every later rerun, which would otherwise clobber anything the
-        # user typed into the field afterward.
         if picked and picked != st.session_state.get("import_native_picker_applied"):
             st.session_state["import_native_picker_applied"] = picked
             st.session_state["import_path_input"] = picked
@@ -245,12 +248,6 @@ def render():
 
     st.divider()
     _render_chesscom_section()
-
-    st.divider()
-    _render_pro_section()
-
-    st.divider()
-    _render_support_section()
 
 
 def _render_chesscom_section():

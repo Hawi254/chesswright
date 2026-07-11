@@ -64,6 +64,7 @@ class TestAllCareerPagesRender:
         "batch_impact_view",  # render(self_page=None, detail_page=None) defaults
         "analysis_jobs_view",  # render(batch_impact_page=None) default
         "ask_view",  # free-tier body when pro_gate inactive, delegates to AI Coach when active
+        "settings_view",
     ])
     def test_no_arg_page_renders(self, module_name):
         at = _page_apptest(module_name)
