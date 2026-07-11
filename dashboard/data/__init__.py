@@ -106,6 +106,7 @@ from .analysis_batches import (
 )
 from .drills import (
     get_motif_drill_positions, get_decisive_moment_positions, build_drill_cards,
+    drill_source_options,
 )
 from .srs import (
     SrsCard, get_due_cards, get_card_counts, add_cards, apply_rating, delete_card,
@@ -185,6 +186,7 @@ __all__ = [
     "get_endgame_type_batch_delta", "get_motif_batch_delta", "get_new_blunders_this_run",
     "get_batch_trend", "get_batch_record_flags", "get_batch_counter",
     "get_motif_drill_positions", "get_decisive_moment_positions", "build_drill_cards",
+    "drill_source_options",
     "SrsCard", "get_due_cards", "get_card_counts", "add_cards", "apply_rating", "delete_card",
     "TRANSFER_MIN_MOVES_AFTER",
     "get_review_history", "weekly_recall", "learning_curve", "recall_by_source",

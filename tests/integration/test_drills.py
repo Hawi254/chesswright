@@ -52,12 +52,16 @@ _FULL_MATERIAL_SIG = "Q1R2B2N2P7vQ1R2B2N2P7"    # non_pawn_piece_count == 14
 
 def _seed_loss_game(conn, game_id, wp_before, wp_after, move_number,
                      material_sig, fen_before=None, best_move_san="Nf3",
-                     actual_move_san="Ng1"):
-    """One loss game, one contested decisive-moment-eligible move row."""
+                     actual_move_san="Ng1", rating_diff=None):
+    """One loss game, one contested decisive-moment-eligible move row.
+
+    rating_diff defaults to None (not a collapse) so existing non-collapse
+    tests are unaffected -- pass rating_diff=300+ to seed a "collapse"
+    (player_rating - opponent_rating, per games.rating_diff)."""
     conn.execute(
-        "INSERT INTO games (id, white, black, outcome_for_player, player_color) "
-        "VALUES (?, 'W', 'B', 'loss', 'white')",
-        (game_id,))
+        "INSERT INTO games (id, white, black, outcome_for_player, player_color, rating_diff) "
+        "VALUES (?, 'W', 'B', 'loss', 'white', ?)",
+        (game_id, rating_diff))
     fen_before = fen_before or f"fen_{game_id}"
     conn.execute(
         "INSERT INTO moves (game_id, ply, move_number, color, san, fen_before, "
@@ -134,6 +138,34 @@ class TestGetDecisiveMomentPositionsPhaseFilter:
 
 
 @pytest.mark.integration
+class TestGetDecisiveMomentPositionsCollapseFilter:
+    def test_collapse_only_excludes_non_collapse_loss(self, migrated_db):
+        """collapse_only=True must keep a loss as a 300+-rated favorite
+        (a "collapse") but drop an otherwise-identical loss with no rating
+        edge -- and rating_diff itself must not leak into the returned
+        columns (same discipline as material_sig)."""
+        from data.drills import get_decisive_moment_positions
+
+        _seed_loss_game(migrated_db, "g_collapse", wp_before=0.60, wp_after=0.30,
+                         move_number=20, material_sig=_FULL_MATERIAL_SIG,
+                         fen_before="fen_g_collapse", rating_diff=300)
+        _seed_loss_game(migrated_db, "g_plain", wp_before=0.60, wp_after=0.30,
+                         move_number=20, material_sig=_FULL_MATERIAL_SIG,
+                         fen_before="fen_g_plain", rating_diff=0)
+
+        duck, disk, tmp_path = _duck_from_conn(migrated_db)
+        try:
+            df = get_decisive_moment_positions(duck, top_n=20, collapse_only=True)
+            assert set(df.game_id) == {"g_collapse"}
+            assert "rating_diff" not in df.columns
+            assert "material_sig" not in df.columns
+        finally:
+            duck.close()
+            disk.close()
+            pathlib.Path(tmp_path).unlink(missing_ok=True)
+
+
+@pytest.mark.integration
 class TestBuildDrillCardsEndgameMoments:
     def test_include_endgame_moments_produces_labeled_cards(self, migrated_db):
         from data.drills import build_drill_cards
@@ -145,10 +177,7 @@ class TestBuildDrillCardsEndgameMoments:
         duck, disk, tmp_path = _duck_from_conn(migrated_db)
         try:
             cards = build_drill_cards(
-                migrated_db, duck,
-                include_motifs=False, include_moments=False,
-                include_holes=False, include_endgame_moments=True,
-                top_n=20)
+                migrated_db, duck, sources={"endgame_moments"}, top_n=20)
             assert len(cards) == 1
             assert cards[0]["source"] == "Endgame Turning Point"
             assert cards[0]["fen"] == "fen_g_light"
@@ -177,8 +206,7 @@ class TestBuildDrillCardsEndgameMoments:
         try:
             cards = build_drill_cards(
                 migrated_db, duck,
-                include_motifs=False, include_moments=True,
-                include_holes=False, include_endgame_moments=True,
+                sources={"moments", "endgame_moments"},
                 top_n=20)
             # Both sources legitimately produce a card for this fen at the
             # build_drill_cards() list stage -- dedup only happens at
@@ -194,6 +222,77 @@ class TestBuildDrillCardsEndgameMoments:
             ).fetchone()
             assert row is not None
             assert row[0] == "Endgame Turning Point"
+        finally:
+            duck.close()
+            disk.close()
+            pathlib.Path(tmp_path).unlink(missing_ok=True)
+
+
+@pytest.mark.integration
+class TestBuildDrillCardsCollapseMoments:
+    def test_collapse_moments_produces_labeled_cards(self, migrated_db):
+        from data.drills import build_drill_cards
+
+        _seed_loss_game(migrated_db, "g_collapse", wp_before=0.60, wp_after=0.30,
+                         move_number=20, material_sig=_FULL_MATERIAL_SIG,
+                         fen_before="fen_g_collapse", rating_diff=300)
+
+        duck, disk, tmp_path = _duck_from_conn(migrated_db)
+        try:
+            cards = build_drill_cards(
+                migrated_db, duck, sources={"collapse_moments"}, top_n=20)
+            assert len(cards) == 1
+            assert cards[0]["source"] == "Collapse"
+            assert cards[0]["fen"] == "fen_g_collapse"
+        finally:
+            duck.close()
+            disk.close()
+            pathlib.Path(tmp_path).unlink(missing_ok=True)
+
+    def test_collapse_moments_collected_before_moments_wins_label(self, migrated_db):
+        """A position qualifying for BOTH generic `moments` (no phase/
+        collapse filter) and `collapse_moments` (rating_diff >= 300) must
+        end up labeled "Collapse" -- proving collapse_moments' place in
+        _SOURCE_ORDER (before moments) actually decides which label wins
+        once add_cards() dedupes by UNIQUE(fen) via INSERT OR IGNORE
+        (first occurrence in the list wins the insert)."""
+        from data.drills import build_drill_cards
+        from data.srs import add_cards
+
+        _seed_loss_game(migrated_db, "g_both", wp_before=0.60, wp_after=0.30,
+                         move_number=20, material_sig=_FULL_MATERIAL_SIG,
+                         fen_before="fen_g_both", rating_diff=300)
+
+        duck, disk, tmp_path = _duck_from_conn(migrated_db)
+        try:
+            cards = build_drill_cards(
+                migrated_db, duck,
+                sources={"moments", "collapse_moments"},
+                top_n=20)
+            matching = [c for c in cards if c["fen"] == "fen_g_both"]
+            assert len(matching) == 2
+            assert matching[0]["source"] == "Collapse"
+            assert matching[1]["source"] == "Decisive Moment"
+
+            add_cards(migrated_db, cards)
+            row = migrated_db.execute(
+                "SELECT source FROM srs_cards WHERE fen = ?", ("fen_g_both",)
+            ).fetchone()
+            assert row is not None
+            assert row[0] == "Collapse"
+        finally:
+            duck.close()
+            disk.close()
+            pathlib.Path(tmp_path).unlink(missing_ok=True)
+
+    def test_unknown_source_raises_value_error(self, migrated_db):
+        from data.drills import build_drill_cards
+
+        duck, disk, tmp_path = _duck_from_conn(migrated_db)
+        try:
+            with pytest.raises(ValueError):
+                build_drill_cards(
+                    migrated_db, duck, sources={"not_a_real_source"}, top_n=20)
         finally:
             duck.close()
             disk.close()

@@ -4,13 +4,22 @@ Repertoire hole positions live in openings.py (get_repertoire_holes already retu
 fen_before / most_played_san). Callers can rename most_played_san → best_move_san
 and pass that DataFrame alongside these results to drills_to_pgn_study / drills_to_anki_csv.
 
-build_drill_cards() is the one place the three sources become SRS card
+build_drill_cards() is the one place the drill sources become SRS card
 dicts -- extracted from srs_drill_view's Manage Queue tab (BRIEF §6q) so
 Coach Mode's drill assignment (Pro) builds a student's cards through the
 IDENTICAL code path against the student's connections, instead of
 re-implementing the source collection a second time. It also retired
 srs_drill_view._context_str, a near-duplicate of
 chess_display._drill_context that had already drifted in label wording.
+
+build_drill_cards takes a `sources: set[str]` (see _SOURCE_ORDER below)
+rather than one bool param per source -- the prior include_motifs/
+include_moments/include_holes/include_endgame_moments shape silently
+drifted out of sync the moment a 4th source (Endgame Trainer) shipped:
+chesswright_pro/coach_view.py's assign-to-student caller kept passing
+only the original 3 kwargs and never picked up include_endgame_moments.
+A single explicit set forces every caller to state its sources, so a new
+source can never again go silently missing from an existing call site.
 """
 import pandas as pd
 
@@ -19,7 +28,32 @@ import chess_utils
 from chess_display import _drill_context
 from _common import get_config
 
+from ._shared import GIANT_KILLING_COLLAPSE_THRESHOLD
 from .openings import get_repertoire_holes
+
+# Ordered list of valid build_drill_cards() source keys, and the display
+# label each produces on a card's "source" field. Order is meaningful --
+# it is the collection order in build_drill_cards, which in turn decides
+# which label wins when add_cards() dedupes by UNIQUE(fen) (INSERT OR
+# IGNORE: first occurrence in the list wins). Leave room to append new
+# keys here as future trainers (Time Management, Conversion, Defense)
+# land -- nothing else in this module hardcodes the list's length.
+_SOURCE_ORDER = ["motifs", "endgame_moments", "collapse_moments", "moments", "holes"]
+_SOURCE_LABELS = {
+    "motifs": "Missed Tactics",
+    "endgame_moments": "Endgame Turning Point",
+    "collapse_moments": "Collapse",
+    "moments": "Decisive Moment",
+    "holes": "Repertoire Hole",
+}
+
+
+def drill_source_options() -> list[tuple[str, str]]:
+    """(key, label) pairs in _SOURCE_ORDER order -- for UI layers building
+    a source picker (e.g. a multiselect over labels) without duplicating
+    _SOURCE_ORDER/_SOURCE_LABELS themselves. Callers map a chosen label
+    back to its key via dict(zip(labels, keys)) or similar."""
+    return [(key, _SOURCE_LABELS[key]) for key in _SOURCE_ORDER]
 
 
 def get_motif_drill_positions(sqlite_conn, motif: str | None = None,
@@ -70,6 +104,7 @@ def get_motif_drill_positions(sqlite_conn, motif: str | None = None,
 
 
 def get_decisive_moment_positions(duck_conn, top_n: int = 20, phase: str | None = None,
+                                   collapse_only: bool = False,
                                    config_path=None) -> pd.DataFrame:
     """One position per loss: the ply with the largest win-probability drop
     in a contested position (win_prob_before between 0.30 and 0.70).
@@ -89,11 +124,21 @@ def get_decisive_moment_positions(duck_conn, top_n: int = 20, phase: str | None 
     threshold only happens when phase == "endgame", to avoid extra work on
     the (far more common) unfiltered/non-endgame call paths.
 
+    collapse_only: when True, additionally restricts to rows where
+    g.rating_diff >= GIANT_KILLING_COLLAPSE_THRESHOLD (300) -- a loss as a
+    300+-rated favorite, i.e. a "collapse." Verified against the real dev
+    DB: 304 rows qualify (comparable to Endgame's 180 and Time
+    Management's 145 -- a real, usable drill source). The mirror case,
+    upset *wins* (rating_diff <= -300, "Giant-Killing"), has zero possible
+    drill content here by construction -- this query is loss-only (a win
+    has no losing move to learn from) -- so this ships as a "Collapse
+    Trainer," not a "Giant-Killer & Collapse Trainer."
+
     The SQL no longer LIMITs server-side -- it already fully sorts by
-    wp_drop DESC, so top_n is applied client-side, AFTER any phase filter.
-    Limiting before filtering could silently return fewer than top_n rows
-    (or zero) when the unfiltered top-N window doesn't contain enough
-    matching positions.
+    wp_drop DESC, so top_n is applied client-side, AFTER any phase/collapse
+    filter. Limiting before filtering could silently return fewer than
+    top_n rows (or zero) when the unfiltered top-N window doesn't happen
+    to contain enough matching positions.
     """
     df = duck_conn.execute("""
         WITH ranked AS (
@@ -109,6 +154,7 @@ def get_decisive_moment_positions(duck_conn, top_n: int = 20, phase: str | None 
                      WHEN m.move_number <= 30 THEN 'middlegame'
                      ELSE 'endgame' END                           AS phase,
                 g.opening_family                                  AS opening,
+                g.rating_diff                                     AS rating_diff,
                 ROW_NUMBER() OVER (
                     PARTITION BY m.game_id
                     ORDER BY m.win_prob_before - m.win_prob_after DESC
@@ -125,7 +171,8 @@ def get_decisive_moment_positions(duck_conn, top_n: int = 20, phase: str | None 
               AND m.best_move_san      IS NOT NULL
         )
         SELECT game_id, fen_before, best_move_san, actual_move_san,
-               move_number, phase, opening, material_sig, ROUND(wp_drop, 3) AS wp_drop
+               move_number, phase, opening, material_sig, rating_diff,
+               ROUND(wp_drop, 3) AS wp_drop
         FROM ranked
         WHERE rn = 1
         ORDER BY wp_drop DESC
@@ -138,81 +185,76 @@ def get_decisive_moment_positions(duck_conn, top_n: int = 20, phase: str | None 
             max_pieces = cfg["analytics"]["endgame_max_pieces"]
             df = df[df.material_sig.apply(chess_utils.non_pawn_piece_count) <= max_pieces]
 
-    return df.drop(columns=["material_sig"]).head(top_n)
+    if collapse_only:
+        df = df[df.rating_diff >= GIANT_KILLING_COLLAPSE_THRESHOLD]
+
+    return df.drop(columns=["material_sig", "rating_diff"]).head(top_n)
 
 
-def build_drill_cards(sqlite_conn, duck_conn,
-                      include_motifs: bool = True,
-                      include_moments: bool = True,
-                      include_holes: bool = True,
-                      include_endgame_moments: bool = False,
+def build_drill_cards(sqlite_conn, duck_conn, sources: set[str],
                       top_n: int = 20) -> list[dict]:
-    """Collects drill positions from the sources into add_cards()-
-    ready dicts. Shared by the SRS Manage Queue tab (own database) and
-    Coach Mode's drill assignment (a student's database) -- pass whichever
+    """Collects drill positions from `sources` into add_cards()-ready
+    dicts. Shared by the SRS Manage Queue tab (own database) and Coach
+    Mode's drill assignment (a student's database) -- pass whichever
     database's connections the cards should be built FROM; add_cards()
     decides where they go.
 
-    include_holes triggers ensure_repertoire_holes_cache first (idempotent,
+    sources: a set of keys from _SOURCE_ORDER (e.g. {"motifs", "moments",
+    "holes"}). No default -- every caller must state its sources
+    explicitly. This replaced a one-bool-param-per-source signature
+    (include_motifs/include_moments/include_holes/include_endgame_moments)
+    after real drift was found: chesswright_pro/coach_view.py's
+    assign-to-student caller kept only the original 3 kwargs and silently
+    never picked up include_endgame_moments when Endgame Trainer shipped a
+    4th. Raises ValueError on any key not in _SOURCE_ORDER (typo guard --
+    this is an internal API, a strict contract is correct here).
+
+    "holes" triggers ensure_repertoire_holes_cache first (idempotent,
     count-sentinel -- a no-op unless new analysis landed), since a
     student's database may never have visited the Openings page. Views
     wanting a spinner around that put it around this whole call.
 
-    include_endgame_moments (default False, opt-in) pulls decisive-moment
-    positions filtered to phase="endgame" (real material-based endgames,
-    not just move_number > 30 -- see get_decisive_moment_positions) as a
-    separate, more specific "Endgame Turning Point" source. It is
-    deliberately collected BEFORE include_moments: add_cards() dedupes by
-    UNIQUE(fen) via INSERT OR IGNORE, so when a position qualifies for
-    both (a user enables both checkboxes), whichever source appears first
-    in `cards` wins the label -- endgame-first means the more specific
-    label wins.
+    Sources are collected in _SOURCE_ORDER: motifs, then endgame_moments,
+    then collapse_moments, then moments, then holes. add_cards() dedupes
+    by UNIQUE(fen) via INSERT OR IGNORE, so when a position qualifies for
+    more than one source, whichever is collected first wins the label.
+    collapse_moments sits between endgame_moments and moments because
+    it's more specific than a generic decisive moment but less specific
+    than a real-material endgame turning point -- mirrors the existing
+    endgame-vs-moments ordering (endgame first, since it's the more
+    specific label).
     """
+    unknown = sources - set(_SOURCE_ORDER)
+    if unknown:
+        raise ValueError(f"Unknown build_drill_cards source(s): {sorted(unknown)}")
+
     cards: list[dict] = []
 
-    if include_motifs:
-        df = get_motif_drill_positions(sqlite_conn, top_n=top_n)
+    for source in _SOURCE_ORDER:
+        if source not in sources:
+            continue
+
+        if source == "motifs":
+            df = get_motif_drill_positions(sqlite_conn, top_n=top_n)
+        elif source == "endgame_moments":
+            df = get_decisive_moment_positions(duck_conn, top_n=top_n, phase="endgame")
+        elif source == "collapse_moments":
+            df = get_decisive_moment_positions(duck_conn, top_n=top_n, collapse_only=True)
+        elif source == "moments":
+            df = get_decisive_moment_positions(duck_conn, top_n=top_n)
+        elif source == "holes":
+            analytics.ensure_repertoire_holes_cache(sqlite_conn)
+            df = get_repertoire_holes(sqlite_conn, min_appearances=5, top_n=top_n)
+            df = df.rename(columns={"most_played_san": "best_move_san"})
+
+        label = _SOURCE_LABELS[source]
         for row in df.itertuples(index=False):
             rd = row._asdict()
             if rd.get("fen_before") and rd.get("best_move_san"):
                 cards.append({
-                    "fen": rd["fen_before"], "source": "Missed Tactics",
+                    "fen": rd["fen_before"], "source": label,
                     "best_move_san": str(rd["best_move_san"]),
                     "actual_move_san": str(rd["actual_move_san"]) if rd.get("actual_move_san") else None,
-                    "context": _drill_context(rd),
-                })
-    if include_endgame_moments:
-        df = get_decisive_moment_positions(duck_conn, top_n=top_n, phase="endgame")
-        for row in df.itertuples(index=False):
-            rd = row._asdict()
-            if rd.get("fen_before") and rd.get("best_move_san"):
-                cards.append({
-                    "fen": rd["fen_before"], "source": "Endgame Turning Point",
-                    "best_move_san": str(rd["best_move_san"]),
-                    "actual_move_san": str(rd["actual_move_san"]) if rd.get("actual_move_san") else None,
-                    "context": _drill_context(rd),
-                })
-    if include_moments:
-        df = get_decisive_moment_positions(duck_conn, top_n=top_n)
-        for row in df.itertuples(index=False):
-            rd = row._asdict()
-            if rd.get("fen_before") and rd.get("best_move_san"):
-                cards.append({
-                    "fen": rd["fen_before"], "source": "Decisive Moment",
-                    "best_move_san": str(rd["best_move_san"]),
-                    "actual_move_san": str(rd["actual_move_san"]) if rd.get("actual_move_san") else None,
-                    "context": _drill_context(rd),
-                })
-    if include_holes:
-        analytics.ensure_repertoire_holes_cache(sqlite_conn)
-        df = get_repertoire_holes(sqlite_conn, min_appearances=5, top_n=top_n)
-        df = df.rename(columns={"most_played_san": "best_move_san"})
-        for row in df.itertuples(index=False):
-            rd = row._asdict()
-            if rd.get("fen_before") and rd.get("best_move_san"):
-                cards.append({
-                    "fen": rd["fen_before"], "source": "Repertoire Hole",
-                    "best_move_san": str(rd["best_move_san"]),
                     "context": _drill_context(rd),
                 })
     return cards
