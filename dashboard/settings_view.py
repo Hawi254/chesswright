@@ -83,17 +83,25 @@ def render():
         "Account & Data", "Analysis Engine", "Analytics & Display", "Ingestion",
         "Advanced", "Anthropic API key", "Chesswright Pro", "Support",
     ]
-    # Deliberately `default=`, not the plan's `key="settings_tabs_active"`
-    # pre-set-via-session_state approach: reading Streamlit 1.58's actual
-    # st.tabs() source (elements/layouts.py) shows the key-based read only
-    # happens when on_change != "ignore" (is_stateful). Without on_change
-    # set (as here), the widget never reads a pre-set session_state value
-    # for its key at all -- it always opens on `default`/the first tab. The
-    # `default` param, by contrast, always drives the initial tab
-    # regardless of on_change, so it's the mechanism that actually works.
+    if jump_tab:
+        st.session_state["settings_tabs_active"] = jump_tab
+    # `key=` + `on_change="rerun"`, not a bare `default=`: live-verified
+    # 2026-07-11 against installed streamlit==1.58.0 via a minimal
+    # Playwright reproduction -- `default=` only sets the initially
+    # selected tab on the widget's very first mount; on every later
+    # rerun (e.g. the one triggered by a search-box jump click) it's
+    # silently ignored and the tabs widget keeps whatever tab the
+    # frontend already had active, so a jump from an already-open
+    # Settings page permanently no-ops. `key=` + `on_change="rerun"`
+    # makes the widget "stateful" (Streamlit's own term), which DOES
+    # re-read a pre-set session_state[key] value on every rerun --
+    # confirmed working in the same reproduction. Pre-seeding the key
+    # only `if jump_tab` (above) leaves the widget's own persisted
+    # value alone on every other rerun, so ordinary manual tab clicks
+    # are unaffected.
     (tab_account, tab_engine, tab_analytics, tab_ingestion, tab_advanced,
      tab_api, tab_pro, tab_support) = st.tabs(
-        tab_labels, default=jump_tab if jump_tab else None)
+        tab_labels, key="settings_tabs_active", on_change="rerun")
 
     with tab_account:
         _render_account_data_tab(jump_field if jump_tab == "Account & Data" else None)
@@ -213,6 +221,22 @@ def _render_api_key_tab():
             api_key_store.clear_api_key()
             st.success("Saved key removed.")
             st.rerun()
+
+
+def _clear_interactive_engine_widget_state():
+    """Pops the ie_* session_state keys the Live Engine form's number_input/
+    checkbox widgets are keyed on. Needed before any action that writes
+    interactive_engine.* to config.yaml from OUTSIDE that form (Engine
+    Profiles' Apply, Reset to defaults) -- the form only re-seeds a key
+    from config when that key is absent from session_state, so without
+    this the widgets keep showing whatever the user last typed instead of
+    the value that was just written. Live-verified 2026-07-11: Apply
+    correctly updated config.yaml but the Depth limit field kept showing
+    the pre-Apply value until this fix, silently misleading the user into
+    thinking Apply hadn't worked."""
+    for _k in ("ie_time_sec", "ie_depth", "ie_threads", "ie_hash_mb",
+               "ie_store_threshold", "ie_use_cloud_eval"):
+        st.session_state.pop(_k, None)
 
 
 def _render_analysis_engine_tab(highlight_field=None):
@@ -397,6 +421,7 @@ def _render_analysis_engine_tab(highlight_field=None):
             apply_col, delete_col = st.columns(2)
             if apply_col.button("Apply", key="apply_engine_profile"):
                 config.apply_engine_profile(selected_profile)
+                _clear_interactive_engine_widget_state()
                 live_engine.get_engine_service.clear()
                 st.success(f"Applied '{selected_profile}'.")
                 st.rerun()
@@ -416,6 +441,7 @@ def _render_analysis_engine_tab(highlight_field=None):
         template_cfg = config.load_config(template_path)
         config.reset_engine_path()
         config.save_interactive_engine(template_cfg["interactive_engine"])
+        _clear_interactive_engine_widget_state()
         live_engine.get_engine_service.clear()
         st.success("Engine settings reset to defaults.")
         st.rerun()

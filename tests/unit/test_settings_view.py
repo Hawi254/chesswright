@@ -58,6 +58,23 @@ class TestInstallEngineUpload:
 
 
 @pytest.mark.unit
+class TestClearInteractiveEngineWidgetState:
+    def test_pops_all_six_ie_keys(self, monkeypatch):
+        fake_session_state = {
+            "ie_time_sec": 0.5, "ie_depth": 15, "ie_threads": 1,
+            "ie_hash_mb": 32, "ie_store_threshold": 20,
+            "ie_use_cloud_eval": True, "unrelated_key": "untouched",
+        }
+        monkeypatch.setattr(settings_view.st, "session_state", fake_session_state)
+        settings_view._clear_interactive_engine_widget_state()
+        assert fake_session_state == {"unrelated_key": "untouched"}
+
+    def test_safe_when_keys_absent(self, monkeypatch):
+        monkeypatch.setattr(settings_view.st, "session_state", {})
+        settings_view._clear_interactive_engine_widget_state()  # must not raise
+
+
+@pytest.mark.unit
 class TestRankSettingsMatches:
     def test_finds_timezone_by_partial_word(self):
         matches = settings_view._rank_settings_matches("timezone")
