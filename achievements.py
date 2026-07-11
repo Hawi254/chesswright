@@ -19,6 +19,7 @@ import datetime
 import sqlite3
 from typing import Callable
 
+import analytics
 from config import load_config
 
 
@@ -77,6 +78,7 @@ def evaluate(conn, trigger, config_path=None):
 
 GIANT_KILLING_UPSET_THRESHOLD = -300   # keep aligned with dashboard/data/_shared.py's copy
 COMEBACK_WP_THRESHOLD = 0.10           # keep aligned with dashboard/data/_shared.py's copy
+LOST_WP = 0.25                         # keep aligned with points.py's copy
 
 
 def _check_first_win(conn, cfg):
@@ -266,4 +268,36 @@ CATALOG.extend([
     Achievement("drill_streak", "Dedicated Student",
                 "Review SRS drill cards on 5 consecutive days.",
                 "streak", frozenset({"sync", "analysis"}), _check_drill_streak),
+])
+
+# ---------------------------------------------------------------------------
+# Seed catalog, batch D: swindle_artist + session_warrior.
+# ---------------------------------------------------------------------------
+
+def _check_swindle_artist(conn, cfg):
+    return _first_game_with_min_wp_at_most(conn, LOST_WP, ("win",))
+
+
+def _check_session_warrior(conn, cfg):
+    threshold = cfg["achievements"]["session_warrior_min_games"]
+    gap_minutes = cfg["analytics"]["session_gap_minutes"]
+    analytics.ensure_session_ctx(conn, gap_minutes)
+    row = conn.execute("""
+        SELECT game_id FROM session_ctx
+        WHERE session_start = (
+            SELECT session_start FROM session_ctx
+            GROUP BY session_start
+            HAVING COUNT(*) >= ?
+            ORDER BY session_start LIMIT 1
+        )
+        ORDER BY session_game_number DESC LIMIT 1
+    """, (threshold,)).fetchone()
+    return row[0] if row else None
+
+
+CATALOG.extend([
+    Achievement("swindle_artist", "Swindle Artist", "Win a game you were losing badly.",
+                "narrative", frozenset({"analysis"}), _check_swindle_artist),
+    Achievement("session_warrior", "Session Warrior", "Play a marathon session in one sitting.",
+                "milestone", frozenset({"sync"}), _check_session_warrior),
 ])

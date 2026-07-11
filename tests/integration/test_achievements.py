@@ -215,3 +215,59 @@ class TestSeedCatalogStreaks:
         migrated_db.commit()
         unlocked = achievements.evaluate(migrated_db, "sync", config_path=achievements_config)
         assert "drill_streak" in unlocked
+
+
+@pytest.mark.integration
+class TestSeedCatalogBespoke:
+    def _insert_game_with_move(self, conn, game_id, outcome, min_wp, utc_date="2025.01.01"):
+        conn.execute(
+            "INSERT INTO games (id, white, black, outcome_for_player, utc_date, utc_time) "
+            "VALUES (?, 'W', 'B', ?, ?, '12:00:00')", (game_id, outcome, utc_date))
+        conn.execute(
+            "INSERT INTO moves (game_id, ply, move_number, color, san, is_player_move, "
+            "win_prob_before) VALUES (?, 1, 1, 'w', 'e4', 1, ?)", (game_id, min_wp))
+        conn.commit()
+
+    def test_swindle_artist_unlocks_on_win_from_a_lost_position(
+            self, migrated_db, achievements_config):
+        import achievements
+        self._insert_game_with_move(migrated_db, "g0", "win", 0.10)
+        unlocked = achievements.evaluate(migrated_db, "analysis", config_path=achievements_config)
+        assert "swindle_artist" in unlocked
+
+    def test_swindle_artist_does_not_unlock_on_a_draw(self, migrated_db, achievements_config):
+        import achievements
+        self._insert_game_with_move(migrated_db, "g0", "draw", 0.10)
+        unlocked = achievements.evaluate(migrated_db, "analysis", config_path=achievements_config)
+        assert "swindle_artist" not in unlocked
+
+    def test_comeback_kid_still_works_after_the_shared_helper_refactor(
+            self, migrated_db, achievements_config):
+        import achievements
+        self._insert_game_with_move(migrated_db, "g0", "draw", 0.05)
+        unlocked = achievements.evaluate(migrated_db, "analysis", config_path=achievements_config)
+        assert "comeback_kid" in unlocked
+
+    def test_session_warrior_unlocks_on_a_large_session(self, migrated_db, achievements_config):
+        import achievements
+        for i, minute in enumerate((0, 5, 10)):
+            migrated_db.execute(
+                "INSERT INTO games (id, white, black, outcome_for_player, utc_date, utc_time) "
+                "VALUES (?, 'W', 'B', 'win', '2025.01.01', ?)",
+                (f"g{i}", f"10:{minute:02d}:00"))
+        migrated_db.commit()
+        unlocked = achievements.evaluate(migrated_db, "sync", config_path=achievements_config)
+        assert "session_warrior" in unlocked
+        row = migrated_db.execute(
+            "SELECT source_game_id FROM achievements_unlocked WHERE achievement_id='session_warrior'"
+        ).fetchone()
+        assert row[0] == "g2"
+
+    def test_session_warrior_not_unlocked_below_threshold(self, migrated_db, achievements_config):
+        import achievements
+        migrated_db.execute(
+            "INSERT INTO games (id, white, black, outcome_for_player, utc_date, utc_time) "
+            "VALUES ('g0', 'W', 'B', 'win', '2025.01.01', '10:00:00')")
+        migrated_db.commit()
+        unlocked = achievements.evaluate(migrated_db, "sync", config_path=achievements_config)
+        assert "session_warrior" not in unlocked
