@@ -1,0 +1,101 @@
+{% extends "_base.html" %}
+
+{% block title %}{{ title }}{% endblock %}
+
+{% block content %}
+<div class="report-header">
+  <h1>{{ title }}</h1>
+  <div class="report-meta">
+    <span>Opponent: <strong>{{ opponent_name }}</strong></span>
+    <span>Games analyzed (their side): <strong>{{ n_analyzed }}</strong></span>
+    <span>Games played against them: <strong>{{ record.n_games }}</strong></span>
+  </div>
+</div>
+
+<h2 class="section-heading">Your Record Against Them</h2>
+{% if record.n_games %}
+<p>
+  You've played <strong>{{ record.n_games }}</strong> game(s) against {{ opponent_name }}.
+  {% if record.win_pct is not none %}
+  Across the {{ record.n_with_opening }} game(s) with a recorded opening, your win rate is
+  <strong>{{ record.win_pct }}%</strong>.
+  {% else %}
+  Not enough of those games have a recorded opening yet to compute a win rate.
+  {% endif %}
+</p>
+{% else %}
+<p class="empty-note">Not enough analysed games against {{ opponent_name }} in your own database yet to summarize a personal record.</p>
+{% endif %}
+
+{% if swindle.n_losses %}
+<p>
+  In your {{ swindle.n_losses }} loss(es) to {{ opponent_name }}, you were handed a real
+  chance to save {{ swindle.n_missed_swindle }} of them
+  ({{ swindle.swindle_rate_pct }}%) and didn't take it. A high rate here is a bad sign
+  specific to this opponent — it means you're leaving points on the table against them,
+  not a strength.
+</p>
+{% endif %}
+
+<h2 class="section-heading">Their Repertoire</h2>
+<p class="section-caption">Openings with 3+ analysed games, by color.</p>
+
+<p><strong>As White</strong></p>
+{% if form_white %}
+<table class="report-table">
+<thead><tr><th>Opening</th><th>Games</th><th>Score %</th><th>ACPL</th></tr></thead>
+<tbody>
+{% for row in form_white %}
+<tr>
+  <td>{{ row.opening }}</td>
+  <td>{{ row.n_games }}</td>
+  <td>{{ row.score_pct if row.score_pct is not none else "—" }}</td>
+  <td>{{ row.avg_cpl if row.avg_cpl is not none else "—" }}</td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+{% else %}
+<p class="empty-note">Not enough analysed games yet to show {{ opponent_name }}'s repertoire as White.</p>
+{% endif %}
+
+<p><strong>As Black</strong></p>
+{% if form_black %}
+<table class="report-table">
+<thead><tr><th>Opening</th><th>Games</th><th>Score %</th><th>ACPL</th></tr></thead>
+<tbody>
+{% for row in form_black %}
+<tr>
+  <td>{{ row.opening }}</td>
+  <td>{{ row.n_games }}</td>
+  <td>{{ row.score_pct if row.score_pct is not none else "—" }}</td>
+  <td>{{ row.avg_cpl if row.avg_cpl is not none else "—" }}</td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+{% else %}
+<p class="empty-note">Not enough analysed games yet to show {{ opponent_name }}'s repertoire as Black.</p>
+{% endif %}
+
+<h2 class="section-heading">Where They Go Wrong</h2>
+<p class="section-caption">Openings sorted by blunder rate — target these in your prep.</p>
+{% if tendencies %}
+<table class="report-table">
+<thead><tr><th>Opening</th><th>Color</th><th>Games</th><th>ACPL</th><th>Blunder %</th></tr></thead>
+<tbody>
+{% for row in tendencies %}
+<tr>
+  <td>{{ row.opening }}</td>
+  <td>{{ row.color | capitalize }}</td>
+  <td>{{ row.n_games }}</td>
+  <td>{{ row.avg_cpl if row.avg_cpl is not none else "—" }}</td>
+  <td>{{ row.blunder_pct if row.blunder_pct is not none else "—" }}</td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+{% else %}
+<p class="empty-note">Not enough analysed games yet to identify where {{ opponent_name }} tends to go wrong.</p>
+{% endif %}
+{% endblock %}

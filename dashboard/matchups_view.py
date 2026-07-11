@@ -19,7 +19,7 @@ import claude_narrative
 import data
 import theme
 from _common import get_connections, navigate_on_row_click
-from cached_queries import cached_headline_stats, cached_points_ledger
+from cached_queries import cached_headline_stats, cached_opponent_profile, cached_points_ledger
 
 _GK_REASON_LABELS = {
     "hung_piece":     "Hung a piece",
@@ -62,13 +62,6 @@ def cached_color_performance_by_rating(_duck_conn):
 @st.cache_data(show_spinner="Ranking your opponents…")
 def cached_nemesis_opponents(_duck_conn, min_games):
     return data.get_nemesis_opponents(_duck_conn, min_games=min_games)
-
-
-@st.cache_data(show_spinner="Building opponent profile…")
-def cached_opponent_profile(_duck_conn, opponent_name):
-    return data.get_opponent_profile(_duck_conn, opponent_name)
-
-
 
 
 def _clickable_game_ids(game_ids, key, detail_page, self_page):

@@ -72,3 +72,13 @@ def cached_time_forfeit_loss_breakdown(_duck_conn):
 @st.cache_data(show_spinner=False)
 def cached_motif_backfill_needed(_duck_conn):
     return data.motif_backfill_needed(_duck_conn)
+
+
+@st.cache_data(show_spinner="Building opponent profile…")
+def cached_opponent_profile(_duck_conn, opponent_name):
+    """Moved here from matchups_view.py (Phase 7 §27 Decision 4,
+    tournament-prep report) so it has one cache entry shared by both
+    matchups_view.py and chesswright_pro/tournament_prep.py, rather than
+    a second copy-pasted wrapper -- see this module's own docstring for
+    why that matters."""
+    return data.get_opponent_profile(_duck_conn, opponent_name)

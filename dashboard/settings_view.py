@@ -326,7 +326,8 @@ def _render_pro_section():
             "**Coach Mode** is available in Chesswright Pro.\n\n"
             "Pro adds student profile management — analyse any lichess player's "
             "games in an isolated database, switch between profiles without "
-            "losing your own analysis, and generate per-game reports.\n\n"
+            "losing your own analysis, and generate per-game and tournament-prep "
+            "reports.\n\n"
             "Purchase at [chesswright.gumroad.com](https://chesswright.gumroad.com) "
             "then install the Pro package and enter your license key here."
         )
