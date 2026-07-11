@@ -201,9 +201,23 @@ def _render_account_data_tab():
 
     if not pending_path:
         col1, col2 = st.columns([5, 1])
+        # Rendered (and its session_state applied) before the text_input
+        # below is instantiated -- Streamlit raises if a widget's key is
+        # written to AFTER that widget exists this run, confirmed live.
+        # col2 still lands visually on the right regardless of this code
+        # order, since column position comes from the column object, not
+        # execution order.
         with col2:
+            # Real native OS file dialog when running in the packaged
+            # desktop app; renders nothing in the plain `streamlit run`
+            # dev workflow, where the text input below is the only way
+            # in -- see components/native_file_picker for the mechanism.
             st.markdown("<div style='height:1.7rem'></div>", unsafe_allow_html=True)
             picked = native_file_picker.pick("database", key="import_native_picker")
+        # A component's return value persists across reruns until the JS
+        # sends a new one -- guard against reapplying the same pick on
+        # every later rerun, which would otherwise clobber anything the
+        # user typed into the field afterward.
         if picked and picked != st.session_state.get("import_native_picker_applied"):
             st.session_state["import_native_picker_applied"] = picked
             st.session_state["import_path_input"] = picked
