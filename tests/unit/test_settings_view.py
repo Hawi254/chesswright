@@ -55,3 +55,24 @@ class TestInstallEngineUpload:
         assert dest.exists()
         assert os.access(dest, os.X_OK)
         assert name == "Fake Engine 2.0"
+
+
+@pytest.mark.unit
+class TestRankSettingsMatches:
+    def test_finds_timezone_by_partial_word(self):
+        matches = settings_view._rank_settings_matches("timezone")
+        labels = [label for _tab, label in matches]
+        assert "Local timezone" in labels
+
+    def test_finds_engine_location_by_keyword(self):
+        matches = settings_view._rank_settings_matches("stockfish")
+        labels = [label for _tab, label in matches]
+        assert "Engine location" in labels
+
+    def test_no_match_returns_empty(self):
+        matches = settings_view._rank_settings_matches("zzzznonsense")
+        assert matches == []
+
+    def test_respects_limit(self):
+        matches = settings_view._rank_settings_matches("settings", limit=2)
+        assert len(matches) <= 2

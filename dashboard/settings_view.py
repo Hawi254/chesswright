@@ -22,23 +22,87 @@ from _common import resolve_db_path
 import components.native_file_picker as native_file_picker
 
 
+_SETTINGS_INDEX = [
+    ("Account & Data", "Anthropic API key", "api key claude narrative commentary"),
+    ("Account & Data", "Import an existing database", "database import migrate"),
+    ("Account & Data", "Chess.com account", "chesscom sync"),
+    ("Analysis Engine", "Engine location", "stockfish engine path detect browse"),
+    ("Analysis Engine", "Live engine settings", "interactive engine depth threads hash time"),
+    ("Analysis Engine", "Engine Profiles", "preset laptop desktop deep analysis tournament"),
+    ("Analytics & Display", "Local timezone", "utc offset hour time of day"),
+    ("Analytics & Display", "Confidence threshold", "sample size min games confidence"),
+    ("Ingestion", "Non-standard variants", "chess960 atomic variant policy"),
+    ("Ingestion", "Analysis queue order", "queue strategy interleaved chronological"),
+    ("Advanced", "Advanced settings", "pv_max_len reuse_evals worker sync timeout"),
+    ("Anthropic API key", "Anthropic API key", "api key claude"),
+    ("Chesswright Pro", "Chesswright Pro", "license coach mode student profile"),
+    ("Support", "Support this project", "sponsor donate"),
+]
+
+
+def _rank_settings_matches(query: str, limit: int = 5) -> list[tuple[str, str]]:
+    """Ranks _SETTINGS_INDEX entries against *query* by label+keywords,
+    returning (tab_label, field_label) pairs, best match first. Pure
+    function (no Streamlit calls) so it's unit-testable without AppTest."""
+    from rapidfuzz import process, fuzz
+    candidates = [f"{label} {keywords}" for _tab, label, keywords in _SETTINGS_INDEX]
+    # score_cutoff=45, not the plan's 40: at 40, an unrelated nonsense query
+    # ("zzzznonsense") still scored 42.9 against "Confidence threshold" under
+    # the installed rapidfuzz version's WRatio, producing a false-positive
+    # match instead of an empty result. 45 clears that noise while still
+    # matching all the real keyword queries tested below.
+    ranked = process.extract(query, candidates, scorer=fuzz.WRatio,
+                              limit=limit, score_cutoff=45)
+    return [(_SETTINGS_INDEX[idx][0], _SETTINGS_INDEX[idx][1]) for _text, _score, idx in ranked]
+
+
+def _render_search_box():
+    query = st.text_input("🔍 Search settings", key="settings_search_query",
+                           placeholder="e.g. timezone, engine, confidence…")
+    if not query.strip():
+        return
+    matches = _rank_settings_matches(query)
+    if not matches:
+        st.caption("No matching settings found.")
+        return
+    st.caption("Jump to:")
+    for i, (tab, label) in enumerate(matches):
+        if st.button(f"{label}  (in {tab})", key=f"settings_search_jump_{i}"):
+            st.session_state["settings_active_tab"] = tab
+            st.session_state["settings_jump_field"] = label
+            st.rerun()
+
+
 def render():
     st.title("Settings")
+    _render_search_box()
 
-    (tab_account, tab_engine, tab_analytics, tab_ingestion, tab_advanced,
-     tab_api, tab_pro, tab_support) = st.tabs([
+    jump_tab = st.session_state.get("settings_active_tab")
+    jump_field = st.session_state.get("settings_jump_field")
+    tab_labels = [
         "Account & Data", "Analysis Engine", "Analytics & Display", "Ingestion",
         "Advanced", "Anthropic API key", "Chesswright Pro", "Support",
-    ])
+    ]
+    # Deliberately `default=`, not the plan's `key="settings_tabs_active"`
+    # pre-set-via-session_state approach: reading Streamlit 1.58's actual
+    # st.tabs() source (elements/layouts.py) shows the key-based read only
+    # happens when on_change != "ignore" (is_stateful). Without on_change
+    # set (as here), the widget never reads a pre-set session_state value
+    # for its key at all -- it always opens on `default`/the first tab. The
+    # `default` param, by contrast, always drives the initial tab
+    # regardless of on_change, so it's the mechanism that actually works.
+    (tab_account, tab_engine, tab_analytics, tab_ingestion, tab_advanced,
+     tab_api, tab_pro, tab_support) = st.tabs(
+        tab_labels, default=jump_tab if jump_tab else None)
 
     with tab_account:
-        _render_account_data_tab()
+        _render_account_data_tab(jump_field if jump_tab == "Account & Data" else None)
     with tab_engine:
-        _render_analysis_engine_tab()
+        _render_analysis_engine_tab(jump_field if jump_tab == "Analysis Engine" else None)
     with tab_analytics:
-        _render_analytics_display_tab()
+        _render_analytics_display_tab(jump_field if jump_tab == "Analytics & Display" else None)
     with tab_ingestion:
-        _render_ingestion_tab()
+        _render_ingestion_tab(jump_field if jump_tab == "Ingestion" else None)
     with tab_advanced:
         _render_advanced_tab()
     with tab_api:
@@ -47,6 +111,9 @@ def render():
         _render_pro_section()
     with tab_support:
         _render_support_section()
+
+    st.session_state.pop("settings_active_tab", None)
+    st.session_state.pop("settings_jump_field", None)
 
 
 def _install_engine_binary(src_path: pathlib.Path, engines_dir: pathlib.Path,
@@ -148,7 +215,9 @@ def _render_api_key_tab():
             st.rerun()
 
 
-def _render_analysis_engine_tab():
+def _render_analysis_engine_tab(highlight_field=None):
+    if highlight_field:
+        st.info(f"🔍 Jumped here for: **{highlight_field}**")
     st.subheader("Engine location")
     st.caption(
         "The Stockfish (or other UCI-compatible) engine binary used by "
@@ -352,7 +421,9 @@ def _render_analysis_engine_tab():
         st.rerun()
 
 
-def _render_analytics_display_tab():
+def _render_analytics_display_tab(highlight_field=None):
+    if highlight_field:
+        st.info(f"🔍 Jumped here for: **{highlight_field}**")
     st.subheader("Local timezone")
     st.caption(
         "Your local UTC offset, used to show 'time of day' findings "
@@ -399,7 +470,9 @@ def _render_analytics_display_tab():
         st.rerun()
 
 
-def _render_ingestion_tab():
+def _render_ingestion_tab(highlight_field=None):
+    if highlight_field:
+        st.info(f"🔍 Jumped here for: **{highlight_field}**")
     st.subheader("New game ingestion")
     st.caption(
         "Controls how future syncs (lichess/chess.com) and the analysis "
@@ -522,7 +595,9 @@ def _render_advanced_tab():
             st.rerun()
 
 
-def _render_account_data_tab():
+def _render_account_data_tab(highlight_field=None):
+    if highlight_field:
+        st.info(f"🔍 Jumped here for: **{highlight_field}**")
     st.subheader("Import an existing database")
     st.caption(
         "For returning users: point at a chesswright-compatible database "
