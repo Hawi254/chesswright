@@ -6,6 +6,8 @@ installer who isn't assumed to be comfortable with environment
 variables or a terminal at all.
 """
 import pathlib
+import shutil
+import stat
 
 import requests
 import streamlit as st
@@ -15,6 +17,7 @@ import config
 import db_import
 import live_engine
 import sync_chesscom
+import worker
 from _common import resolve_db_path
 import components.native_file_picker as native_file_picker
 
@@ -37,6 +40,42 @@ def render():
         _render_pro_section()
     with tab_support:
         _render_support_section()
+
+
+def _install_engine_binary(src_path: pathlib.Path, engines_dir: pathlib.Path,
+                            validate_fn=None) -> str:
+    """Copies src_path into engines_dir, marks it executable, and validates
+    it as a real UCI engine (worker.validate_engine_path by default --
+    overridable so tests don't need a real engine binary). Returns the
+    engine's self-reported name. Raises RuntimeError (from validate_fn) if
+    it isn't a working UCI engine -- the partially-installed file is
+    removed before re-raising, so a bad pick never lingers in engines_dir."""
+    validate_fn = validate_fn or worker.validate_engine_path
+    engines_dir.mkdir(parents=True, exist_ok=True)
+    dest = engines_dir / src_path.name
+    shutil.copy2(src_path, dest)
+    dest.chmod(dest.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    try:
+        return validate_fn(str(dest))
+    except RuntimeError:
+        dest.unlink(missing_ok=True)
+        raise
+
+
+def _install_engine_upload(uploaded_file, engines_dir: pathlib.Path,
+                            validate_fn=None) -> str:
+    """Same as _install_engine_binary, for an st.file_uploader result
+    instead of a filesystem path (write_bytes instead of copy2)."""
+    validate_fn = validate_fn or worker.validate_engine_path
+    engines_dir.mkdir(parents=True, exist_ok=True)
+    dest = engines_dir / pathlib.Path(uploaded_file.name).name
+    dest.write_bytes(uploaded_file.getvalue())
+    dest.chmod(dest.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    try:
+        return validate_fn(str(dest))
+    except RuntimeError:
+        dest.unlink(missing_ok=True)
+        raise
 
 
 def _render_api_key_tab():
@@ -103,6 +142,77 @@ def _render_api_key_tab():
 
 
 def _render_analysis_engine_tab():
+    st.subheader("Engine location")
+    st.caption(
+        "The Stockfish (or other UCI-compatible) engine binary used by "
+        "both the batch analysis worker and the on-demand probes below. "
+        "Auto-detected on first run -- use this if you've since installed "
+        "Stockfish somewhere new, or want to switch engines.")
+
+    cfg = config.load_config()
+    current_path = cfg["engine"].get("path")
+    detected_path = current_path or worker.find_engine_path(None)
+
+    if detected_path:
+        st.success(f"Using: `{detected_path}`" +
+                   ("" if current_path else " (auto-detected)"))
+    else:
+        st.error(
+            "No chess engine found. Install Stockfish from "
+            "[stockfishchess.org/download](https://stockfishchess.org/download/) "
+            "or browse for one below.")
+
+    if st.button("Re-detect"):
+        found = worker.find_engine_path(None)
+        if found:
+            config.set_engine_path(found)
+            live_engine.get_engine_service.clear()
+            st.success(f"Found and saved: `{found}`.")
+            st.rerun()
+        else:
+            st.error("Still couldn't find one automatically.")
+
+    st.warning(
+        "Only pick a binary you obtained directly from "
+        "[stockfishchess.org/download](https://stockfishchess.org/download/) "
+        "or the official release page of another UCI engine. This app "
+        "will execute the file you select -- do not pick a file from an "
+        "untrusted source.")
+
+    engines_dir = pathlib.Path(config.DEFAULT_CONFIG_PATH).parent / "engines"
+
+    picked_path = native_file_picker.pick(
+        "engine", label="Browse for its executable file (native dialog)…",
+        key="settings_engine_native_picker")
+    if picked_path and picked_path != st.session_state.get(
+            "settings_engine_native_picker_applied"):
+        st.session_state["settings_engine_native_picker_applied"] = picked_path
+        with st.spinner("Checking it speaks UCI..."):
+            try:
+                engine_name = _install_engine_binary(pathlib.Path(picked_path), engines_dir)
+            except RuntimeError as e:
+                st.error(str(e))
+            else:
+                config.set_engine_path(str(engines_dir / pathlib.Path(picked_path).name))
+                live_engine.get_engine_service.clear()
+                st.success(f"Confirmed and saved: {engine_name}.")
+                st.rerun()
+
+    uploaded_engine = st.file_uploader(
+        "Or upload its executable file:", key="settings_engine_uploader")
+    if uploaded_engine is not None:
+        with st.spinner("Checking it speaks UCI..."):
+            try:
+                engine_name = _install_engine_upload(uploaded_engine, engines_dir)
+            except RuntimeError as e:
+                st.error(str(e))
+            else:
+                config.set_engine_path(str(engines_dir / pathlib.Path(uploaded_engine.name).name))
+                live_engine.get_engine_service.clear()
+                st.success(f"Confirmed and saved: {engine_name}.")
+                st.rerun()
+
+    st.divider()
     st.subheader("Live engine settings")
     st.caption(
         "Controls the on-demand Stockfish analysis in the position browser and "
