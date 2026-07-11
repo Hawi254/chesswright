@@ -41,6 +41,7 @@ from migrate import migrate
 from db import get_connection
 from config import load_config, pick
 import joblock
+import achievements
 
 
 def now_iso():
@@ -642,6 +643,14 @@ def run(db_path, depth, multipv, threads, hash_mb, pv_max_len, engine_path,
         engine.quit()
         conn.close()
         joblock.release()
+
+    if games_done > 0:
+        try:
+            achievements_conn = get_connection(db_path)
+            achievements.evaluate(achievements_conn, "analysis")
+            achievements_conn.close()
+        except Exception as e:
+            print(f"WARNING: achievement evaluation failed (analysis batch unaffected): {e}")
 
     summary_cache_fragment = ""
     if cache_stats["eligible"] > 0:

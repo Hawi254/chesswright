@@ -5,6 +5,9 @@ Uses the real migrated schema (migrated_db fixture) throughout --
 achievements.py is sqlite_conn-only (no DuckDB), so no _duck_from_conn
 dance is needed here, unlike tests/integration/test_data_layer.py.
 """
+import pathlib
+import sqlite3
+
 import pytest
 
 
@@ -271,3 +274,67 @@ class TestSeedCatalogBespoke:
         migrated_db.commit()
         unlocked = achievements.evaluate(migrated_db, "sync", config_path=achievements_config)
         assert "session_warrior" not in unlocked
+
+
+FIXTURES_DIR = pathlib.Path(__file__).parent.parent / "fixtures"
+
+
+def _find_real_stockfish():
+    from worker import find_engine_path
+    return find_engine_path(None)
+
+
+REAL_STOCKFISH = _find_real_stockfish()
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(REAL_STOCKFISH is None, reason="no Stockfish binary on this machine")
+def test_worker_run_calls_achievements_evaluate_after_analyzing(tmp_path, monkeypatch):
+    import migrate as migrate_mod
+    import ingest
+    import worker
+    import achievements
+
+    db_path = str(tmp_path / "test.db")
+    migrate_mod.migrate(db_path)
+    ingest.ingest(pgn_path=str(FIXTURES_DIR / "synthetic_games.pgn"), db_path=db_path,
+                  player_name="TestPlayerWhite")
+
+    calls = []
+    monkeypatch.setattr(achievements, "evaluate",
+                         lambda conn, trigger, **kw: calls.append(trigger))
+    monkeypatch.setattr(worker.joblock, "LOCK_PATH", tmp_path / "test.db.lock")
+    monkeypatch.setattr(worker.joblock, "_lock_fd", None)
+
+    worker.run(db_path, depth=6, multipv=1, threads=1, hash_mb=16, pv_max_len=10,
+               engine_path=REAL_STOCKFISH, max_games=3, max_duration_s=None,
+               consecutive_failure_limit=3, commit_every_n_moves=1)
+    worker.joblock.release()
+
+    assert calls == ["analysis"]
+
+
+@pytest.mark.integration
+def test_sync_run_calls_achievements_evaluate_after_new_games(tmp_path, monkeypatch):
+    import shutil
+    import migrate as migrate_mod
+    import sync
+    import achievements
+
+    db_path = str(tmp_path / "test.db")
+    migrate_mod.migrate(db_path)
+
+    def _fake_fetch(player_name, since_ms, timeout_seconds, max_games=None):
+        copy_path = str(tmp_path / "fetched.pgn")
+        shutil.copy(str(FIXTURES_DIR / "synthetic_games.pgn"), copy_path)
+        return copy_path
+
+    monkeypatch.setattr(sync, "fetch_new_games_pgn", _fake_fetch)
+    calls = []
+    monkeypatch.setattr(achievements, "evaluate",
+                         lambda conn, trigger, **kw: calls.append(trigger))
+
+    sync.run(db_path, "TestPlayerWhite", queue_strategy="chronological",
+             berserk_max_fraction=1.0, variant_policy="skip", timeout_seconds=5)
+
+    assert calls == ["sync"]
