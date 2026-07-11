@@ -1,0 +1,25 @@
+{% extends "_base.html" %}
+
+{% block title %}{{ title }}{% endblock %}
+
+{% block content %}
+<div class="report-header">
+  <h1>{{ title }}</h1>
+  <div class="report-meta">
+    <span>Opponent: <strong>{{ opponent_name }}</strong></span>
+    <span>Date: <strong>{{ utc_date }}</strong></span>
+    <span>Result:
+      <strong class="{% if result == 'win' %}result-win{% elif result == 'loss' %}result-loss{% else %}result-draw{% endif %}">
+        {{ result | capitalize }}
+      </strong>
+    </span>
+    <span>Color: <strong>{{ color | capitalize }}</strong></span>
+    <span>Opening: <strong>{{ opening }}</strong></span>
+    <span>Time control: <strong>{{ time_control }}</strong></span>
+  </div>
+</div>
+
+<div class="report-body">
+{{ body_html | safe }}
+</div>
+{% endblock %}

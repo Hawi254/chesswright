@@ -89,7 +89,7 @@ _fetch_duckdb_ext(ROOT / "build_assets" / "duckdb_extensions")
 hiddenimports = []
 binaries = []
 for pkg in ["streamlit", "chess", "yaml", "duckdb", "pandas", "matplotlib",
-            "anthropic", "requests", "plotly", "keyring", "jinja2"]:
+            "anthropic", "requests", "plotly", "keyring", "jinja2", "markdown"]:
     pkg_datas, pkg_binaries, pkg_hiddenimports = collect_all(pkg)
     datas += pkg_datas
     binaries += pkg_binaries
