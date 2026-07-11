@@ -81,6 +81,8 @@ def config_yaml(tmp_path):
         'engine:\n'
         '  path: null\n'
         '  depth: 20\n'
+        '  pv_max_len: 15\n'
+        '  reuse_evals: true\n'
         'interactive_engine:\n'
         '  threads: 1\n'
         '  hash_mb: 32\n'
@@ -90,9 +92,19 @@ def config_yaml(tmp_path):
         'analytics:\n'
         '  min_sample_size: 5\n'
         '  utc_offset_hours: 0\n'
+        'worker:\n'
+        '  consecutive_failure_limit: 3\n'
+        '  commit_every_n_moves: 1\n'
         'ingestion:\n'
         '  variant_policy: skip\n'
         '  queue_strategy: interleaved_by_year\n'
+        '  berserk_max_clock_fraction: 0.75\n'
+        '  backlog_quota: 0.5\n'
+        '  backlog_quota_window: 20\n'
+        'sync:\n'
+        '  request_timeout_seconds: 30\n'
+        'sync_chesscom:\n'
+        '  request_timeout_seconds: 30\n'
     )
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text(cfg_text)

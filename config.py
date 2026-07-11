@@ -213,9 +213,9 @@ def _set_section_scalar(section: str, key: str, value, path=None):
 
 
 def set_engine_setting(key: str, value, path=None):
-    """key in {depth, multipv, threads, hash_mb} -- NOT path (see
-    set_engine_path(), which needs quoting for Windows paths with
-    spaces; these are all bare numbers)."""
+    """key in {depth, multipv, threads, hash_mb, pv_max_len, reuse_evals}
+    -- NOT path (see set_engine_path(), which needs quoting for Windows
+    paths with spaces; these are all bare numbers/booleans)."""
     _set_section_scalar("engine", key, value, path)
 
 
@@ -242,6 +242,17 @@ def set_ingestion_setting(key: str, value, path=None):
     no separate quoting branch is needed the way set_engine_path() needs
     one for filesystem paths."""
     _set_section_scalar("ingestion", key, value, path)
+
+
+def set_sync_setting(key: str, value, path=None):
+    """key: request_timeout_seconds -- the only scalar under sync: today."""
+    _set_section_scalar("sync", key, value, path)
+
+
+def set_sync_chesscom_setting(key: str, value, path=None):
+    """key: request_timeout_seconds -- the only scalar under
+    sync_chesscom: today."""
+    _set_section_scalar("sync_chesscom", key, value, path)
 
 
 def save_interactive_engine(settings: dict, path=None):

@@ -103,18 +103,19 @@ class TestBackfillMissingKeys:
         cfg = config.load_config(config_yaml)
         assert cfg["engine"]["multipv"] == 3
 
-    def test_backfills_engine_reuse_evals_default_true(self, config_yaml):
-        """engine.reuse_evals (the batch eval-reuse knob, migrations/0033)
-        must reach existing installs via this same mechanism -- an install
-        created before the knob existed gets the default (true) backfilled,
-        not a KeyError in worker.py's __main__ config read."""
+    def test_backfills_engine_threads_default(self, config_yaml):
+        """engine.threads (and other keys added to config.yaml's engine:
+        section after a user's install was created) must reach existing
+        installs via this same mechanism -- an install missing the key
+        gets the template's own default backfilled, not a KeyError in
+        worker.py's __main__ config read."""
         cfg = config.load_config(config_yaml)
-        assert "reuse_evals" not in cfg["engine"]
+        assert "threads" not in cfg["engine"]
 
         config.backfill_missing_keys(path=config_yaml)
 
         cfg = config.load_config(config_yaml)
-        assert cfg["engine"]["reuse_evals"] is True
+        assert cfg["engine"]["threads"] == 4
 
     def test_preserves_existing_values(self, config_yaml):
         config.backfill_missing_keys(path=config_yaml)
@@ -125,12 +126,12 @@ class TestBackfillMissingKeys:
 
     def test_does_not_add_new_top_level_section(self, config_yaml):
         cfg = config.load_config(config_yaml)
-        assert "worker" not in cfg
+        assert "annotation" not in cfg
 
         config.backfill_missing_keys(path=config_yaml)
 
         cfg = config.load_config(config_yaml)
-        assert "worker" not in cfg
+        assert "annotation" not in cfg
 
     def test_idempotent(self, config_yaml):
         config.backfill_missing_keys(path=config_yaml)
@@ -157,6 +158,19 @@ class TestSetIngestionSetting:
         config.set_ingestion_setting("queue_strategy", "chronological", path=config_yaml)
         cfg = config.load_config(config_yaml)
         assert cfg["ingestion"]["queue_strategy"] == "chronological"
+
+
+@pytest.mark.unit
+class TestSetSyncSettings:
+    def test_sets_sync_timeout(self, config_yaml):
+        config.set_sync_setting("request_timeout_seconds", 60, path=config_yaml)
+        cfg = config.load_config(config_yaml)
+        assert cfg["sync"]["request_timeout_seconds"] == 60
+
+    def test_sets_sync_chesscom_timeout(self, config_yaml):
+        config.set_sync_chesscom_setting("request_timeout_seconds", 45, path=config_yaml)
+        cfg = config.load_config(config_yaml)
+        assert cfg["sync_chesscom"]["request_timeout_seconds"] == 45
 
 
 @pytest.mark.unit

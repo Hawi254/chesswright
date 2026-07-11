@@ -25,9 +25,10 @@ import components.native_file_picker as native_file_picker
 def render():
     st.title("Settings")
 
-    tab_account, tab_engine, tab_analytics, tab_ingestion, tab_api, tab_pro, tab_support = st.tabs([
+    (tab_account, tab_engine, tab_analytics, tab_ingestion, tab_advanced,
+     tab_api, tab_pro, tab_support) = st.tabs([
         "Account & Data", "Analysis Engine", "Analytics & Display", "Ingestion",
-        "Anthropic API key", "Chesswright Pro", "Support",
+        "Advanced", "Anthropic API key", "Chesswright Pro", "Support",
     ])
 
     with tab_account:
@@ -38,6 +39,8 @@ def render():
         _render_analytics_display_tab()
     with tab_ingestion:
         _render_ingestion_tab()
+    with tab_advanced:
+        _render_advanced_tab()
     with tab_api:
         _render_api_key_tab()
     with tab_pro:
@@ -372,6 +375,84 @@ def _render_ingestion_tab():
         config.set_ingestion_setting("queue_strategy", queue_strategy)
         st.toast("Ingestion settings saved.", icon="✅")
         st.rerun()
+
+
+def _render_advanced_tab():
+    with st.expander("Advanced settings", expanded=False):
+        st.caption(
+            "Lower-level tuning knobs -- most of which config.yaml itself "
+            "documents as safe defaults not worth changing. Shown here so "
+            "they're not YAML-only, without pretending they're as commonly "
+            "needed as the settings on the other tabs.")
+        cfg = config.load_config()
+
+        st.markdown("**Batch engine**")
+        pv_max_len = st.number_input(
+            "Stored line length (plies)", min_value=1, max_value=60, step=1,
+            value=int(cfg["engine"]["pv_max_len"]), key="adv_pv_max_len",
+            help="Plies of each line's continuation to store (storage vs. detail).")
+        reuse_evals = st.checkbox(
+            "Reuse a prior batch result for an exact-FEN repeat position",
+            value=bool(cfg["engine"]["reuse_evals"]), key="adv_reuse_evals",
+            help="Instead of re-running Stockfish. Unchecking restores the "
+                 "old always-re-analyze behavior.")
+
+        st.markdown("**Batch worker**")
+        consecutive_failure_limit = st.number_input(
+            "Stop after this many consecutive game failures", min_value=1,
+            max_value=100, step=1,
+            value=int(cfg["worker"]["consecutive_failure_limit"]),
+            key="adv_consecutive_failure_limit",
+            help="Stops the batch rather than silently failing the whole queue.")
+        commit_every_n_moves = st.number_input(
+            "Commit every N moves", min_value=1, max_value=100, step=1,
+            value=int(cfg["worker"]["commit_every_n_moves"]),
+            key="adv_commit_every_n_moves",
+            help="1 (default) is safest -- a crash loses at most the "
+                 "in-flight position. Not recommended to change.")
+
+        st.markdown("**Ingestion queue fairness**")
+        berserk_max_clock_fraction = st.number_input(
+            "Berserk clock fraction", min_value=0.0, max_value=1.0, step=0.05,
+            format="%.2f", value=float(cfg["ingestion"]["berserk_max_clock_fraction"]),
+            key="adv_berserk_max_clock_fraction",
+            help="A color is flagged berserk when its first clock reading "
+                 "is at or below this fraction of the base time.")
+        backlog_quota = st.number_input(
+            "Backlog quota", min_value=0.0, max_value=1.0, step=0.05,
+            format="%.2f", value=float(cfg["ingestion"]["backlog_quota"]),
+            key="adv_backlog_quota",
+            help="Minimum share of recently-analyzed games that must come "
+                 "from the historical backlog, even while new synced games "
+                 "are pending. 0 = recent games always win; 1 = backlog only.")
+        backlog_quota_window = st.number_input(
+            "Backlog quota window (games)", min_value=1, max_value=1000, step=1,
+            value=int(cfg["ingestion"]["backlog_quota_window"]),
+            key="adv_backlog_quota_window",
+            help="How many of the most recently analyzed games the backlog "
+                 "quota above looks at.")
+
+        st.markdown("**Sync timeouts**")
+        sync_timeout = st.number_input(
+            "Lichess sync request timeout (s)", min_value=1, max_value=300, step=1,
+            value=int(cfg["sync"]["request_timeout_seconds"]), key="adv_sync_timeout")
+        sync_chesscom_timeout = st.number_input(
+            "Chess.com sync request timeout (s)", min_value=1, max_value=300, step=1,
+            value=int(cfg["sync_chesscom"]["request_timeout_seconds"]),
+            key="adv_sync_chesscom_timeout")
+
+        if st.button("Save advanced settings"):
+            config.set_engine_setting("pv_max_len", int(pv_max_len))
+            config.set_engine_setting("reuse_evals", bool(reuse_evals))
+            config.set_worker_setting("consecutive_failure_limit", int(consecutive_failure_limit))
+            config.set_worker_setting("commit_every_n_moves", int(commit_every_n_moves))
+            config.set_ingestion_setting("berserk_max_clock_fraction", round(float(berserk_max_clock_fraction), 2))
+            config.set_ingestion_setting("backlog_quota", round(float(backlog_quota), 2))
+            config.set_ingestion_setting("backlog_quota_window", int(backlog_quota_window))
+            config.set_sync_setting("request_timeout_seconds", int(sync_timeout))
+            config.set_sync_chesscom_setting("request_timeout_seconds", int(sync_chesscom_timeout))
+            st.toast("Advanced settings saved.", icon="✅")
+            st.rerun()
 
 
 def _render_account_data_tab():
