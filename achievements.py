@@ -192,3 +192,78 @@ CATALOG.extend([
                 "Complete a fully analyzed game with zero blunders.",
                 "skill", frozenset({"analysis"}), _check_blunder_free_game),
 ])
+
+# ---------------------------------------------------------------------------
+# Seed catalog, batch C: streak achievements.
+# ---------------------------------------------------------------------------
+
+def _longest_win_streak_end(rows):
+    """rows: [(game_id, outcome_for_player), ...] in chronological order.
+    Returns (run_length, game_id_of_last_game_in_the_longest_run)."""
+    best_len, best_id = 0, None
+    cur_len, cur_id = 0, None
+    for game_id, outcome in rows:
+        if outcome == "win":
+            cur_len += 1
+            cur_id = game_id
+        else:
+            cur_len, cur_id = 0, None
+        if cur_len > best_len:
+            best_len, best_id = cur_len, cur_id
+    return best_len, best_id
+
+
+def _longest_consecutive_day_run(dates):
+    """dates: iterable of 'YYYY-MM-DD' strings (any order, dupes ok).
+    Returns the longest run length of calendar-consecutive days."""
+    unique_days = sorted({datetime.date.fromisoformat(d) for d in dates})
+    if not unique_days:
+        return 0
+    best = cur = 1
+    for prev, nxt in zip(unique_days, unique_days[1:]):
+        cur = cur + 1 if (nxt - prev).days == 1 else 1
+        best = max(best, cur)
+    return best
+
+
+def _check_win_streak(conn, cfg):
+    threshold = cfg["achievements"]["win_streak_length"]
+    rows = conn.execute(
+        "SELECT id, outcome_for_player FROM games "
+        "WHERE outcome_for_player IS NOT NULL ORDER BY utc_date, utc_time, id"
+    ).fetchall()
+    best_len, best_id = _longest_win_streak_end(rows)
+    return best_id if best_len >= threshold else None
+
+
+def _check_consistency_streak(conn, cfg):
+    threshold = cfg["achievements"]["consistency_streak_days"]
+    rows = conn.execute("SELECT DISTINCT utc_date FROM games WHERE utc_date IS NOT NULL").fetchall()
+    # utc_date is stored 'YYYY.MM.DD' (PGN date format) -- ISO-ify for date math.
+    dates = [d.replace(".", "-") for (d,) in rows]
+    return _longest_consecutive_day_run(dates) >= threshold
+
+
+def _check_drill_streak(conn, cfg):
+    """Tagged with triggers={"sync","analysis"} below, not a dedicated
+    trigger of its own: srs_reviews is written by the dashboard's SRS
+    Drills page (private chesswright-pro UI), which has no pipeline hook
+    in this plan. This achievement is swept opportunistically whenever
+    sync or analysis runs instead of reacting immediately -- a real,
+    accepted lag (up to one sync/analysis cycle), not a silent gap."""
+    threshold = cfg["achievements"]["drill_streak_days"]
+    rows = conn.execute("SELECT DISTINCT substr(reviewed_at, 1, 10) FROM srs_reviews").fetchall()
+    dates = [d for (d,) in rows]
+    return _longest_consecutive_day_run(dates) >= threshold
+
+
+CATALOG.extend([
+    Achievement("win_streak_10", "On a Roll", "Win 10 games in a row.",
+                "streak", frozenset({"sync"}), _check_win_streak),
+    Achievement("consistency_streak", "Creature of Habit",
+                "Play at least one game on 5 consecutive days.",
+                "streak", frozenset({"sync"}), _check_consistency_streak),
+    Achievement("drill_streak", "Dedicated Student",
+                "Review SRS drill cards on 5 consecutive days.",
+                "streak", frozenset({"sync", "analysis"}), _check_drill_streak),
+])

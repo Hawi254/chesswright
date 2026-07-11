@@ -156,3 +156,62 @@ class TestSeedCatalogThresholds:
         migrated_db.commit()
         unlocked = achievements.evaluate(migrated_db, "analysis", config_path=achievements_config)
         assert "blunder_free_game" not in unlocked
+
+
+@pytest.mark.integration
+class TestSeedCatalogStreaks:
+    def _insert_game(self, conn, game_id, outcome_for_player, utc_date, utc_time="12:00:00"):
+        conn.execute(
+            "INSERT INTO games (id, white, black, outcome_for_player, utc_date, utc_time) "
+            "VALUES (?, 'W', 'B', ?, ?, ?)",
+            (game_id, outcome_for_player, utc_date, utc_time))
+        conn.commit()
+
+    def test_win_streak_unlocks_at_threshold_and_records_last_game(
+            self, migrated_db, achievements_config):
+        import achievements
+        for i in range(3):
+            self._insert_game(migrated_db, f"g{i}", "win", f"2025.01.0{i+1}")
+        unlocked = achievements.evaluate(migrated_db, "sync", config_path=achievements_config)
+        assert "win_streak_10" in unlocked
+        row = migrated_db.execute(
+            "SELECT source_game_id FROM achievements_unlocked WHERE achievement_id='win_streak_10'"
+        ).fetchone()
+        assert row[0] == "g2"
+
+    def test_win_streak_not_unlocked_when_streak_is_broken(self, migrated_db, achievements_config):
+        import achievements
+        self._insert_game(migrated_db, "g0", "win", "2025.01.01")
+        self._insert_game(migrated_db, "g1", "loss", "2025.01.02")
+        self._insert_game(migrated_db, "g2", "win", "2025.01.03")
+        unlocked = achievements.evaluate(migrated_db, "sync", config_path=achievements_config)
+        assert "win_streak_10" not in unlocked
+
+    def test_consistency_streak_unlocks_on_consecutive_days(self, migrated_db, achievements_config):
+        import achievements
+        self._insert_game(migrated_db, "g0", "win", "2025.01.01")
+        self._insert_game(migrated_db, "g1", "win", "2025.01.02")
+        self._insert_game(migrated_db, "g2", "win", "2025.01.03")
+        unlocked = achievements.evaluate(migrated_db, "sync", config_path=achievements_config)
+        assert "consistency_streak" in unlocked
+
+    def test_consistency_streak_not_unlocked_with_a_gap_day(self, migrated_db, achievements_config):
+        import achievements
+        self._insert_game(migrated_db, "g0", "win", "2025.01.01")
+        self._insert_game(migrated_db, "g1", "win", "2025.01.03")
+        unlocked = achievements.evaluate(migrated_db, "sync", config_path=achievements_config)
+        assert "consistency_streak" not in unlocked
+
+    def test_drill_streak_unlocks_on_consecutive_review_days(self, migrated_db, achievements_config):
+        import achievements
+        migrated_db.execute(
+            "INSERT INTO srs_cards (fen, source, best_move_san, next_due, added_at) "
+            "VALUES ('fen1', 'motif', 'e4', '2025-02-01', '2025-01-01')")
+        card_id = migrated_db.execute("SELECT id FROM srs_cards").fetchone()[0]
+        for day in ("2025-01-01", "2025-01-02", "2025-01-03"):
+            migrated_db.execute(
+                "INSERT INTO srs_reviews (card_id, reviewed_at, rating, interval_days_after) "
+                "VALUES (?, ?, 2, 1)", (card_id, f"{day}T10:00:00"))
+        migrated_db.commit()
+        unlocked = achievements.evaluate(migrated_db, "sync", config_path=achievements_config)
+        assert "drill_streak" in unlocked
