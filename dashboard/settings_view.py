@@ -361,9 +361,11 @@ def _render_ingestion_tab():
         "Analysis queue order",
         options=queue_options,
         index=queue_options.index(cfg["ingestion"]["queue_strategy"]),
-        help="Controls which unanalyzed games the worker picks next. "
-             "'interleaved_by_year' (default) samples across your whole "
-             "history early instead of only your oldest or newest games.")
+        help="Only takes effect for a manual full re-import (running ingest.py "
+             "directly) -- regular syncs from this app always place newly-fetched "
+             "games at the front of the queue regardless of this setting. "
+             "'interleaved_by_year' (default) samples across your whole history "
+             "early instead of only your oldest or newest games.")
 
     if st.button("Save ingestion settings"):
         config.set_ingestion_setting("variant_policy", variant_policy)

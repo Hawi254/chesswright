@@ -236,8 +236,8 @@ def set_analytics_setting(key: str, value, path=None):
 def set_ingestion_setting(key: str, value, path=None):
     """key in {variant_policy, queue_strategy, berserk_max_clock_fraction,
     backlog_quota, backlog_quota_window} -- any bare-scalar key under
-    ingestion:. variant_policy/queue_strategy are quoted strings in
-    config.yaml but _set_section_scalar's str(value) already renders a
+    ingestion:. variant_policy/queue_strategy are bare, unquoted words in
+    config.yaml and _set_section_scalar's str(value) already renders a
     bare word correctly for these two (no spaces/special YAML chars), so
     no separate quoting branch is needed the way set_engine_path() needs
     one for filesystem paths."""
