@@ -542,6 +542,76 @@ class TestMatchupsData:
 
 
 @pytest.mark.integration
+class TestPrepData:
+    def test_get_recent_form_on_empty_db(self, migrated_db):
+        from data.prep import get_recent_form
+        duck, disk, tmp = _duck_from_conn(migrated_db)
+        try:
+            df = get_recent_form(duck)
+            assert df.empty
+        finally:
+            duck.close(); disk.close(); os.unlink(tmp)
+
+    def test_get_recent_form_n_games_and_score_pct_not_move_count_weighted(self, migrated_db):
+        """Regression test for a real bug (docs/implementation_roadmap.md
+        §27 Decision 4's tournament-prep build): the original query did
+        COUNT(*)/AVG(CASE...) directly over a LEFT JOIN to moves, so a
+        game's outcome and its own existence got counted once per
+        analysed player move instead of once per game. Three games, same
+        opponent color/opening, DELIBERATELY different move counts (1, 3,
+        2) so n_games and score_pct only come out right if the fix
+        aggregates games and moves at separate grains before combining."""
+        from data.prep import get_recent_form
+        conn = migrated_db
+        conn.execute(
+            "INSERT INTO games (id, white, black, player_color, opening_family, "
+            "outcome_for_player, analysis_status) VALUES "
+            "('g1','W','B','white','Italian Game','win','done')")
+        conn.execute(
+            "INSERT INTO moves (game_id, ply, move_number, color, san, "
+            "is_player_move, cpl) VALUES ('g1', 1, 1, 'w', 'e4', 1, 10)")
+
+        conn.execute(
+            "INSERT INTO games (id, white, black, player_color, opening_family, "
+            "outcome_for_player, analysis_status) VALUES "
+            "('g2','W','B','white','Italian Game','loss','done')")
+        for ply, cpl in [(1, 20), (3, 30), (5, 40)]:
+            conn.execute(
+                "INSERT INTO moves (game_id, ply, move_number, color, san, "
+                "is_player_move, cpl) VALUES ('g2', ?, ?, 'w', 'e4', 1, ?)",
+                (ply, (ply + 1) // 2, cpl))
+
+        conn.execute(
+            "INSERT INTO games (id, white, black, player_color, opening_family, "
+            "outcome_for_player, analysis_status) VALUES "
+            "('g3','W','B','white','Italian Game','win','done')")
+        for ply, cpl in [(1, 5), (3, 15)]:
+            conn.execute(
+                "INSERT INTO moves (game_id, ply, move_number, color, san, "
+                "is_player_move, cpl) VALUES ('g3', ?, ?, 'w', 'e4', 1, ?)",
+                (ply, (ply + 1) // 2, cpl))
+        conn.commit()
+
+        duck, disk, tmp = _duck_from_conn(conn)
+        try:
+            df = get_recent_form(duck)
+            assert len(df) == 1
+            row = df.iloc[0]
+            # 3 games, NOT 6 (1+3+2 move rows) -- the pre-fix bug's exact
+            # symptom (295 "games" for an opponent with 11 real games,
+            # found live during tournament-prep verification).
+            assert row.n_games == 3
+            # Game-weighted (win, loss, win) = 200/3 = 66.7%, not the
+            # move-weighted 50.0% the pre-fix query produced (1 win-row +
+            # 3 loss-rows + 2 win-rows -> 3/6).
+            assert row.score_pct == pytest.approx(66.7, abs=0.05)
+            # avg_cpl is legitimately move-weighted (10+20+30+40+5+15)/6
+            assert row.avg_cpl == pytest.approx(20.0, abs=0.05)
+        finally:
+            duck.close(); disk.close(); os.unlink(tmp)
+
+
+@pytest.mark.integration
 class TestTacticalData:
     def test_get_motif_breakdown_on_empty_db(self, migrated_db):
         # takes sqlite_conn since migration 0031 (partial motif index)
