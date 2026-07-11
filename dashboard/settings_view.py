@@ -25,8 +25,8 @@ import components.native_file_picker as native_file_picker
 def render():
     st.title("Settings")
 
-    tab_account, tab_engine, tab_analytics, tab_api, tab_pro, tab_support = st.tabs([
-        "Account & Data", "Analysis Engine", "Analytics & Display",
+    tab_account, tab_engine, tab_analytics, tab_ingestion, tab_api, tab_pro, tab_support = st.tabs([
+        "Account & Data", "Analysis Engine", "Analytics & Display", "Ingestion",
         "Anthropic API key", "Chesswright Pro", "Support",
     ])
 
@@ -36,6 +36,8 @@ def render():
         _render_analysis_engine_tab()
     with tab_analytics:
         _render_analytics_display_tab()
+    with tab_ingestion:
+        _render_ingestion_tab()
     with tab_api:
         _render_api_key_tab()
     with tab_pro:
@@ -333,6 +335,40 @@ def _render_analytics_display_tab():
         config.set_analytics_setting("min_sample_size", int(min_sample_size))
         st.cache_data.clear()
         st.toast("Confidence threshold saved.", icon="✅")
+        st.rerun()
+
+
+def _render_ingestion_tab():
+    st.subheader("New game ingestion")
+    st.caption(
+        "Controls how future syncs (lichess/chess.com) and the analysis "
+        "worker treat newly-fetched games. Doesn't affect games already "
+        "in your database.")
+    cfg = config.load_config()
+
+    variant_options = ["skip", "include"]
+    variant_policy = st.selectbox(
+        "Non-standard variants (Chess960, Atomic, ...)",
+        options=variant_options,
+        index=variant_options.index(cfg["ingestion"]["variant_policy"]),
+        help="'skip' (default) ignores non-Standard-chess games entirely -- "
+             "safe, since the batch engine assumes normal rules. Only "
+             "choose 'include' if you plan to analyze those games with a "
+             "variant-aware engine separately.")
+
+    queue_options = ["interleaved_by_year", "chronological", "reverse_chronological"]
+    queue_strategy = st.selectbox(
+        "Analysis queue order",
+        options=queue_options,
+        index=queue_options.index(cfg["ingestion"]["queue_strategy"]),
+        help="Controls which unanalyzed games the worker picks next. "
+             "'interleaved_by_year' (default) samples across your whole "
+             "history early instead of only your oldest or newest games.")
+
+    if st.button("Save ingestion settings"):
+        config.set_ingestion_setting("variant_policy", variant_policy)
+        config.set_ingestion_setting("queue_strategy", queue_strategy)
+        st.toast("Ingestion settings saved.", icon="✅")
         st.rerun()
 
 

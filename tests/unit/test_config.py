@@ -98,6 +98,19 @@ class TestBackfillMissingKeys:
         cfg = config.load_config(config_yaml)
         assert "multipv" not in cfg["engine"]
 
+
+@pytest.mark.unit
+class TestSetIngestionSetting:
+    def test_sets_variant_policy(self, config_yaml):
+        config.set_ingestion_setting("variant_policy", "include", path=config_yaml)
+        cfg = config.load_config(config_yaml)
+        assert cfg["ingestion"]["variant_policy"] == "include"
+
+    def test_sets_queue_strategy(self, config_yaml):
+        config.set_ingestion_setting("queue_strategy", "chronological", path=config_yaml)
+        cfg = config.load_config(config_yaml)
+        assert cfg["ingestion"]["queue_strategy"] == "chronological"
+
         config.backfill_missing_keys(path=config_yaml)
 
         cfg = config.load_config(config_yaml)

@@ -90,6 +90,9 @@ def config_yaml(tmp_path):
         'analytics:\n'
         '  min_sample_size: 5\n'
         '  utc_offset_hours: 0\n'
+        'ingestion:\n'
+        '  variant_policy: skip\n'
+        '  queue_strategy: interleaved_by_year\n'
     )
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text(cfg_text)
