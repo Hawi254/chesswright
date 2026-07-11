@@ -138,3 +138,57 @@ CATALOG.extend([
                 "Win or draw a game you were nearly lost in.",
                 "narrative", frozenset({"analysis"}), _check_comeback_kid),
 ])
+
+# ---------------------------------------------------------------------------
+# Seed catalog, batch B: count/threshold achievements.
+# ---------------------------------------------------------------------------
+
+def _check_century_club(conn, cfg):
+    threshold = cfg["achievements"]["century_club_min_analyzed"]
+    n = conn.execute("SELECT COUNT(*) FROM games WHERE analysis_status='done'").fetchone()[0]
+    return n >= threshold
+
+
+def _check_marathon_game(conn, cfg):
+    threshold = cfg["achievements"]["marathon_min_plies"]
+    row = conn.execute(
+        "SELECT id FROM games WHERE num_plies >= ? ORDER BY utc_date, utc_time, id LIMIT 1",
+        (threshold,)
+    ).fetchone()
+    return row[0] if row else None
+
+
+def _check_opening_explorer(conn, cfg):
+    threshold = cfg["achievements"]["opening_explorer_min_distinct"]
+    n = conn.execute(
+        "SELECT COUNT(DISTINCT opening_family) FROM games WHERE opening_family IS NOT NULL"
+    ).fetchone()[0]
+    return n >= threshold
+
+
+def _check_blunder_free_game(conn, cfg):
+    row = conn.execute("""
+        SELECT g.id FROM games g
+        WHERE g.analysis_status = 'done'
+          AND EXISTS (SELECT 1 FROM moves m WHERE m.game_id = g.id AND m.is_player_move = 1)
+          AND NOT EXISTS (
+              SELECT 1 FROM moves m
+              WHERE m.game_id = g.id AND m.is_player_move = 1 AND m.classification = 'blunder'
+          )
+        ORDER BY g.utc_date, g.utc_time, g.id
+        LIMIT 1
+    """).fetchone()
+    return row[0] if row else None
+
+
+CATALOG.extend([
+    Achievement("century_club", "Century Club", "Get 100 games fully analyzed.",
+                "milestone", frozenset({"analysis"}), _check_century_club),
+    Achievement("marathon_game", "Marathon", "Play a game that goes the distance.",
+                "milestone", frozenset({"sync"}), _check_marathon_game),
+    Achievement("opening_explorer", "Opening Explorer", "Play 20 different openings.",
+                "milestone", frozenset({"sync"}), _check_opening_explorer),
+    Achievement("blunder_free_game", "Clean Sheet",
+                "Complete a fully analyzed game with zero blunders.",
+                "skill", frozenset({"analysis"}), _check_blunder_free_game),
+])

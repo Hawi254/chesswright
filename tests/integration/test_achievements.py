@@ -74,3 +74,85 @@ class TestSeedCatalogOneTimeEvents:
         migrated_db.commit()
         unlocked = achievements.evaluate(migrated_db, "analysis")
         assert "comeback_kid" not in unlocked
+
+
+@pytest.fixture
+def achievements_config(tmp_path):
+    """Small thresholds so seed-catalog tests are deterministic and don't
+    depend on the real config.yaml's actual values (which are tuned for
+    the real ~32k-game dev DB, not a handful of hand-seeded test rows)."""
+    cfg_text = (
+        "achievements:\n"
+        "  win_streak_length: 3\n"
+        "  consistency_streak_days: 3\n"
+        "  drill_streak_days: 3\n"
+        "  marathon_min_plies: 40\n"
+        "  opening_explorer_min_distinct: 2\n"
+        "  session_warrior_min_games: 3\n"
+        "  century_club_min_analyzed: 2\n"
+        "analytics:\n"
+        "  session_gap_minutes: 60\n"
+    )
+    cfg_path = tmp_path / "achievements_config.yaml"
+    cfg_path.write_text(cfg_text)
+    return str(cfg_path)
+
+
+@pytest.mark.integration
+class TestSeedCatalogThresholds:
+    def _insert_game(self, conn, game_id, outcome_for_player="win", num_plies=10,
+                      opening_family=None, analysis_status="pending",
+                      utc_date="2025.01.01", utc_time="12:00:00"):
+        conn.execute(
+            "INSERT INTO games (id, white, black, outcome_for_player, num_plies, "
+            "opening_family, analysis_status, utc_date, utc_time) "
+            "VALUES (?, 'W', 'B', ?, ?, ?, ?, ?, ?)",
+            (game_id, outcome_for_player, num_plies, opening_family, analysis_status,
+             utc_date, utc_time))
+        conn.commit()
+
+    def test_century_club_unlocks_at_threshold(self, migrated_db, achievements_config):
+        import achievements
+        for i in range(2):
+            self._insert_game(migrated_db, f"g{i}", analysis_status="done")
+        unlocked = achievements.evaluate(migrated_db, "analysis", config_path=achievements_config)
+        assert "century_club" in unlocked
+
+    def test_century_club_not_unlocked_below_threshold(self, migrated_db, achievements_config):
+        import achievements
+        self._insert_game(migrated_db, "g0", analysis_status="done")
+        unlocked = achievements.evaluate(migrated_db, "analysis", config_path=achievements_config)
+        assert "century_club" not in unlocked
+
+    def test_marathon_game_unlocks_on_long_game(self, migrated_db, achievements_config):
+        import achievements
+        self._insert_game(migrated_db, "g0", num_plies=45)
+        unlocked = achievements.evaluate(migrated_db, "sync", config_path=achievements_config)
+        assert "marathon_game" in unlocked
+
+    def test_opening_explorer_unlocks_on_enough_variety(self, migrated_db, achievements_config):
+        import achievements
+        self._insert_game(migrated_db, "g0", opening_family="Italian Game")
+        self._insert_game(migrated_db, "g1", opening_family="Sicilian Defense")
+        unlocked = achievements.evaluate(migrated_db, "sync", config_path=achievements_config)
+        assert "opening_explorer" in unlocked
+
+    def test_blunder_free_game_unlocks_on_clean_analyzed_game(self, migrated_db, achievements_config):
+        import achievements
+        self._insert_game(migrated_db, "g0", analysis_status="done")
+        migrated_db.execute(
+            "INSERT INTO moves (game_id, ply, move_number, color, san, is_player_move, "
+            "classification) VALUES ('g0', 1, 1, 'w', 'e4', 1, 'good')")
+        migrated_db.commit()
+        unlocked = achievements.evaluate(migrated_db, "analysis", config_path=achievements_config)
+        assert "blunder_free_game" in unlocked
+
+    def test_blunder_free_game_not_unlocked_with_a_blunder(self, migrated_db, achievements_config):
+        import achievements
+        self._insert_game(migrated_db, "g0", analysis_status="done")
+        migrated_db.execute(
+            "INSERT INTO moves (game_id, ply, move_number, color, san, is_player_move, "
+            "classification) VALUES ('g0', 1, 1, 'w', 'e4', 1, 'blunder')")
+        migrated_db.commit()
+        unlocked = achievements.evaluate(migrated_db, "analysis", config_path=achievements_config)
+        assert "blunder_free_game" not in unlocked
