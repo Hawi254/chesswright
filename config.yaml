@@ -280,3 +280,18 @@ sync_chesscom:                       # incremental fetch of new games via chess.
                                          # request per calendar month of account history,
                                          # sequentially (chess.com's own guidance: sequential
                                          # requests are unlimited, parallel ones risk 429).
+
+achievements:                            # thresholds for achievements.py's seed catalog --
+                                           # see docs/superpowers/specs/2026-07-11-achievements-service-design.md
+  win_streak_length: 10                    # consecutive wins, ever, to unlock win_streak_10
+  consistency_streak_days: 5                # consecutive calendar days with >=1 game played
+  drill_streak_days: 5                       # consecutive calendar days with >=1 SRS review
+  marathon_min_plies: 100                     # game length (plies) to unlock marathon_game --
+                                                # 90th percentile on the real dev DB is 114 plies
+  opening_explorer_min_distinct: 20            # distinct opening_family values to unlock
+                                                # opening_explorer -- only 81 exist total on the
+                                                # real dev DB, so 20 is real breadth, not trivial
+  session_warrior_min_games: 20                 # games in one session to unlock session_warrior --
+                                                # 90th percentile session size on the real dev DB
+                                                # is 24 games, median is 8
+  century_club_min_analyzed: 100                 # analysis_status='done' games to unlock century_club
