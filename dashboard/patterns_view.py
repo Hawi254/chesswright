@@ -181,6 +181,16 @@ def cached_session_rollup(_sqlite_conn):
     return data.get_session_rollup(_sqlite_conn)
 
 
+@st.cache_data(show_spinner="Comparing casual play to tournaments and arenas…")
+def cached_event_type_performance(_duck_conn):
+    return data.get_event_type_performance(_duck_conn)
+
+
+@st.cache_data(show_spinner="Finding your most-played tournaments and arenas…")
+def cached_event_name_breakdown(_duck_conn):
+    return data.get_event_name_breakdown(_duck_conn)
+
+
 def _coverage_caption(win_df, acpl_df, key_col, label_map=None):
     """Shared n_analyzed/coverage_pct disclosure for a win/ACPL table pair
     keyed by the same category column -- same 'explain, don't hide'
@@ -612,6 +622,55 @@ def _render_tab_sessions(sqlite_conn, duck_conn):
         st.plotly_chart(charts.bar_chart(session_df, "position", "acpl", theme.NEGATIVE,
                                           x_title="Game within the playing session", y_title="ACPL (lower = more accurate)"),
                          theme=None)
+
+    with st.container(border=True):
+        st.subheader("Casual vs. tournament & arena play")
+        st.caption("Lichess arenas and tournaments are grouped by name here, not by the "
+                   "time-gap 'session' above -- a single sitting can span several arenas "
+                   "back to back, and the same recurring arena (e.g. \"Hourly Blitz Arena\") "
+                   "can't be split into individual instances from the data available, so "
+                   "this compares by event TYPE, not a count of tournaments entered.")
+        cat_df = cached_event_type_performance(duck_conn)
+        if cat_df.empty:
+            st.info(theme.thin_data_message(0, 1))
+        else:
+            panes = []
+            for row in cat_df.itertuples():
+                def _render(row=row):
+                    st.markdown(f"**{row.category}**")
+                    sub_cols = st.columns(2)
+                    with sub_cols[0]:
+                        theme.render_metric_card(value=f"{row.win_pct:.1f}%", label="Win rate",
+                                                  key=f"event_cat_win_{row.category}")
+                    with sub_cols[1]:
+                        acpl_val = "--" if pd.isna(row.acpl) else f"{row.acpl:.1f}"
+                        theme.render_metric_card(value=acpl_val, label="ACPL",
+                                                  key=f"event_cat_acpl_{row.category}")
+                panes.append({"render": _render,
+                              "caption": f"{row.n_games:,} games, {row.draw_pct:.1f}% draws"})
+            theme.render_comparison_panel(panes, mode="side_by_side")
+
+    with st.expander("Named tournaments & arenas"):
+        breakdown_df = cached_event_name_breakdown(duck_conn)
+        if breakdown_df.empty:
+            st.info(theme.thin_data_message(0, 1))
+        else:
+            display_df = breakdown_df.copy()
+            display_df["acpl"] = display_df["acpl"].apply(
+                lambda v: "--" if pd.isna(v) else f"{v:.1f}")
+            st.caption(f"Showing the {len(breakdown_df)} tournaments/arenas with at least "
+                       "20 games played.")
+            st.dataframe(display_df, width='stretch', hide_index=True, column_config={
+                "event": "Tournament / arena",
+                "n_games": "Games",
+                "win_pct": st.column_config.NumberColumn("Win %", format="%.1f"),
+                "draw_pct": st.column_config.NumberColumn("Draw %", format="%.1f"),
+                "loss_pct": st.column_config.NumberColumn("Loss %", format="%.1f"),
+                "acpl": st.column_config.Column(
+                    "ACPL", help="Average centipawn loss across analyzed moves in this event."),
+                "n_analyzed": st.column_config.Column(
+                    "Analyzed moves", help="How many moves in this event have engine analysis."),
+            })
 
 
 @st.fragment

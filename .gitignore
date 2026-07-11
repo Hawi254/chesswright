@@ -29,6 +29,7 @@ sample.pgn
 CLAUDE.md
 BRIEF.md
 docs/scoping/
+docs/implementation_roadmap.md
 
 # local-only generated artifacts (anchored to repo root -- PyInstaller output)
 /dist/
