@@ -192,6 +192,15 @@ def test_narrative_is_deterministic_for_the_same_game():
     assert narrative_1 == narrative_2
 
 
+def test_overview_css_is_well_formed_style_block():
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+    from overview_view import OVERVIEW_CSS
+    assert OVERVIEW_CSS.strip().startswith("<style>")
+    assert OVERVIEW_CSS.strip().endswith("</style>")
+    assert ".cw-ov-rail" in OVERVIEW_CSS
+    assert "theme.POSITIVE" not in OVERVIEW_CSS  # must be interpolated, not literal
+
+
 if __name__ == "__main__":
     tests = [v for k, v in list(globals().items()) if k.startswith("test_")]
     failed = 0

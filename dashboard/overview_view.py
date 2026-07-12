@@ -17,6 +17,97 @@ from cached_queries import cached_career_findings, cached_headline_stats
 from game_explorer_view import cached_game_explorer_table
 
 
+OVERVIEW_CSS = f"""<style>
+.cw-ov {{ --cw-canvas:#0B0F14; --cw-panel:#131A22; --cw-panel-2:#0F141B;
+    --cw-copper:#E08A3C; --cw-cyan:#4FB8C4; --cw-text:#ECEEF0;
+    --cw-muted:#ECEEF099; --cw-line:#232B37; --cw-line-soft:#1a212b; }}
+
+.cw-ov-zone-head {{ display:flex; align-items:baseline; gap:.8rem; margin:1.6rem 0 1rem; }}
+.cw-ov-eyebrow {{ font-family:"SF Mono","JetBrains Mono",Consolas,monospace; font-size:.68rem;
+    letter-spacing:.1em; text-transform:uppercase; color:var(--cw-cyan); white-space:nowrap; }}
+.cw-ov-zone-head h2 {{ margin:0; font-family:"Archivo Narrow","Arial Narrow",sans-serif;
+    font-weight:700; font-size:1.1rem; color:var(--cw-text); }}
+.cw-ov-zone-head-rule {{ flex:1; height:1px; background:var(--cw-line); }}
+
+.cw-ov-trait-tag {{ display:inline-block; font-family:"Archivo Narrow","Arial Narrow",sans-serif;
+    font-size:.74rem; font-weight:600; padding:.4rem .75rem; margin:0 .4rem .4rem 0;
+    border-radius:4px; background:var(--cw-panel); border:1px solid var(--cw-line); color:var(--cw-text); }}
+.cw-ov-rating-num {{ font-family:"SF Mono","JetBrains Mono",Consolas,monospace;
+    font-variant-numeric:tabular-nums; font-size:1.5rem; font-weight:600; color:var(--cw-text); }}
+.cw-ov-rating-trend {{ font-size:.78rem; margin-left:.4rem; }}
+.cw-ov-rating-trend.up {{ color:{theme.POSITIVE}; }}
+.cw-ov-rating-trend.down {{ color:{theme.NEGATIVE}; }}
+.cw-ov-exec-summary {{ font-style:italic; font-size:.98rem; line-height:1.6; color:var(--cw-muted);
+    max-width:74ch; border-left:2px solid var(--cw-line); padding-left:.9rem; margin:0 0 1rem; }}
+
+.cw-ov-status-strip {{ font-family:"SF Mono","JetBrains Mono",Consolas,monospace; font-size:.72rem;
+    color:var(--cw-muted); display:flex; align-items:center; gap:.5rem; margin-bottom:.6rem; }}
+.cw-ov-status-strip .dot {{ width:6px; height:6px; border-radius:50%; flex-shrink:0; }}
+.cw-ov-status-strip .dot.on {{ background:var(--cw-cyan); }}
+.cw-ov-status-strip .dot.off {{ background:var(--cw-line); }}
+
+.cw-ov-rail {{ position:relative; background:var(--cw-panel-2); border-radius:3px; overflow:hidden;
+    height:110px; border:1px solid var(--cw-line); }}
+.cw-ov-rail-mid {{ position:absolute; left:0; right:0; top:50%; height:1px;
+    background:rgba(236,238,240,.28); z-index:2; }}
+.cw-ov-rail-fill {{ position:absolute; left:0; right:0; bottom:0; width:100%; z-index:1;
+    background:linear-gradient(180deg, var(--cw-copper), #a95f22); }}
+@keyframes cw-ov-rail-rise {{ from {{ height:50%; }} to {{ height: var(--cw-rail-target, 50%); }} }}
+
+.cw-ov-milestone {{ display:inline-flex; align-items:center; gap:.55rem; background:var(--cw-panel);
+    border:1px solid var(--cw-line); border-radius:5px; padding:.6rem .9rem; margin:0 .5rem .5rem 0;
+    white-space:nowrap; }}
+.cw-ov-milestone .tick {{ width:5px; height:5px; border-radius:50%; background:var(--cw-copper); flex-shrink:0; }}
+.cw-ov-milestone .label {{ font-family:"Archivo Narrow","Arial Narrow",sans-serif; font-size:.78rem; color:var(--cw-text); }}
+.cw-ov-milestone .date {{ font-family:"SF Mono","JetBrains Mono",Consolas,monospace; font-size:.68rem;
+    color:var(--cw-muted); margin-left:.3rem; }}
+
+.cw-ov-ticker {{ width:100%; border-collapse:collapse; }}
+.cw-ov-ticker tr {{ border-bottom:1px solid var(--cw-line-soft); }}
+.cw-ov-ticker tr:last-child {{ border-bottom:none; }}
+.cw-ov-ticker td {{ padding:.5rem .3rem; }}
+.cw-ov-res {{ font-family:"Archivo Narrow","Arial Narrow",sans-serif; font-size:.68rem; font-weight:700;
+    padding:.15rem .5rem; border-radius:3px; letter-spacing:.04em; }}
+.cw-ov-res.w {{ background:{theme.POSITIVE}29; color:{theme.POSITIVE}; }}
+.cw-ov-res.l {{ background:{theme.NEGATIVE}29; color:{theme.NEGATIVE}; }}
+.cw-ov-res.d {{ background:var(--cw-panel-2); color:var(--cw-muted); }}
+.cw-ov-delta {{ font-family:"SF Mono","JetBrains Mono",Consolas,monospace; font-size:.8rem;
+    font-variant-numeric:tabular-nums; text-align:right; }}
+.cw-ov-delta.up {{ color:{theme.POSITIVE}; }}
+.cw-ov-delta.down {{ color:{theme.NEGATIVE}; }}
+
+.cw-ov-chip {{ font-family:"SF Mono","JetBrains Mono",Consolas,monospace; font-size:.66rem;
+    padding:.2rem .55rem; border-radius:3px; background:var(--cw-panel-2); color:var(--cw-cyan);
+    border:1px solid var(--cw-line); display:inline-block; margin:0 .35rem .35rem 0; }}
+
+.cw-ov-balance-row {{ display:flex; align-items:flex-start; gap:.55rem; padding:.55rem 0;
+    border-bottom:1px solid var(--cw-line-soft); }}
+.cw-ov-balance-row:last-child {{ border-bottom:none; }}
+.cw-ov-balance-row .mk {{ width:7px; height:7px; border-radius:50%; margin-top:.4rem; flex-shrink:0; }}
+.cw-ov-balance-row.strength .mk {{ background:{theme.POSITIVE}; }}
+.cw-ov-balance-row.weakness .mk {{ background:var(--cw-copper); }}
+.cw-ov-balance-row .t {{ font-size:.86rem; color:var(--cw-text); font-weight:600; margin-bottom:.15rem;
+    font-family:"Archivo Narrow","Arial Narrow",sans-serif; }}
+.cw-ov-balance-row .d {{ font-size:.8rem; color:var(--cw-muted); line-height:1.45; }}
+
+.cw-ov-severity {{ display:inline-flex; gap:3px; vertical-align:middle; margin-right:.6rem; }}
+.cw-ov-severity .d {{ width:6px; height:6px; border-radius:50%; background:var(--cw-line); display:inline-block; }}
+.cw-ov-severity .d.on {{ background:var(--cw-copper); }}
+
+.st-key-cw_ov_progress[data-testid="stVerticalBlockBorderWrapper"],
+.st-key-cw_ov_recent_form[data-testid="stVerticalBlockBorderWrapper"],
+.st-key-cw_ov_highlight[data-testid="stVerticalBlockBorderWrapper"],
+.st-key-cw_ov_coaching_list[data-testid="stVerticalBlockBorderWrapper"] {{
+    background-color:var(--cw-panel); border:1px solid var(--cw-line); border-radius:6px;
+    box-shadow:0 1px 0 rgba(255,255,255,.04) inset, 0 8px 22px rgba(0,0,0,.38);
+}}
+
+@media (prefers-reduced-motion: reduce) {{
+    .cw-ov-rail-fill {{ animation-duration:.01ms !important; }}
+}}
+</style>"""
+
+
 # Maps each finding title -> (page_ref_key, human-readable page name, optional tab hint).
 # page_ref_key matches the kwarg name passed to render() from app.py.
 _FINDING_DEST = {
