@@ -154,6 +154,16 @@ def get_engine_service() -> EngineService | None:
         return None
 
 
+def get_engine_status_summary() -> dict:
+    """Cheap, read-only status for display (Overview's status strip). Reuses
+    the cached get_engine_service() singleton -- never starts a new engine
+    process just to check status."""
+    service = get_engine_service()
+    if service is None:
+        return {"connected": False, "version": None}
+    return {"connected": not service._dead, "version": service._engine_version or None}
+
+
 def batch_running() -> bool:
     """True when the batch worker holds the joblock and its process is alive."""
     info = joblock.status()
