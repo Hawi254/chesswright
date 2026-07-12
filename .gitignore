@@ -34,6 +34,8 @@ docs/implementation_roadmap.md
 # local-only generated artifacts (anchored to repo root -- PyInstaller output)
 /dist/
 /build/
+# frontend build output (Vite)
+/frontend/dist/
 # build-time-downloaded DuckDB extension(s) -- fetched fresh per platform/
 # duckdb-pin by scripts/fetch_duckdb_extensions.py, never committed
 /build_assets/
