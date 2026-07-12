@@ -1,3 +1,5 @@
+import MilestonesRow from '../components/MilestonesRow'
+import { useMilestones } from '../hooks/useMilestones'
 import { useOverviewData, type Finding } from '../hooks/useOverviewData'
 
 // Same logic as dashboard/overview_view.py's _split_by_polarity + the
@@ -14,6 +16,7 @@ function topTraitTags(findings: Finding[]): Finding[] {
 export default function OverviewPage() {
   const { stats, ratingSnapshot, streak, findings, narrative, loading, error } =
     useOverviewData()
+  const { milestones } = useMilestones()
 
   return (
     <div className="p-8">
@@ -86,6 +89,8 @@ export default function OverviewPage() {
           </div>
         </div>
       )}
+
+      {milestones && <MilestonesRow milestones={milestones} />}
     </div>
   )
 }

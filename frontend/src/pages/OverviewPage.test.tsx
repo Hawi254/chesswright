@@ -1,5 +1,5 @@
 import { render, screen } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import OverviewPage from './OverviewPage'
 import type { OverviewData } from '../hooks/useOverviewData'
 
@@ -8,12 +8,23 @@ vi.mock('../hooks/useOverviewData', () => ({
   useOverviewData: () => mockUseOverviewData(),
 }))
 
+const mockUseMilestones = vi.fn()
+vi.mock('../hooks/useMilestones', () => ({
+  useMilestones: () => mockUseMilestones(),
+}))
+
 const EMPTY: OverviewData = {
   stats: null, ratingSnapshot: null, streak: null, findings: null, narrative: null,
   loading: false, error: false,
 }
 
 describe('OverviewPage', () => {
+  beforeEach(() => {
+    // Default: milestones still loading, so existing tests that don't care
+    // about the milestones row see no unexpected content.
+    mockUseMilestones.mockReturnValue({ milestones: null, loading: true, error: false })
+  })
+
   it('always renders the Overview heading', () => {
     mockUseOverviewData.mockReturnValue({ ...EMPTY, loading: true })
     render(<OverviewPage />)
@@ -85,5 +96,36 @@ describe('OverviewPage', () => {
     expect(screen.getByText('Weakness A')).toBeInTheDocument()
     expect(screen.queryByText('Weakness B')).not.toBeInTheDocument()
     expect(screen.getByText('at peak')).toBeInTheDocument()
+  })
+
+  it('renders milestones independently of identity-zone loading/error state', () => {
+    mockUseOverviewData.mockReturnValue({ ...EMPTY, loading: false, error: true })
+    mockUseMilestones.mockReturnValue({
+      milestones: [
+        { achievement_id: 'first_win', name: 'First Win',
+          description: 'Win your first recorded game.', unlocked_at: '2026-01-01T00:00:00' },
+      ],
+      loading: false,
+      error: false,
+    })
+    render(<OverviewPage />)
+
+    expect(screen.getByText('First Win')).toBeInTheDocument()
+  })
+
+  it('renders no milestones section while the milestones fetch is still loading', () => {
+    mockUseOverviewData.mockReturnValue({ ...EMPTY, loading: true })
+    mockUseMilestones.mockReturnValue({ milestones: null, loading: true, error: false })
+    render(<OverviewPage />)
+
+    expect(screen.queryByText('Milestones')).not.toBeInTheDocument()
+  })
+
+  it('renders no milestones section when there are none unlocked', () => {
+    mockUseOverviewData.mockReturnValue({ ...EMPTY, loading: true })
+    mockUseMilestones.mockReturnValue({ milestones: [], loading: false, error: false })
+    render(<OverviewPage />)
+
+    expect(screen.queryByText('Milestones')).not.toBeInTheDocument()
   })
 })
