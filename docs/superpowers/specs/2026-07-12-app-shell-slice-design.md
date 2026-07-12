@@ -72,8 +72,10 @@ and its real content deliberately NOT ported forward yet — see Non-goals.
 - **No global state management library.** Plain React state/Context covers this
   slice's needs (palette open/closed, active nav group). Not picked ahead of a page
   slice that actually needs shared cross-component state (e.g. SRS drills).
-- **No TypeScript strictness overhaul of the existing spike code** beyond what this
-  slice's own new files need — the spike's `api/` Python code is untouched except for
+- **No conversion of anything beyond this slice's own new files.** The frontend
+  switches to TypeScript as part of this slice (the spike's `App.jsx`/`main.jsx` are
+  deleted outright, not incrementally converted), but that's the full extent of it —
+  no unrelated tooling upgrade. The spike's `api/` Python code is untouched except for
   the one new endpoint below.
 
 ## Decisions
@@ -189,7 +191,15 @@ function's shape is genuinely awkward over HTTP"), nothing there changes.
 - `lib/navCandidates.ts` — the bundled static fallback copy of the page/settings
   list (see Error handling).
 
-**Removed**: `frontend/src/App.jsx` (spike-only, superseded by the routed shell).
+**Removed**: `frontend/src/App.jsx` and `frontend/src/main.jsx` (spike-only flat
+entry point, superseded by the routed shell's `main.tsx`).
+
+**New dependencies** (`frontend/package.json`): `typescript`, `@types/react`,
+`@types/react-dom` (TS toolchain); `react-router-dom` (routing); `tailwindcss` +
+shadcn/ui's CLI-generated primitives + `cmdk` (styling/palette); `vitest` +
+`@testing-library/react` (unit tests, dev-only). All standard, actively maintained,
+no wheel/native-binary packaging concerns (pure frontend, not touched by
+PyInstaller).
 
 ## Testing / verification
 
