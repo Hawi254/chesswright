@@ -7,11 +7,26 @@ handler, and Python only allows signal.signal() from the main thread --
 uvicorn does the same signal-handler installation Streamlit's bootstrap
 does, so the same crash applies here). Run directly:
     python3 api/spike_launcher.py
+
+Frozen-mode dispatch mirrors desktop_app.py's launch_server_subprocess()/
+main() pattern exactly (see that module's docstring for the two prior
+designs that crashed before landing on this one): the original
+`[sys.executable, "-m", "uvicorn", ...]` re-invocation worked from a
+source checkout (sys.executable is a real interpreter there) but
+fork-bombed once frozen, because a frozen sys.executable IS the bundled
+exe itself -- it has no `-m` handling and just re-runs its own main()
+regardless of args, recursively, with no base case (found live: 120+
+processes within seconds). The fix: re-invoke this same executable with
+a `--api-server-mode` flag instead of `-m uvicorn`; the subprocess's
+main() sees the flag and calls uvicorn.run() directly on its own main
+thread, in-process -- no interpreter-style CLI args needed, so freezing
+can't break it.
 """
 import socket
 import subprocess
 import sys
 import time
+import pathlib
 import urllib.request
 
 
@@ -33,12 +48,50 @@ def wait_for_server(url, timeout_s=30):
 
 
 def launch_api_subprocess(port):
-    cmd = [sys.executable, "-m", "uvicorn", "api.main:app",
-           "--host", "127.0.0.1", "--port", str(port)]
+    """Re-invokes this same executable with --api-server-mode. sys.executable
+    alone is correct in BOTH modes: a real Python interpreter in a source
+    checkout (needs this script's own path passed too) or the bundled exe
+    itself when frozen (which already knows its own entry point -- no
+    extra script argument exists or is needed)."""
+    if getattr(sys, "frozen", False):
+        cmd = [sys.executable, "--api-server-mode", "--port", str(port)]
+    else:
+        cmd = [sys.executable, str(pathlib.Path(__file__).resolve()),
+               "--api-server-mode", "--port", str(port)]
     return subprocess.Popen(cmd)
 
 
+def run_api_server_mode(port):
+    """Runs in a dedicated subprocess (see launch_api_subprocess) -- this is
+    that subprocess's entire job, on ITS main thread, so uvicorn.run()'s
+    internal SIGTERM-handler registration is safe here, same reasoning as
+    desktop_app.py's run_server_mode().
+
+    Re-invoked directly as a script path (not `-m api.spike_launcher`), so
+    Python puts THIS file's own directory (api/) on sys.path[0], not the
+    project root -- `import api.main` would fail without adding the
+    project root explicitly first. Mirrors desktop_app.py's resource_dir()
+    reasoning: sys._MEIPASS is already the bundle's extraction root when
+    frozen; this script's grandparent directory is the project root when
+    running from source (spike_launcher.py lives in api/, one level below
+    root)."""
+    if getattr(sys, "frozen", False):
+        project_root = pathlib.Path(sys._MEIPASS)
+    else:
+        project_root = pathlib.Path(__file__).resolve().parent.parent
+    sys.path.insert(0, str(project_root))
+
+    import uvicorn
+    from api.main import app
+    uvicorn.run(app, host="127.0.0.1", port=port)
+
+
 def main():
+    if "--api-server-mode" in sys.argv:
+        port = int(sys.argv[sys.argv.index("--port") + 1])
+        run_api_server_mode(port)
+        return
+
     port = free_port()
     url = f"http://127.0.0.1:{port}"
     proc = launch_api_subprocess(port)
