@@ -1,10 +1,29 @@
 import { render, screen } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { MemoryRouter } from 'react-router-dom'
+import { describe, expect, it, vi } from 'vitest'
 import App from './App'
+import { STATIC_CANDIDATES } from './lib/navCandidates'
 
-describe('App', () => {
-  it('renders the Chesswright placeholder', () => {
-    render(<App />)
-    expect(screen.getByText('Chesswright')).toBeInTheDocument()
+vi.mock('./hooks/usePageCandidates', () => ({
+  usePageCandidates: () => ({ candidates: STATIC_CANDIDATES, usingFallback: false }),
+}))
+
+function renderAt(path: string) {
+  return render(
+    <MemoryRouter initialEntries={[path]}>
+      <App />
+    </MemoryRouter>,
+  )
+}
+
+describe('App routing', () => {
+  it('redirects / to /overview', () => {
+    renderAt('/')
+    expect(screen.getByRole('heading', { name: 'Overview' })).toBeInTheDocument()
+  })
+
+  it('renders the correct stub for a direct URL navigation', () => {
+    renderAt('/patterns')
+    expect(screen.getByRole('heading', { name: 'Patterns & Tendencies' })).toBeInTheDocument()
   })
 })
