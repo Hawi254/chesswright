@@ -60,6 +60,9 @@ def api_client(migrated_db_path, monkeypatch, tmp_path):
     _common.get_connections.clear()
 
     import api.main as api_main
+    api_main.reset_caches()  # module-level TTL caches persist across tests
+                              # in this process otherwise, since api.main is only
+                              # ever imported once.
     return TestClient(api_main.app)
 
 
@@ -84,3 +87,72 @@ def test_rating_snapshot_endpoint(api_client):
     resp = api_client.get("/api/overview/rating-snapshot")
     assert resp.status_code == 200
     assert isinstance(resp.json(), dict)
+
+
+@pytest.mark.integration
+def test_current_streak_endpoint(api_client):
+    resp = api_client.get("/api/overview/current-streak")
+    assert resp.status_code == 200
+    assert resp.json() == {"outcome": None, "length": 0}
+
+
+@pytest.mark.integration
+def test_career_findings_endpoint_empty_db(api_client):
+    resp = api_client.get("/api/overview/career-findings")
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+@pytest.mark.integration
+def test_career_findings_endpoint_ttl_cache(api_client, monkeypatch):
+    import data
+
+    call_count = {"n": 0}
+
+    def fake_get_headline_stats(*args, **kwargs):
+        return {"total_games": 10, "analyzed_games": 10, "acpl": 45.0,
+                 "blunder_rate": 5.0, "win_pct": 55.0, "n_analyzed_moves": 200}
+
+    def fake_get_career_findings(*args, **kwargs):
+        call_count["n"] += 1
+        return [{"title": "Test finding", "headline": "h", "detail": "d",
+                  "polarity": "strength", "severity": "low", "category": "general"}]
+
+    monkeypatch.setattr(data, "get_headline_stats", fake_get_headline_stats)
+    monkeypatch.setattr(data, "get_career_findings", fake_get_career_findings)
+
+    resp1 = api_client.get("/api/overview/career-findings")
+    resp2 = api_client.get("/api/overview/career-findings")
+
+    assert resp1.status_code == 200
+    assert resp2.status_code == 200
+    assert resp1.json() == resp2.json()
+    assert call_count["n"] == 1
+
+
+@pytest.mark.integration
+def test_narrative_endpoint_empty_db(api_client):
+    resp = api_client.get("/api/overview/narrative")
+    assert resp.status_code == 200
+    assert resp.json() == {"narrative": "No games yet -- fetch some games to get started."}
+
+
+@pytest.mark.integration
+def test_narrative_endpoint_ttl_cache(api_client, monkeypatch):
+    import narrative
+
+    call_count = {"n": 0}
+
+    def fake_generate_career_narrative(*args, **kwargs):
+        call_count["n"] += 1
+        return "Test narrative text."
+
+    monkeypatch.setattr(narrative, "generate_career_narrative", fake_generate_career_narrative)
+
+    resp1 = api_client.get("/api/overview/narrative")
+    resp2 = api_client.get("/api/overview/narrative")
+
+    assert resp1.status_code == 200
+    assert resp2.status_code == 200
+    assert resp1.json() == resp2.json() == {"narrative": "Test narrative text."}
+    assert call_count["n"] == 1
