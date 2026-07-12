@@ -41,3 +41,8 @@ def rating_trajectory():
 def rating_snapshot():
     _, duck_conn = get_db_connections()
     return data.get_rating_snapshot(duck_conn)
+
+
+@app.get("/api/nav/pages")
+def nav_pages():
+    return data.PAGE_CANDIDATES + data.SETTINGS_CANDIDATES
