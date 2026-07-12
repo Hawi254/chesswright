@@ -36,7 +36,8 @@ from ._shared import (
 )
 from .overview import (
     get_rating_trajectory, get_acpl_trajectory, get_win_rate_by_color,
-    get_progress_by_month,
+    get_progress_by_month, get_rating_snapshot, get_current_streak,
+    get_recent_form,
 )
 from .openings import (
     INITIAL_FEN, FLIP_SCAN_MIN_TOTAL_GAMES,
