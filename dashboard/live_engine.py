@@ -140,9 +140,14 @@ class EngineService:
         self._engine = None
 
 
+_service_started = False
+
+
 @st.cache_resource(show_spinner="Starting the analysis engine…")
 def get_engine_service() -> EngineService | None:
     """Return the singleton EngineService, or None if Stockfish is not found."""
+    global _service_started
+    _service_started = True
     cfg = config.load_config()
     ie_cfg = cfg.get("interactive_engine", {})
     path = worker.find_engine_path(cfg.get("engine", {}).get("path"))
@@ -155,9 +160,15 @@ def get_engine_service() -> EngineService | None:
 
 
 def get_engine_status_summary() -> dict:
-    """Cheap, read-only status for display (Overview's status strip). Reuses
-    the cached get_engine_service() singleton -- never starts a new engine
-    process just to check status."""
+    """Cheap, read-only status for display (Overview's status strip). Only
+    reports on an engine ALREADY started elsewhere (e.g. Game Detail's
+    interactive analysis panel) -- never calls get_engine_service() as the
+    first caller, since that's what actually constructs a real Stockfish
+    subprocess on its first-ever invocation. Viewing Overview must never be
+    what eagerly starts the engine for a user who never opened an
+    interactive-analysis feature."""
+    if not _service_started:
+        return {"connected": False, "version": None}
     service = get_engine_service()
     if service is None:
         return {"connected": False, "version": None}
