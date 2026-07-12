@@ -13,6 +13,7 @@ from api.db import get_db_connections
 
 import data
 import narrative
+import achievements
 
 app = FastAPI(title="Chesswright API")
 
@@ -99,6 +100,12 @@ def career_findings():
             return []
         return data.get_career_findings(duck_conn, sqlite_conn, stats.get("blunder_rate"))
     return _career_findings_cache.get(compute)
+
+
+@app.get("/api/overview/achievements")
+def achievements_endpoint():
+    sqlite_conn, _ = get_db_connections()
+    return achievements.get_unlocked_achievements(sqlite_conn, limit=4)
 
 
 @app.get("/api/overview/narrative")

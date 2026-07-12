@@ -166,6 +166,32 @@ def test_narrative_endpoint_ttl_cache(api_client, monkeypatch):
 
 
 @pytest.mark.integration
+def test_achievements_endpoint_empty_db(api_client):
+    resp = api_client.get("/api/overview/achievements")
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+@pytest.mark.integration
+def test_achievements_endpoint_returns_unlocked_achievements(api_client, monkeypatch):
+    import achievements
+
+    def fake_get_unlocked_achievements(conn, limit=4):
+        assert limit == 4
+        return [{"achievement_id": "first_win", "name": "First Win",
+                  "description": "Win your first recorded game.",
+                  "unlocked_at": "2026-01-01T00:00:00"}]
+
+    monkeypatch.setattr(achievements, "get_unlocked_achievements", fake_get_unlocked_achievements)
+
+    resp = api_client.get("/api/overview/achievements")
+    assert resp.status_code == 200
+    assert resp.json() == [{"achievement_id": "first_win", "name": "First Win",
+                             "description": "Win your first recorded game.",
+                             "unlocked_at": "2026-01-01T00:00:00"}]
+
+
+@pytest.mark.integration
 def test_config_default_path_restored_after_api_client_tests(migrated_db_path):
     """Regression test for a cross-test global-state leak: every test
     above uses the api_client fixture, which repoints config resolution
