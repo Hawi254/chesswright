@@ -44,6 +44,18 @@ def test_app_runs_without_exception():
     assert not at.exception, f"App raised: {at.exception}"
 
 
+def test_overview_page_shows_three_zone_headers():
+    """Confirms the Task 5 rewrite actually renders all three zones, not
+    just that the page loads without an exception."""
+    at = AppTest.from_file(APP_PATH)
+    at.run(timeout=60)
+    assert not at.exception, f"App raised: {at.exception}"
+    page_text = "\n".join(m.value for m in at.markdown)
+    assert "Your chess identity" in page_text
+    assert "Progress" in page_text and "milestones" in page_text
+    assert "Your coaching plan" in page_text
+
+
 def test_all_career_pages_render():
     """Phase 6c.4 replaces the old 9-tab single page with 6 separate
     pages. AppTest.from_file can only ever render app.py's DEFAULT page
