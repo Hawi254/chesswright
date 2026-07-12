@@ -1,0 +1,15 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg: #14181F;
+  --color-bg-secondary: #1E2530;
+  --color-accent-gold: #C19A4B;
+  --color-positive: #6FA98C;
+  --color-negative: #B0584F;
+  --color-text: #E8E6E1;
+  --color-text-muted: rgb(232 230 225 / 0.6);
+}
+
+body {
+  margin: 0;
+}
