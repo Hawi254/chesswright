@@ -137,7 +137,7 @@ def get_current_streak(duck_conn):
     return {"outcome": current, "length": length}
 
 
-def get_recent_form(duck_conn, n=5):
+def get_recent_form_snapshot(duck_conn, n=5):
     """Last n games for Overview's recent-form ticker. All board-derived
     (result/opponent/date/rating-change), no analysis dependency."""
     return duck_conn.execute("""

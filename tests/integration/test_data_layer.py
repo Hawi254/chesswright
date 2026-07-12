@@ -148,10 +148,10 @@ class TestOverviewData:
                 "player_rating_change) VALUES (?, ?, ?, ?, '10:00:00', ?)",
                 (game_id, outcome, opponent, date, delta))
         migrated_db.commit()
-        from data.overview import get_recent_form
+        from data.overview import get_recent_form_snapshot
         duck, disk, tmp = _duck_from_conn(migrated_db)
         try:
-            df = get_recent_form(duck, n=2)
+            df = get_recent_form_snapshot(duck, n=2)
             assert len(df) == 2
             assert df.iloc[0]["opponent_name"] == "Carol"
             assert df.iloc[0]["player_rating_change"] == 1
