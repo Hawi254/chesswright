@@ -62,7 +62,13 @@ export default function CommandPalette({ open, onOpenChange, candidates }: Comma
           {settings.map((setting) => (
             <CommandItem
               key={setting.title}
-              value={setting.title}
+              // "Settings " prefix (not shown -- only {setting.title} is
+              // rendered below) so every settings-category entry is
+              // findable by searching the group name itself, e.g.
+              // "Anthropic API key" alone has no fuzzy-matchable relation
+              // to the query "Settings" (it doesn't even contain an 's').
+              // Found live while verifying Task 7's Step 3.7.
+              value={`Settings ${setting.title}`}
               onSelect={() => handleSelect(setting.url_path)}
             >
               {setting.title}
