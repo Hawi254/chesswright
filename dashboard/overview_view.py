@@ -205,10 +205,21 @@ def _render_evolution_zone(duck_conn, sqlite_conn, top_game, self_page, detail_p
                                                 x_title="Year", y_title="Average rating", height=200),
                              theme=None, width='stretch')
         with chart_col2:
+            # Vectorized, not .apply(lambda r: ..., axis=1): pandas can't
+            # infer a per-row scalar return type from zero rows, so on a
+            # genuinely empty acpl_df (no analyzed games yet -- a real
+            # pre-first-analysis-batch onboarding state, not just a rare
+            # edge case) the row-wise apply hands back an empty DataFrame
+            # instead of a Series, and .assign() then rejects assigning a
+            # multi-column DataFrame to one column. The vectorized form
+            # below has no such ambiguity: it produces an empty Series on
+            # an empty acpl_df, same as it produces one string per row on
+            # a populated one.
             acpl_df = acpl_df.assign(
-                hover_coverage=acpl_df.apply(
-                    lambda r: f"{int(r.n_games)} of {int(r.n_total_games)} games ({r.coverage_pct:.1f}%)",
-                    axis=1))
+                hover_coverage=(
+                    acpl_df.n_games.astype(int).astype(str) + " of "
+                    + acpl_df.n_total_games.astype(int).astype(str) + " games ("
+                    + acpl_df.coverage_pct.round(1).astype(str) + "%)"))
             st.plotly_chart(charts.line_chart(acpl_df, "year", "acpl", theme.NEGATIVE, height=200,
                                                 x_title="Year", y_title="ACPL",
                                                 hover_extra=("hover_coverage", "Analyzed")),
