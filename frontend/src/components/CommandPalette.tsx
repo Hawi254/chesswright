@@ -1,0 +1,75 @@
+import { useEffect, useMemo } from 'react'
+import { useNavigate } from 'react-router-dom'
+import {
+  CommandDialog,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from './ui/command'
+import type { PageCandidate } from '../lib/navCandidates'
+
+export interface CommandPaletteProps {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  candidates: PageCandidate[]
+}
+
+export default function CommandPalette({ open, onOpenChange, candidates }: CommandPaletteProps) {
+  const navigate = useNavigate()
+
+  useEffect(() => {
+    // Registered on `document`, not scoped to any component inside the
+    // palette itself -- this is the specific thing that must work
+    // regardless of where focus currently is, the exact case Streamlit's
+    // iframe-sandboxed custom components can't do (BRIEF §25).
+    function handleKeyDown(event: KeyboardEvent) {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault()
+        onOpenChange(!open)
+      }
+    }
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [open, onOpenChange])
+
+  function handleSelect(urlPath: string) {
+    navigate(`/${urlPath}`)
+    onOpenChange(false)
+  }
+
+  const pages = useMemo(() => candidates.filter((c) => c.category === 'page'), [candidates])
+  const settings = useMemo(() => candidates.filter((c) => c.category === 'setting'), [candidates])
+
+  return (
+    <CommandDialog open={open} onOpenChange={onOpenChange}>
+      <CommandInput placeholder="Search pages, settings…" />
+      <CommandList>
+        <CommandEmpty>No results found.</CommandEmpty>
+        <CommandGroup heading="Pages">
+          {pages.map((page) => (
+            <CommandItem
+              key={page.url_path}
+              value={page.title}
+              onSelect={() => handleSelect(page.url_path)}
+            >
+              {page.title}
+            </CommandItem>
+          ))}
+        </CommandGroup>
+        <CommandGroup heading="Settings">
+          {settings.map((setting) => (
+            <CommandItem
+              key={setting.title}
+              value={setting.title}
+              onSelect={() => handleSelect(setting.url_path)}
+            >
+              {setting.title}
+            </CommandItem>
+          ))}
+        </CommandGroup>
+      </CommandList>
+    </CommandDialog>
+  )
+}
