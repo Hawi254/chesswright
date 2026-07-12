@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
 import Shell from './components/Shell'
 import PageStub from './pages/PageStub'
+import OverviewPage from './pages/OverviewPage'
 import { STATIC_CANDIDATES } from './lib/navCandidates'
 
 // Routes are generated from the static candidate list, not a live API
@@ -22,7 +23,9 @@ export default function App() {
           <Route
             key={page.url_path}
             path={page.url_path}
-            element={<PageStub title={page.title} />}
+            element={
+              page.url_path === 'overview' ? <OverviewPage /> : <PageStub title={page.title} />
+            }
           />
         ))}
       </Route>
