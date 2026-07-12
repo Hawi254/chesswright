@@ -10,7 +10,7 @@ database:
                             # first launch (see config.py's set_database_path()).
 
 player:
-  name: "CHANGE_ME"      # your lichess username, exactly as it appears
+  name: "L3-37"      # your lichess username, exactly as it appears
                                # in your profile URL (lichess.org/@/CHANGE_ME).
                                # Every script reads this -- nothing else in
                                # the pipeline is hardcoded to a specific player.
