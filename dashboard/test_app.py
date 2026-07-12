@@ -16,6 +16,21 @@ APP_PATH = str(pathlib.Path(__file__).resolve().parent / "app.py")
 DASHBOARD_DIR = str(pathlib.Path(__file__).resolve().parent)
 
 
+def _clear_connections_cache():
+    """get_connections() is @st.cache_resource-decorated -- a genuinely
+    process-wide cache, not per-test. Any earlier test in this same
+    pytest process that pointed config at a scratch/temp database (e.g.
+    tests/integration/test_api_overview.py's api_client fixture) leaves
+    THAT connection cached; without clearing it here, a test that wants
+    "the real, currently-configured database" silently inherits whatever
+    stale connection ran last instead -- confirmed live: these AppTest
+    checks passed when run alone but failed (0 games, onboarding wizard
+    shown) when run after test_api_overview.py in the same process."""
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+    import _common
+    _common.get_connections.clear()
+
+
 def _page_apptest(module_name, call_with_dummy_pages=False):
     """AppTest.from_function only serializes the function's own bytecode,
     not its enclosing module's imports (confirmed: calling a page's
@@ -25,6 +40,7 @@ def _page_apptest(module_name, call_with_dummy_pages=False):
     reliably via AppTest.from_file. call_with_dummy_pages: True for the
     3 page modules whose render() takes (self_page, detail_page) -- safe
     to pass None for a bare render with no row/button click simulated."""
+    _clear_connections_cache()
     call = "render(None, None)" if call_with_dummy_pages else "render()"
     script = (f"import sys\nsys.path.insert(0, {DASHBOARD_DIR!r})\n"
               f"import {module_name}\nfrom {module_name} import render\n{call}\n")
@@ -39,6 +55,7 @@ def test_app_runs_without_exception():
     app.py's st.Page(..., default=True)) -- this only ever exercises that
     one page, not the other 5. See test_all_career_pages_render below for
     the rest."""
+    _clear_connections_cache()
     at = AppTest.from_file(APP_PATH)
     at.run(timeout=60)
     assert not at.exception, f"App raised: {at.exception}"
@@ -61,6 +78,7 @@ def test_overview_page_shows_three_zone_headers():
         print("SKIPPED: No games in database -- onboarding wizard shown instead of Overview")
         return
 
+    _clear_connections_cache()
     at = AppTest.from_file(APP_PATH)
     at.run(timeout=60)
     assert not at.exception, f"App raised: {at.exception}"
@@ -139,6 +157,7 @@ def test_headline_metrics_match_known_values():
         print("SKIPPED: No games in database -- Total games metric not rendered")
         return
 
+    _clear_connections_cache()
     at = AppTest.from_file(APP_PATH)
     at.run(timeout=60)
     metric_values = {m.label: m.value for m in at.metric}

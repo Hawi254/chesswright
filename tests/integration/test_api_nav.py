@@ -6,7 +6,6 @@ Streamlit matters here too (api.main imports `data`, which pulls in the
 same _common connection machinery even though this specific endpoint
 never touches a DB connection itself).
 """
-import importlib
 import pathlib
 import shutil
 import sys
@@ -24,10 +23,15 @@ sys.path.insert(0, str(DASHBOARD_DIR))
 def api_client(migrated_db_path, monkeypatch, tmp_path):
     scratch_config = tmp_path / "config.yaml"
     shutil.copy(REPO_ROOT / "config.yaml", scratch_config)
-    monkeypatch.setenv("CHESSWRIGHT_CONFIG_PATH", str(scratch_config))
 
     import config as _config
-    importlib.reload(_config)
+    # monkeypatch.setattr (not importlib.reload while CHESSWRIGHT_CONFIG_PATH
+    # is monkeypatched) -- reload re-evaluates DEFAULT_CONFIG_PATH from the
+    # env var but is never reloaded back, leaking this scratch path into
+    # every later test in the same pytest process (see
+    # test_api_overview.py's test_config_default_path_restored_after_api_client_tests
+    # regression test). monkeypatch.setattr reverts automatically at teardown.
+    monkeypatch.setattr(_config, "DEFAULT_CONFIG_PATH", scratch_config)
     _config.set_player_name("spike_test_player", path=str(scratch_config))
     _config.set_database_path(str(migrated_db_path), path=str(scratch_config))
 

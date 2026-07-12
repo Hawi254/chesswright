@@ -9,7 +9,6 @@ that get_connections() is actually safe to call from a plain process with
 no active Streamlit script run, which is the whole premise api/db.py
 depends on.
 """
-import importlib
 import pathlib
 import shutil
 import sys
@@ -26,10 +25,16 @@ sys.path.insert(0, str(DASHBOARD_DIR))
 def test_get_connections_works_outside_streamlit(migrated_db_path, monkeypatch, tmp_path):
     scratch_config = tmp_path / "config.yaml"
     shutil.copy(REPO_ROOT / "config.yaml", scratch_config)
-    monkeypatch.setenv("CHESSWRIGHT_CONFIG_PATH", str(scratch_config))
 
     import config as _config
-    importlib.reload(_config)
+    # monkeypatch.setattr (not importlib.reload while CHESSWRIGHT_CONFIG_PATH
+    # is monkeypatched) -- reload re-evaluates DEFAULT_CONFIG_PATH from
+    # the env var but is never reloaded back, leaking this scratch path
+    # into every later test in the same pytest process (confirmed live:
+    # broke dashboard/test_app.py's and tests/ui/test_pages.py's real-DB
+    # checks when run after this file). monkeypatch.setattr reverts
+    # automatically at teardown, same as it does for setenv.
+    monkeypatch.setattr(_config, "DEFAULT_CONFIG_PATH", scratch_config)
     _config.set_player_name("spike_test_player", path=str(scratch_config))
     _config.set_database_path(str(migrated_db_path), path=str(scratch_config))
 
@@ -49,10 +54,12 @@ from fastapi.testclient import TestClient
 def api_client(migrated_db_path, monkeypatch, tmp_path):
     scratch_config = tmp_path / "config.yaml"
     shutil.copy(REPO_ROOT / "config.yaml", scratch_config)
-    monkeypatch.setenv("CHESSWRIGHT_CONFIG_PATH", str(scratch_config))
 
     import config as _config
-    importlib.reload(_config)
+    # See test_get_connections_works_outside_streamlit's comment above:
+    # monkeypatch.setattr, not importlib.reload, so this reverts at
+    # teardown instead of leaking into later tests in this process.
+    monkeypatch.setattr(_config, "DEFAULT_CONFIG_PATH", scratch_config)
     _config.set_player_name("spike_test_player", path=str(scratch_config))
     _config.set_database_path(str(migrated_db_path), path=str(scratch_config))
 
@@ -156,3 +163,27 @@ def test_narrative_endpoint_ttl_cache(api_client, monkeypatch):
     assert resp2.status_code == 200
     assert resp1.json() == resp2.json() == {"narrative": "Test narrative text."}
     assert call_count["n"] == 1
+
+
+@pytest.mark.integration
+def test_config_default_path_restored_after_api_client_tests(migrated_db_path):
+    """Regression test for a cross-test global-state leak: every test
+    above uses the api_client fixture, which repoints config resolution
+    at a scratch tmp_path config.yaml for the duration of its own test.
+    That used to be done via importlib.reload(_config) while
+    CHESSWRIGHT_CONFIG_PATH was monkeypatched -- reload re-evaluates
+    config.py's module-level DEFAULT_CONFIG_PATH from the currently-set
+    env var, but nothing ever reloaded it back, so DEFAULT_CONFIG_PATH
+    stayed pointed at that test's (by-then-deleted) scratch path for the
+    rest of the pytest process. Confirmed live: dashboard/test_app.py and
+    tests/ui/test_pages.py's real-DB checks correctly saw the real
+    ~32k-game database when run alone, but silently skipped ("0 games")
+    when run in the same process after this file -- resolve_db_path()
+    was reading the leaked scratch path, not config.yaml. Fixed by
+    monkeypatch.setattr(config, "DEFAULT_CONFIG_PATH", ...) instead of
+    importlib.reload, so pytest's own monkeypatch teardown reverts it
+    automatically after each test. This test runs last in this file (by
+    definition order, no test-randomization plugin is configured) and
+    just checks that global reverted correctly."""
+    import config
+    assert config.DEFAULT_CONFIG_PATH == REPO_ROOT / "config.yaml"

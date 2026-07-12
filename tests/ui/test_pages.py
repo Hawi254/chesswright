@@ -23,10 +23,25 @@ sys.path.insert(0, str(DASHBOARD_DIR))
 APP_PATH = str(DASHBOARD_DIR / "app.py")
 
 
+def _clear_connections_cache():
+    """get_connections() is @st.cache_resource-decorated -- a genuinely
+    process-wide cache, not per-test. Any earlier test in this same
+    pytest process that pointed config at a scratch/temp database (e.g.
+    tests/integration/test_api_overview.py's api_client fixture) leaves
+    THAT connection cached; without clearing it here, a test that wants
+    "the real, currently-configured database" silently inherits whatever
+    stale connection ran last instead -- confirmed live: these AppTest
+    checks passed when run alone but failed (0 games, onboarding wizard
+    shown) when run after test_api_overview.py in the same process."""
+    import _common
+    _common.get_connections.clear()
+
+
 def _page_apptest(module_name, call_with_dummy_pages=False):
     """Same helper as dashboard/test_app.py — generates a tiny script and
     runs it via AppTest.from_file so module-level imports are resolved."""
     from streamlit.testing.v1 import AppTest
+    _clear_connections_cache()
     call = "render(None, None)" if call_with_dummy_pages else "render()"
     script = (
         f"import sys\nsys.path.insert(0, {str(DASHBOARD_DIR)!r})\n"
@@ -42,6 +57,7 @@ def _page_apptest(module_name, call_with_dummy_pages=False):
 class TestAppLaunches:
     def test_app_runs_without_exception(self):
         from streamlit.testing.v1 import AppTest
+        _clear_connections_cache()
         at = AppTest.from_file(APP_PATH)
         at.run(timeout=60)
         assert not at.exception, f"App raised: {at.exception}"
@@ -153,6 +169,7 @@ class TestHeadlineMetrics:
         if real_total == 0:
             pytest.skip("No games in database — Total games metric not rendered")
 
+        _clear_connections_cache()
         at = AppTest.from_file(APP_PATH)
         at.run(timeout=60)
         metric_values = {m.label: m.value for m in at.metric}
