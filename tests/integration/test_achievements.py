@@ -362,3 +362,42 @@ def test_backfill_achievements_is_idempotent(migrated_db_path):
     second_count = conn.execute("SELECT COUNT(*) FROM achievements_unlocked").fetchone()[0]
     conn.close()
     assert second_count == first_count
+
+
+@pytest.mark.integration
+class TestGetUnlockedAchievements:
+    def test_returns_empty_list_when_none_unlocked(self, migrated_db):
+        from achievements import get_unlocked_achievements
+        result = get_unlocked_achievements(migrated_db)
+        assert result == []
+
+    def test_returns_unlocked_achievements_newest_first(self, migrated_db):
+        from achievements import get_unlocked_achievements, CATALOG
+        first_id = CATALOG[0].id
+        second_id = CATALOG[1].id
+        migrated_db.execute(
+            "INSERT INTO achievements_unlocked (achievement_id, unlocked_at, source_game_id) "
+            "VALUES (?, ?, NULL)", (first_id, "2026-05-01T10:00:00"))
+        migrated_db.execute(
+            "INSERT INTO achievements_unlocked (achievement_id, unlocked_at, source_game_id) "
+            "VALUES (?, ?, NULL)", (second_id, "2026-06-01T10:00:00"))
+        migrated_db.commit()
+
+        result = get_unlocked_achievements(migrated_db, limit=4)
+
+        assert len(result) == 2
+        assert result[0]["achievement_id"] == second_id
+        assert result[0]["name"] == next(a.name for a in CATALOG if a.id == second_id)
+        assert result[1]["achievement_id"] == first_id
+
+    def test_respects_limit(self, migrated_db):
+        from achievements import get_unlocked_achievements, CATALOG
+        for i, ach in enumerate(CATALOG[:3]):
+            migrated_db.execute(
+                "INSERT INTO achievements_unlocked (achievement_id, unlocked_at, source_game_id) "
+                "VALUES (?, ?, NULL)", (ach.id, f"2026-0{i+1}-01T10:00:00"))
+        migrated_db.commit()
+
+        result = get_unlocked_achievements(migrated_db, limit=2)
+
+        assert len(result) == 2

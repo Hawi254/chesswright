@@ -72,6 +72,30 @@ def evaluate(conn, trigger, config_path=None):
     return newly_unlocked
 
 
+def get_unlocked_achievements(conn: sqlite3.Connection, limit: int = 4) -> list[dict]:
+    """Read-only: powers the dashboard's milestones row (Overview, Evolution
+    zone). Joins achievements_unlocked against the in-memory CATALOG -- there
+    is no achievements name/description table in SQLite, that metadata only
+    ever lives in CATALOG."""
+    rows = conn.execute(
+        "SELECT achievement_id, unlocked_at FROM achievements_unlocked "
+        "ORDER BY unlocked_at DESC LIMIT ?", (limit,)
+    ).fetchall()
+    by_id = {a.id: a for a in CATALOG}
+    result = []
+    for achievement_id, unlocked_at in rows:
+        achievement = by_id.get(achievement_id)
+        if achievement is None:
+            continue
+        result.append({
+            "achievement_id": achievement_id,
+            "name": achievement.name,
+            "description": achievement.description,
+            "unlocked_at": unlocked_at,
+        })
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Seed catalog, batch A: one-time board/outcome events.
 # ---------------------------------------------------------------------------
