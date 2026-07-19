@@ -184,3 +184,69 @@ class TestConverse:
             claude_narrative.converse(messages=[{"role": "user", "content": "hi"}], max_tokens=2048)
         _, kwargs = client.messages.create.call_args
         assert kwargs["max_tokens"] == 2048
+
+
+@pytest.mark.unit
+class TestGenerateScoutingNotes:
+    def test_calls_contextualize_with_repertoire_data(self, monkeypatch):
+        import pandas as pd
+        import claude_narrative
+        from claude_narrative import commentary
+        captured = {}
+
+        def _fake_contextualize(prompt, max_tokens=600):
+            captured["prompt"] = prompt
+            return "generated notes"
+
+        # generate_scouting_notes calls contextualize as a module-local name
+        # inside claude_narrative/commentary.py (a from-import, not a shared
+        # module-object attribute like api_key_store/anthropic above) --
+        # patching the package re-export wouldn't intercept that call.
+        monkeypatch.setattr(commentary, "contextualize", _fake_contextualize)
+        repertoire_df = pd.DataFrame([
+            {"opening": "Sicilian Defense", "color": "black", "n_games": 5,
+             "score_pct": 40.0, "avg_cpl": 55.0, "blunder_pct": 12.0},
+        ])
+        result = claude_narrative.generate_scouting_notes("DrNykterstein", repertoire_df, 8)
+        assert result == "generated notes"
+        assert "DrNykterstein" in captured["prompt"]
+        assert "Sicilian Defense" in captured["prompt"]
+        assert "12.0" in captured["prompt"]
+
+
+class _FakeStreamCtx:
+    """Duck-types anthropic's `with client.messages.stream(...) as stream:`
+    context manager -- .text_stream is the only attribute answer_question_
+    stream reads."""
+    def __init__(self, chunks):
+        self._chunks = chunks
+
+    def __enter__(self):
+        self.text_stream = iter(self._chunks)
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+
+@pytest.mark.unit
+class TestAnswerQuestionStream:
+    def test_raises_without_api_key(self):
+        with patch("claude_narrative.api_key_store.get_api_key", return_value=None):
+            gen = claude_narrative.answer_question_stream("When do I blunder most?", "brief text")
+            with pytest.raises(claude_narrative.MissingApiKeyError):
+                next(gen)
+
+    def test_yields_deltas_from_the_stream(self):
+        client = MagicMock()
+        client.messages.stream.return_value = _FakeStreamCtx(["You blunder ", "most in the middlegame."])
+        with patch("claude_narrative.api_key_store.get_api_key", return_value="sk-test"), \
+             patch("claude_narrative.anthropic.Anthropic", return_value=client):
+            deltas = list(claude_narrative.answer_question_stream("When do I blunder most?", "brief text"))
+
+        assert deltas == ["You blunder ", "most in the middlegame."]
+        _, kwargs = client.messages.stream.call_args
+        assert kwargs["model"] == claude_narrative.MODEL
+        assert kwargs["max_tokens"] == 300
+        assert "When do I blunder most?" in kwargs["messages"][0]["content"]
+        assert "brief text" in kwargs["messages"][0]["content"]

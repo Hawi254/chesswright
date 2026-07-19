@@ -10,6 +10,7 @@ import tempfile
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
+import pytest
 from streamlit.testing.v1 import AppTest
 
 APP_PATH = str(pathlib.Path(__file__).resolve().parent / "app.py")
@@ -50,6 +51,7 @@ def _page_apptest(module_name, call_with_dummy_pages=False):
     return AppTest.from_file(tmp.name)
 
 
+@pytest.mark.ui
 def test_app_runs_without_exception():
     """AppTest.from_file always renders the DEFAULT page (Overview, per
     app.py's st.Page(..., default=True)) -- this only ever exercises that
@@ -61,6 +63,7 @@ def test_app_runs_without_exception():
     assert not at.exception, f"App raised: {at.exception}"
 
 
+@pytest.mark.ui
 def test_overview_page_shows_three_zone_headers():
     """Confirms the Task 5 rewrite actually renders all three zones, not
     just that the page loads without an exception.
@@ -88,6 +91,7 @@ def test_overview_page_shows_three_zone_headers():
     assert "Your coaching plan" in page_text
 
 
+@pytest.mark.ui
 def test_all_career_pages_render():
     """Phase 6c.4 replaces the old 9-tab single page with 6 separate
     pages. AppTest.from_file can only ever render app.py's DEFAULT page
@@ -112,6 +116,7 @@ def test_all_career_pages_render():
         assert not at.exception, f"{module_name} raised: {at.exception}"
 
 
+@pytest.mark.ui
 def test_openings_min_games_filter_changes_row_count():
     """Drives openings_view.render() directly -- the "Minimum games"
     slider now lives on its own page (Openings & Repertoire), not the
@@ -136,6 +141,7 @@ def test_openings_min_games_filter_changes_row_count():
         f"(got {n_rows_low} at min=1, {n_rows_high} at min=50)")
 
 
+@pytest.mark.ui
 def test_headline_metrics_match_known_values():
     """Cross-check against the live database via direct SQL, not a
     hardcoded literal -- since Phase 7 (sync.py), the real game count
@@ -164,6 +170,7 @@ def test_headline_metrics_match_known_values():
     assert metric_values["Total games"] == f"{real_total:,}"
 
 
+@pytest.mark.ui
 def test_game_explorer_badge_filter_reduces_row_count():
     """Tested directly through data.py rather than by driving the Game
     Explorer page's UI: since Phase 6c.3's multi-page restructure
@@ -191,6 +198,7 @@ def test_game_explorer_badge_filter_reduces_row_count():
     assert len(filtered) < len(explorer_df) * 0.05
 
 
+@pytest.mark.ui
 def test_opening_and_opponent_commentary_buttons_render_correctly():
     """Per-opening (Openings & Repertoire) and per-opponent (Matchups &
     Opponents) commentary buttons, disabled when no API key is configured
@@ -222,6 +230,7 @@ def test_opening_and_opponent_commentary_buttons_render_correctly():
     assert opponent_buttons[0].disabled == (not key_present)
 
 
+@pytest.mark.ui
 def test_narrative_is_deterministic_for_the_same_game():
     """Same game_id -> byte-identical narrative text across two separate
     calls (not just "looks similar") -- this is the property the whole
@@ -257,6 +266,7 @@ def test_narrative_is_deterministic_for_the_same_game():
     assert narrative_1 == narrative_2
 
 
+@pytest.mark.ui
 def test_overview_css_is_well_formed_style_block():
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
     from overview_view import OVERVIEW_CSS

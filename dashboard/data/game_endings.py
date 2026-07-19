@@ -5,9 +5,19 @@ import pandas as pd
 
 import analytics
 from chess_utils import material_balance_cp
-from _common import get_config
+from connections import get_config
 
 from ._shared import _classify_endgame_type, _quarterly_zero_fill
+
+_RESULT_LABELS = {"win": "Win", "draw": "Draw", "loss": "Loss"}
+
+# Index-aligned to get_time_forfeit_loss_breakdown's material_labels order
+# (ahead/roughly level/behind) -- fixed slugs because that function's real
+# labels embed a config-driven point value ("ahead by 3+ points") and
+# can't double as a stable tree-node id.
+_TIME_FORFEIT_BUCKET_SLUGS = ("ahead", "level", "behind")
+
+_DRILLDOWN_GAME_CAP = 20
 
 
 def get_endgame_type_performance(sqlite_conn, config_path=None):
@@ -94,7 +104,7 @@ MATE_DISTANCE_BUCKETS = [
 ]
 
 
-def get_resignation_loss_causes(duck_conn, config_path=None):
+def get_resignation_loss_causes(duck_conn, config_path=None, time_control=None):
     """Classifies every resignation loss by why it likely happened, and
     (for the hung-piece bucket) which piece type was hung.
 
@@ -162,18 +172,23 @@ def get_resignation_loss_causes(duck_conn, config_path=None):
         game (see MATE_DISTANCE_BUCKETS); empty buckets are omitted, same
         convention as _shared.bucket_acpl_blunder_rate.
     All three empty (not None) when there are no resignation losses yet.
+
+    time_control, when given, restricts to games with that
+    time_control_category before any of the above classification runs.
     """
     cfg = get_config(config_path)
     min_material_delta = cfg["analytics"]["hallucination_min_material_delta"]
     max_plies_to_resign = cfg["analytics"]["hallucination_max_moves_to_resign"] * 2
     max_own_seconds = cfg["analytics"]["resignation_time_pressure_max_own_seconds"]
     min_opponent_lead_seconds = cfg["analytics"]["resignation_time_pressure_min_opponent_lead_seconds"]
+    tc_filter = "AND time_control_category = ?" if time_control else ""
+    params = [time_control] if time_control else []
 
     df = duck_conn.execute(f"""
         WITH resignations AS (
             SELECT id AS game_id, num_plies
             FROM db.games
-            WHERE outcome_for_player = 'loss' AND game_end_type = 'resignation'
+            WHERE outcome_for_player = 'loss' AND game_end_type = 'resignation' {tc_filter}
         ),
         analyzed_flag AS (
             SELECT DISTINCT r.game_id
@@ -230,7 +245,7 @@ def get_resignation_loss_causes(duck_conn, config_path=None):
         LEFT JOIN last_hang h ON h.game_id = r.game_id
         LEFT JOIN last_player_clock pc ON pc.game_id = r.game_id
         LEFT JOIN last_opponent_clock oc ON oc.game_id = r.game_id
-    """).fetchdf()
+    """, params).fetchdf()
 
     if df.empty:
         empty_reason = pd.DataFrame(columns=["reason", "n", "pct"])
@@ -349,7 +364,7 @@ def get_resignation_time_pressure_trend(duck_conn, config_path=None):
     return df[["year", "quarter", "period", "label", "n_total", "n_time_pressure", "pct"]]
 
 
-def get_time_forfeit_loss_breakdown(duck_conn, config_path=None):
+def get_time_forfeit_loss_breakdown(duck_conn, config_path=None, time_control=None):
     """Decomposes every time-forfeit ("flagged") loss along two
     independent, board/clock-derived axes, plus a quarterly trend --
     the time-forfeit counterpart to get_resignation_loss_causes.
@@ -399,12 +414,14 @@ def get_time_forfeit_loss_breakdown(duck_conn, config_path=None):
     imbalance = cfg["analytics"]["time_forfeit_material_imbalance"]
     scramble_max = cfg["analytics"]["time_forfeit_mutual_scramble_max_seconds"]
     one_sided_min = cfg["analytics"]["time_forfeit_one_sided_min_seconds"]
+    tc_filter = "AND time_control_category = ?" if time_control else ""
+    params = [time_control] if time_control else []
 
-    df = duck_conn.execute("""
+    df = duck_conn.execute(f"""
         WITH tf AS (
             SELECT id AS game_id, player_color, year, month
             FROM db.games
-            WHERE outcome_for_player = 'loss' AND game_end_type = 'time_forfeit'
+            WHERE outcome_for_player = 'loss' AND game_end_type = 'time_forfeit' {tc_filter}
         ),
         last_move AS (
             SELECT t.game_id, m.material_sig, m.material_delta, m.color,
@@ -425,7 +442,7 @@ def get_time_forfeit_loss_breakdown(duck_conn, config_path=None):
         FROM tf t
         LEFT JOIN last_move lm ON lm.game_id = t.game_id
         LEFT JOIN last_opponent_clock oc ON oc.game_id = t.game_id
-    """).fetchdf()
+    """, params).fetchdf()
 
     material_cols = ["bucket", "n", "pct"]
     if df.empty:
@@ -490,8 +507,12 @@ def get_time_forfeit_loss_breakdown(duck_conn, config_path=None):
 
 
 def get_game_end_type_breakdown(duck_conn):
+    # ORDER BY n DESC alone leaves tied counts in an order that can vary
+    # between calls (DuckDB doesn't guarantee GROUP BY tie order) -- the
+    # game_end_type tiebreaker makes _game_endings()'s "top" pick stable.
     overall = duck_conn.execute("""
-        SELECT game_end_type, COUNT(*) AS n FROM db.games GROUP BY game_end_type ORDER BY n DESC
+        SELECT game_end_type, COUNT(*) AS n FROM db.games
+        GROUP BY game_end_type ORDER BY n DESC, game_end_type
     """).fetchdf()
     by_tc = duck_conn.execute("""
         SELECT time_control_category, game_end_type, COUNT(*) AS n
@@ -501,3 +522,362 @@ def get_game_end_type_breakdown(duck_conn):
     pivot = by_tc.pivot_table(index="time_control_category", columns="game_end_type", values="n", fill_value=0)
     pivot_pct = pivot.div(pivot.sum(axis=1), axis=0) * 100.0
     return overall, pivot_pct
+
+
+def _result_endtype_counts(duck_conn, time_control=None):
+    """(outcome_for_player, game_end_type, n) triples -- the Win/Draw/Loss
+    x end-type level of the Ending Tree icicle. get_game_end_type_breakdown's
+    own `overall` frame groups by game_end_type alone (matches the
+    Streamlit page's single bar chart, one bar per end type regardless of
+    outcome) so it can't supply this split without changing that
+    function's return shape and breaking game_endings_view.py -- this is
+    a separate, tree-only query instead."""
+    tc_filter = "AND time_control_category = ?" if time_control else ""
+    params = [time_control] if time_control else []
+    return duck_conn.execute(f"""
+        SELECT outcome_for_player, game_end_type, COUNT(*) AS n
+        FROM db.games
+        WHERE game_end_type IS NOT NULL AND outcome_for_player IS NOT NULL {tc_filter}
+        GROUP BY outcome_for_player, game_end_type
+    """, params).fetchdf()
+
+
+def build_ending_tree(sqlite_conn, duck_conn, time_control=None, config_path=None):
+    """Assembles the Ending Tree icicle's flat ids/labels/parents/values
+    arrays: root -> Win/Draw/Loss -> end type -> (Loss-only) cause.
+
+    Node ids are slash-joined raw slugs (game_end_type values, resignation
+    reasons, _TIME_FORFEIT_BUCKET_SLUGS entries) rather than display text,
+    so get_games_for_ending_node can parse a clicked node's id back into a
+    query unambiguously. frontend/src/lib/endingTreeLabels.ts owns the
+    id -> display text mapping for the levels whose wording is static
+    (game_end_type, resignation reason); the root/Win/Draw/Loss labels and
+    the time-forfeit bucket labels (config-dependent point value) are
+    computed here and used as-is.
+
+    Root's value is the sum of the Win/Draw/Loss values, not an
+    independent COUNT(*) -- guarantees the icicle's parent-equals-
+    sum-of-children invariant (Plotly's branchvalues='total' mode) holds
+    exactly regardless of edge-case rows with a NULL outcome/end type.
+    """
+    counts = _result_endtype_counts(duck_conn, time_control=time_control)
+    result_totals = counts.groupby("outcome_for_player")["n"].sum() if not counts.empty else {}
+
+    ids = ["root"]
+    labels = ["All games"]
+    parents = [""]
+    values = [0]
+
+    if not counts.empty:
+        for result in ("win", "draw", "loss"):
+            result_n = int(result_totals.get(result, 0))
+            ids.append(result)
+            labels.append(_RESULT_LABELS[result])
+            parents.append("root")
+            values.append(result_n)
+
+        values[0] = sum(values[1:4])
+
+    if not counts.empty:
+        for row in counts.itertuples(index=False):
+            node_id = f"{row.outcome_for_player}/{row.game_end_type}"
+            ids.append(node_id)
+            labels.append(row.game_end_type)  # frontend relabels via END_TYPE_LABELS
+            parents.append(row.outcome_for_player)
+            values.append(int(row.n))
+
+    if "loss/resignation" in ids:
+        reason_df, _piece_df, _mate_df = get_resignation_loss_causes(
+            duck_conn, config_path=config_path, time_control=time_control)
+        for row in reason_df.itertuples(index=False):
+            if row.n == 0:
+                continue
+            node_id = f"loss/resignation/{row.reason}"
+            ids.append(node_id)
+            labels.append(row.reason)  # frontend relabels via RESIGNATION_REASON_LABELS
+            parents.append("loss/resignation")
+            values.append(int(row.n))
+
+    if "loss/time_forfeit" in ids:
+        material_df, _scramble_df, _trend_df = get_time_forfeit_loss_breakdown(
+            duck_conn, config_path=config_path, time_control=time_control)
+        for slug, row in zip(_TIME_FORFEIT_BUCKET_SLUGS, material_df.itertuples(index=False)):
+            if row.n == 0:
+                continue
+            node_id = f"loss/time_forfeit/{slug}"
+            ids.append(node_id)
+            labels.append(row.bucket)  # dynamic text, already display-ready
+            parents.append("loss/time_forfeit")
+            values.append(int(row.n))
+
+    return {"ids": ids, "labels": labels, "parents": parents, "values": values}
+
+
+def _game_ids_for_result_endtype(duck_conn, result, end_type, time_control=None, cap=_DRILLDOWN_GAME_CAP):
+    """Mirrors _result_endtype_counts' grouping, one (result, end_type) pair."""
+    tc_filter = "AND time_control_category = ?" if time_control else ""
+    params = [result, end_type] + ([time_control] if time_control else [])
+    total = duck_conn.execute(f"""
+        SELECT COUNT(*) FROM db.games
+        WHERE outcome_for_player = ? AND game_end_type = ? {tc_filter}
+    """, params).fetchone()[0]
+    game_ids = duck_conn.execute(f"""
+        SELECT id FROM db.games
+        WHERE outcome_for_player = ? AND game_end_type = ? {tc_filter}
+        ORDER BY utc_date DESC, utc_time DESC
+        LIMIT {cap}
+    """, params).fetchdf()["id"].tolist()
+    return game_ids, int(total)
+
+
+def _game_ids_for_resignation_cause(duck_conn, reason, config_path=None, time_control=None, cap=_DRILLDOWN_GAME_CAP):
+    """Mirrors get_resignation_loss_causes' CTE chain and priority order
+    (hung_piece > faced_mate > time_pressure > other > not_analyzed),
+    selecting game ids for one reason instead of aggregating."""
+    cfg = get_config(config_path)
+    min_material_delta = cfg["analytics"]["hallucination_min_material_delta"]
+    max_plies_to_resign = cfg["analytics"]["hallucination_max_moves_to_resign"] * 2
+    max_own_seconds = cfg["analytics"]["resignation_time_pressure_max_own_seconds"]
+    min_opponent_lead_seconds = cfg["analytics"]["resignation_time_pressure_min_opponent_lead_seconds"]
+    tc_filter = "AND time_control_category = ?" if time_control else ""
+    params = ([time_control] if time_control else []) + [reason]
+
+    df = duck_conn.execute(f"""
+        WITH resignations AS (
+            SELECT id AS game_id, num_plies, utc_date, utc_time
+            FROM db.games
+            WHERE outcome_for_player = 'loss' AND game_end_type = 'resignation' {tc_filter}
+        ),
+        analyzed_flag AS (
+            SELECT DISTINCT r.game_id
+            FROM db.moves m JOIN resignations r ON r.game_id = m.game_id
+            WHERE m.eval_cp IS NOT NULL OR m.eval_mate IS NOT NULL
+        ),
+        last_mate AS (
+            SELECT r.game_id, m.eval_mate,
+                   ROW_NUMBER() OVER (PARTITION BY r.game_id ORDER BY m.ply DESC) AS rn
+            FROM db.moves m JOIN resignations r ON r.game_id = m.game_id
+            WHERE m.is_player_move = 1 AND m.eval_mate IS NOT NULL AND m.eval_mate < 0
+              AND r.num_plies - m.ply <= {max_plies_to_resign}
+            QUALIFY rn = 1
+        ),
+        last_hang AS (
+            SELECT r.game_id, m.piece AS hung_piece,
+                   ROW_NUMBER() OVER (PARTITION BY r.game_id ORDER BY m.ply DESC) AS rn
+            FROM db.moves m
+            JOIN db.moves m2 ON m2.game_id = m.game_id AND m2.ply = m.ply + 1
+            JOIN resignations r ON r.game_id = m.game_id
+            WHERE m.is_player_move = 1 AND m.classification = 'blunder' AND m.cpl IS NOT NULL
+              AND m2.is_capture = 1 AND m2.to_square = m.to_square
+              AND m2.material_delta >= {min_material_delta}
+              AND r.num_plies - m.ply <= {max_plies_to_resign}
+            QUALIFY rn = 1
+        ),
+        last_player_clock AS (
+            SELECT r.game_id, m.clock_seconds AS player_clock,
+                   ROW_NUMBER() OVER (PARTITION BY r.game_id ORDER BY m.ply DESC) AS rn
+            FROM db.moves m JOIN resignations r ON r.game_id = m.game_id
+            WHERE m.is_player_move = 1 AND m.clock_seconds IS NOT NULL
+            QUALIFY rn = 1
+        ),
+        last_opponent_clock AS (
+            SELECT r.game_id, m.clock_seconds AS opponent_clock,
+                   ROW_NUMBER() OVER (PARTITION BY r.game_id ORDER BY m.ply DESC) AS rn
+            FROM db.moves m JOIN resignations r ON r.game_id = m.game_id
+            WHERE m.is_player_move = 0 AND m.clock_seconds IS NOT NULL
+            QUALIFY rn = 1
+        ),
+        classified AS (
+            SELECT r.game_id, r.utc_date, r.utc_time,
+                   CASE WHEN h.hung_piece IS NOT NULL THEN 'hung_piece'
+                        WHEN lm.game_id IS NOT NULL THEN 'faced_mate'
+                        WHEN pc.player_clock IS NOT NULL AND oc.opponent_clock IS NOT NULL
+                             AND pc.player_clock < {max_own_seconds}
+                             AND oc.opponent_clock - pc.player_clock >= {min_opponent_lead_seconds}
+                             THEN 'time_pressure'
+                        WHEN af.game_id IS NOT NULL THEN 'other'
+                        ELSE 'not_analyzed' END AS reason
+            FROM resignations r
+            LEFT JOIN analyzed_flag af ON af.game_id = r.game_id
+            LEFT JOIN last_mate lm ON lm.game_id = r.game_id
+            LEFT JOIN last_hang h ON h.game_id = r.game_id
+            LEFT JOIN last_player_clock pc ON pc.game_id = r.game_id
+            LEFT JOIN last_opponent_clock oc ON oc.game_id = r.game_id
+        )
+        SELECT game_id, utc_date, utc_time FROM classified WHERE reason = ?
+        ORDER BY utc_date DESC, utc_time DESC
+    """, params).fetchdf()
+
+    total = len(df)
+    game_ids = df["game_id"].head(cap).tolist()
+    return game_ids, total
+
+
+def _game_ids_for_time_forfeit_bucket(duck_conn, bucket_slug, config_path=None, time_control=None, cap=_DRILLDOWN_GAME_CAP):
+    """Mirrors get_time_forfeit_loss_breakdown's material-bucket logic,
+    and additionally computes the scramble-context breakdown for just the
+    games in this material bucket -- get_time_forfeit_loss_breakdown's
+    own scramble_df is all-games, not sliced by material bucket, so this
+    is a genuinely new cross-tabulation, not a lookup into that frame."""
+    cfg = get_config(config_path)
+    imbalance = cfg["analytics"]["time_forfeit_material_imbalance"]
+    scramble_max = cfg["analytics"]["time_forfeit_mutual_scramble_max_seconds"]
+    one_sided_min = cfg["analytics"]["time_forfeit_one_sided_min_seconds"]
+    tc_filter = "AND time_control_category = ?" if time_control else ""
+    params = [time_control] if time_control else []
+
+    df = duck_conn.execute(f"""
+        WITH tf AS (
+            SELECT id AS game_id, player_color, utc_date, utc_time
+            FROM db.games
+            WHERE outcome_for_player = 'loss' AND game_end_type = 'time_forfeit' {tc_filter}
+        ),
+        last_move AS (
+            SELECT t.game_id, m.material_sig, m.material_delta, m.color,
+                   ROW_NUMBER() OVER (PARTITION BY t.game_id ORDER BY m.ply DESC) AS rn
+            FROM db.moves m JOIN tf t ON t.game_id = m.game_id
+            QUALIFY rn = 1
+        ),
+        last_opponent_clock AS (
+            SELECT t.game_id, m.clock_seconds AS opponent_clock,
+                   ROW_NUMBER() OVER (PARTITION BY t.game_id ORDER BY m.ply DESC) AS rn
+            FROM db.moves m JOIN tf t ON t.game_id = m.game_id
+            WHERE m.is_player_move = 0 AND m.clock_seconds IS NOT NULL
+            QUALIFY rn = 1
+        )
+        SELECT t.game_id, t.utc_date, t.utc_time, t.player_color,
+               lm.material_sig, lm.material_delta, lm.color AS last_move_color,
+               oc.opponent_clock
+        FROM tf t
+        LEFT JOIN last_move lm ON lm.game_id = t.game_id
+        LEFT JOIN last_opponent_clock oc ON oc.game_id = t.game_id
+    """, params).fetchdf()
+
+    if df.empty:
+        return [], 0, pd.DataFrame(columns=["bucket", "n", "pct"])
+
+    points = imbalance / 100.0
+    material_labels = [f"ahead by {points:g}+ points", "roughly level",
+                       f"behind by {points:g}+ points"]
+    scramble_labels = [f"mutual scramble (opponent under {scramble_max}s)",
+                       f"opponent at {scramble_max}-{one_sided_min}s",
+                       f"opponent comfortable ({one_sided_min}s+)"]
+
+    with_sig = df[df.material_sig.notna()].copy()
+    balance = with_sig.material_sig.map(material_balance_cp)
+    delta = with_sig.material_delta.fillna(0)
+    balance = balance + delta.where(with_sig.last_move_color == "w", -delta)
+    player_balance = balance.where(with_sig.player_color == "white", -balance)
+    with_sig["material_bucket"] = pd.cut(
+        player_balance, bins=[-float("inf"), -imbalance, imbalance - 1, float("inf")],
+        labels=list(reversed(material_labels))).astype(str)
+
+    target_label = material_labels[_TIME_FORFEIT_BUCKET_SLUGS.index(bucket_slug)]
+    in_bucket = with_sig[with_sig.material_bucket == target_label]
+
+    total = len(in_bucket)
+    ordered = in_bucket.sort_values(["utc_date", "utc_time"], ascending=False)
+    game_ids = ordered["game_id"].head(cap).tolist()
+
+    with_clock = in_bucket[in_bucket.opponent_clock.notna()].copy()
+    with_clock["scramble_bucket"] = pd.cut(
+        with_clock.opponent_clock, bins=[-float("inf"), scramble_max - 1, one_sided_min - 1, float("inf")],
+        labels=scramble_labels).astype(str)
+    n_denominator = len(with_clock)
+    scramble_rows = [
+        (label, int((with_clock.scramble_bucket == label).sum()),
+         100.0 * (with_clock.scramble_bucket == label).sum() / n_denominator if n_denominator else 0.0)
+        for label in scramble_labels
+    ]
+    scramble_slice_df = pd.DataFrame(scramble_rows, columns=["bucket", "n", "pct"])
+
+    return game_ids, total, scramble_slice_df
+
+
+def get_games_for_ending_node(sqlite_conn, duck_conn, path, time_control=None, config_path=None):
+    """Dispatches a clicked icicle node's slash-joined id path (see
+    build_ending_tree's docstring for the id scheme) to whichever of the
+    three sibling query functions matches its depth/branch."""
+    segments = path.split("/")
+
+    if len(segments) == 2:
+        result, end_type = segments
+        game_ids, total = _game_ids_for_result_endtype(
+            duck_conn, result, end_type, time_control=time_control)
+        return {"game_ids": game_ids, "total": total, "secondary_chart": None, "secondary_chart_kind": None}
+
+    if len(segments) == 3 and segments[1] == "resignation":
+        reason = segments[2]
+        game_ids, total = _game_ids_for_resignation_cause(
+            duck_conn, reason, config_path=config_path, time_control=time_control)
+        secondary_chart, kind = None, None
+        if reason == "hung_piece":
+            _reason_df, piece_df, _mate_df = get_resignation_loss_causes(
+                duck_conn, config_path=config_path, time_control=time_control)
+            secondary_chart, kind = piece_df.to_dict(orient="records"), "piece"
+        elif reason == "faced_mate":
+            _reason_df, _piece_df, mate_df = get_resignation_loss_causes(
+                duck_conn, config_path=config_path, time_control=time_control)
+            secondary_chart, kind = mate_df.to_dict(orient="records"), "mate"
+        return {"game_ids": game_ids, "total": total, "secondary_chart": secondary_chart, "secondary_chart_kind": kind}
+
+    if len(segments) == 3 and segments[1] == "time_forfeit":
+        bucket_slug = segments[2]
+        if bucket_slug not in _TIME_FORFEIT_BUCKET_SLUGS:
+            raise ValueError(f"Unrecognized ending-tree path: {path!r}")
+        game_ids, total, scramble_df = _game_ids_for_time_forfeit_bucket(
+            duck_conn, bucket_slug, config_path=config_path, time_control=time_control)
+        return {
+            "game_ids": game_ids, "total": total,
+            "secondary_chart": scramble_df.to_dict(orient="records"),
+            "secondary_chart_kind": "scramble",
+        }
+
+    raise ValueError(f"Unrecognized ending-tree path: {path!r}")
+
+
+def build_ending_summary(sqlite_conn, duck_conn, config_path=None):
+    """Bundles the Hero-stats row, Endgame Material Reached section, and
+    both Trends series into one payload -- same "one payload per page
+    section" precedent as Analysis Jobs' status endpoint and each
+    Patterns tab. Not time_control-filtered (only the Ending Tree section
+    has that segmented control, per the design spec's Layout section)."""
+    outcome_counts = duck_conn.execute(
+        "SELECT outcome_for_player, COUNT(*) AS n FROM db.games GROUP BY outcome_for_player"
+    ).fetchdf()
+    outcome_n = dict(zip(outcome_counts.outcome_for_player, outcome_counts.n))
+    total_games = int(outcome_counts.n.sum()) if not outcome_counts.empty else 0
+    decisive_n = int(outcome_n.get("win", 0)) + int(outcome_n.get("loss", 0))
+    draw_n = int(outcome_n.get("draw", 0))
+    decisive_pct = 100.0 * decisive_n / total_games if total_games else None
+    draw_pct = 100.0 * draw_n / total_games if total_games else None
+
+    reason_df, _piece_df, _mate_df = get_resignation_loss_causes(duck_conn, config_path=config_path)
+    if reason_df.empty:
+        resignation_explained_pct = None
+    else:
+        n_total = int(reason_df.n.sum())
+        n_not_analyzed = int(reason_df.loc[reason_df.reason == "not_analyzed", "n"].sum())
+        resignation_explained_pct = 100.0 * (n_total - n_not_analyzed) / n_total if n_total else None
+
+    material_df, _scramble_df, tf_trend_df = get_time_forfeit_loss_breakdown(duck_conn, config_path=config_path)
+    if material_df.empty or int(material_df.n.sum()) == 0:
+        flagged_while_ahead_pct = None
+    else:
+        flagged_while_ahead_pct = float(material_df.iloc[0].pct)  # material_labels[0] is always "ahead by..."
+
+    resignation_trend_df = get_resignation_time_pressure_trend(duck_conn, config_path=config_path)
+    eg_df = get_endgame_type_performance(sqlite_conn, config_path=config_path)
+
+    return {
+        "hero": {
+            "total_games": total_games,
+            "decisive_pct": decisive_pct,
+            "draw_pct": draw_pct,
+            "resignation_explained_pct": resignation_explained_pct,
+            "flagged_while_ahead_pct": flagged_while_ahead_pct,
+        },
+        "endgame_material": eg_df.to_dict(orient="records"),
+        "resignation_trend": resignation_trend_df.to_dict(orient="records"),
+        "time_forfeit_trend": tf_trend_df.to_dict(orient="records"),
+    }

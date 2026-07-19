@@ -8,10 +8,10 @@ export default function Sidebar() {
   const grouped = groupPages(pages)
 
   return (
-    <nav className="w-56 shrink-0 overflow-y-auto border-r border-bg-secondary bg-bg-secondary/40 p-4">
+    <nav className="w-56 shrink-0 overflow-y-auto border-r border-[var(--cw-line)] bg-[var(--cw-panel)]/40 p-4">
       {NAV_GROUPS.map((group) => (
         <div key={group} className="mb-6">
-          <div className="mb-2 text-xs uppercase tracking-wide text-text-muted">
+          <div className="mb-2 font-mono text-[10px] uppercase tracking-[0.1em] text-[var(--cw-muted)]">
             {group}
           </div>
           {grouped[group].map((page) => (
@@ -19,10 +19,10 @@ export default function Sidebar() {
               key={page.url_path}
               to={`/${page.url_path}`}
               className={({ isActive }) =>
-                `block rounded px-3 py-1.5 text-sm ${
+                `block rounded border-l-2 px-3 py-1.5 text-sm ${
                   isActive
-                    ? 'bg-accent-gold/20 text-accent-gold'
-                    : 'text-text hover:bg-bg-secondary'
+                    ? 'border-[var(--cw-copper)] bg-[var(--cw-copper)]/10 text-[var(--cw-copper)]'
+                    : 'border-transparent text-[var(--cw-text)] hover:bg-[var(--cw-line)]/40'
                 }`
               }
             >

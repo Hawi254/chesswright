@@ -204,6 +204,28 @@ computer, and nothing is ever uploaded.
   what you expected, and what happened instead. For this pilot, no
   detail is too small.
 
+## Testing
+
+Run the fast default suite (skips Streamlit UI page-render tests):
+
+```bash
+pytest
+```
+
+Run the true full suite, including the Streamlit `AppTest` page-render
+tests (`tests/ui/test_pages.py`, `dashboard/test_app.py`):
+
+```bash
+pytest --run-streamlit-ui
+```
+
+To run tests for one module or router, use `pytest -k <name>` — e.g.
+`pytest -k patterns` runs every `test_api_patterns_*.py` and
+`test_data_patterns.py` test. This works because pytest's `-k` matches
+against the full test ID including the file's module name, and every
+test file in `tests/integration/` is named after the router/module it
+covers.
+
 ## Licensing
 
 Chesswright's own code: MIT (see this repo). Stockfish is a separate

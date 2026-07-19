@@ -5,9 +5,10 @@ hallucinated hanging-piece blunders.
 import pandas as pd
 
 import analytics
-from _common import get_config
+from connections import get_config
 
 from ._shared import TIME_PRESSURE_BUCKETS, THINKING_TIME_BUCKETS
+from .game_explorer import get_position_and_lastmove
 
 RIM_SQL = "(substr(to_square,1,1) IN ('a','h') OR substr(to_square,2,1) IN ('1','8'))"
 
@@ -256,3 +257,254 @@ def get_hallucination_context(duck_conn, hangs):
     time_pressure_df = bucket_compare(hangs_keyed.time_fraction.dropna(),
                                       detail.time_fraction.dropna(), TIME_PRESSURE_BUCKETS)
     return time_spent_df, time_pressure_df
+
+
+CATEGORY_CAP = 15
+
+# Scaling caps for the 0-1 "strength" used to interleave 5 different units
+# in the 'All' view -- a heuristic, same spirit as Game Explorer's
+# drama_score, not held to a higher bar. Not the observed max in this DB,
+# so strength stays stable across accounts.
+_STRENGTH_CAPS = {
+    "brilliant": 900.0,           # a queen, in centipawns (see POINT_VALUE below)
+    "puzzle_conversion": 10.0,    # sequence length
+    "best_move_streak": 12.0,     # streak length
+    "blown_mate": 10.0,           # mate-in depth
+    "great_escape": 20.0,         # plies survived
+}
+
+# cp values confirmed live against material_delta on real brilliant-
+# candidate rows' next-ply recapture (900/500/300) -- standard piece
+# values, same scale as chess_utils.POINT_VALUE. Knight and bishop are
+# both 300 and indistinguishable from cp alone, hence "a minor piece."
+_MATERIAL_PHRASE_BY_CP = {900: "a queen", 500: "a rook", 300: "a minor piece", 100: "a pawn"}
+
+
+def _material_phrase(cp):
+    return _MATERIAL_PHRASE_BY_CP.get(cp, "material")
+
+
+def _capitalized_material_name(phrase):
+    # phrase is "a rook"/"a queen"/"a minor piece"/"a pawn"/"material" --
+    # str.capitalize() alone would give "A rook", not "Rook", since it
+    # capitalizes the phrase's own first letter (the article), not the
+    # noun after it.
+    name = phrase[2:] if phrase.startswith("a ") else phrase
+    return name[:1].upper() + name[1:]
+
+
+def _won_or_drew(outcome_for_player):
+    return "won" if outcome_for_player == "win" else "drew"
+
+
+def _caption_and_label(category, row):
+    move = int(row["move_number"])
+    magnitude = row["magnitude"]
+    if category == "brilliant":
+        phrase = _material_phrase(magnitude)
+        return (f"Sacrificed {phrase} on move {move} — it worked.",
+                f"{_capitalized_material_name(phrase)} sacrifice")
+    if category == "puzzle_conversion":
+        n = int(magnitude)
+        return (f"{row['opponent_name']} blundered on move {move} — "
+                f"{n} accurate replies in a row closed it out.",
+                f"{n} in a row")
+    if category == "best_move_streak":
+        n = int(magnitude)
+        return (f"Matched the engine's top move {n} times running, starting move {move}.",
+                f"{n}-move streak")
+    if category == "blown_mate":
+        n = int(magnitude)
+        return (f"Mate in {n} was on the board at move {move} — played something else, lost anyway.",
+                f"Mate in {n}")
+    n = int(magnitude)  # great_escape
+    return (f"Hung a piece on move {move} — survived {n} more moves and "
+            f"{_won_or_drew(row['outcome_for_player'])} anyway.",
+            f"{n} plies survived")
+
+
+def _brilliant_rows(duck_conn, top_n=CATEGORY_CAP):
+    """A real sacrifice's magnitude is invisible on the flagged move's OWN
+    material_delta (always < brilliant_threshold by construction -- see
+    annotate.py's detect_best_move_streaks-adjacent brilliant-flagging
+    logic) -- it shows up as the OPPONENT's next-ply recapture on the
+    same square. Confirmed live against the real dev DB: this self-join's
+    material_delta takes exactly the standard piece values (900/500/300),
+    unlike is_brilliant_candidate rows' own material_delta (0 or 100
+    only). Does its own query rather than calling get_brilliant_candidates
+    -- that function's material_delta column is the wrong field for this
+    purpose. Real dev DB has 198 rows tied at the max value (900, a queen)
+    out of 1279 qualifying rows -- ORDER BY material_delta alone leaves
+    LIMIT to pick an arbitrary subset of the tie on every call (found live:
+    two identical requests returned different games in the same slot).
+    game_id/move_number break the tie deterministically so the same 15
+    rows are returned every time, matching every other category here
+    (none of which has a tie anywhere near this wide at the cutoff)."""
+    return duck_conn.execute("""
+        SELECT m.game_id, m.move_number, m.san, m.fen_before,
+               m.from_square AS lastmove_from, m.to_square AS lastmove_to,
+               m2.material_delta AS magnitude,
+               g.opponent_name, g.utc_date, g.outcome_for_player, g.player_color
+        FROM db.moves m
+        JOIN db.moves m2 ON m2.game_id = m.game_id AND m2.ply = m.ply + 1
+        JOIN db.games g ON g.id = m.game_id
+        WHERE m.is_brilliant_candidate = 1
+        ORDER BY m2.material_delta DESC, m.game_id, m.move_number
+        LIMIT ?
+    """, [top_n]).fetchdf()
+
+
+def _puzzle_conversion_rows(duck_conn, top_n=CATEGORY_CAP):
+    """Narrows get_puzzle_sequences to is_player_move=0 -- the opponent
+    blundered, the player converted -- the reel-worthy half; the other
+    half (player's own blunder, still narrowly a 'trigger') is diagnostic,
+    not reel material (spec's Non-goals)."""
+    return duck_conn.execute("""
+        SELECT m.game_id, m.move_number, m.san, m.fen_before,
+               m.from_square AS lastmove_from, m.to_square AS lastmove_to,
+               m.puzzle_sequence_length AS magnitude,
+               g.opponent_name, g.utc_date, g.outcome_for_player, g.player_color
+        FROM db.moves m JOIN db.games g ON g.id = m.game_id
+        WHERE m.is_puzzle_trigger = 1 AND m.is_player_move = 0
+        ORDER BY m.puzzle_sequence_length DESC
+        LIMIT ?
+    """, [top_n]).fetchdf()
+
+
+def _best_move_streak_rows(duck_conn, top_n=CATEGORY_CAP):
+    """Same unforced_count>=1 qualifying floor get_best_move_streaks
+    already applies by construction (is_best_move_streak_trigger=1 implies
+    it); the trigger row IS the streak's first ply (annotate.py's
+    detect_best_move_streaks anchors one row per streak at its start), so
+    'starting move' in the caption is this row's own move_number, no
+    offset math needed."""
+    return duck_conn.execute("""
+        SELECT m.game_id, m.move_number, m.san, m.fen_before,
+               m.from_square AS lastmove_from, m.to_square AS lastmove_to,
+               m.best_move_streak_length AS magnitude,
+               g.opponent_name, g.utc_date, g.outcome_for_player, g.player_color
+        FROM db.moves m JOIN db.games g ON g.id = m.game_id
+        WHERE m.is_best_move_streak_trigger = 1 AND m.best_move_streak_unforced_count >= 1
+        ORDER BY m.best_move_streak_length DESC
+        LIMIT ?
+    """, [top_n]).fetchdf()
+
+
+def _blown_mate_rows(duck_conn, top_n=CATEGORY_CAP):
+    """Narrows get_blown_mates to outcome_for_player='loss' only -- the
+    truly dramatic subset where the missed mate cost the game (most blown
+    mates still won eventually, just less efficiently)."""
+    return duck_conn.execute("""
+        SELECT m.game_id, m.move_number, m.san, m.fen_before,
+               m.from_square AS lastmove_from, m.to_square AS lastmove_to,
+               m.eval_mate AS magnitude,
+               g.opponent_name, g.utc_date, g.outcome_for_player, g.player_color
+        FROM db.moves m JOIN db.games g ON g.id = m.game_id
+        WHERE m.is_player_move = 1 AND m.eval_mate IS NOT NULL AND m.eval_mate > 0
+          AND m.san != m.best_move_san AND g.outcome_for_player = 'loss'
+        ORDER BY m.eval_mate DESC
+        LIMIT ?
+    """, [top_n]).fetchdf()
+
+
+def _great_escape_rows(duck_conn, sqlite_conn, config_path=None, top_n=CATEGORY_CAP):
+    """Narrows get_hallucination_blunders to resigned_quickly=False AND a
+    win/draw outcome -- survived the hung piece and it didn't cost the
+    game. Reuses get_hallucination_blunders as-is (its resigned_quickly
+    column, config-driven thresholds, and self-join are non-trivial to
+    re-derive) -- does NOT call get_hallucination_context, which computes
+    unrelated time-pressure breakdowns and never touches resigned_quickly.
+    get_hallucination_blunders doesn't join games or select fen/squares,
+    so those are attached here: opponent_name/utc_date via one small
+    IN-list query on the already-narrowed ≤15 game_ids, fen/squares/
+    move_number via one point lookup per row (cheap -- see
+    get_position_and_lastmove's docstring)."""
+    hangs = get_hallucination_blunders(duck_conn, config_path)
+    if len(hangs) == 0 or "resigned_quickly" not in hangs.columns:
+        return pd.DataFrame(columns=[
+            "game_id", "move_number", "san", "fen_before", "lastmove_from",
+            "lastmove_to", "magnitude", "opponent_name", "utc_date",
+            "outcome_for_player", "player_color"])
+
+    # resigned_quickly's own formula (tactical.py's get_hallucination_blunders)
+    # is only ever True when outcome_for_player=='loss', so it's structurally
+    # always False on a win/draw row -- the isin(["win", "draw"]) filter
+    # alone is what actually excludes rows here. The ~resigned_quickly term
+    # is kept anyway to match the spec's stated narrowing rule verbatim and
+    # stay correct if that formula's definition ever changes.
+    narrowed = hangs[
+        (~hangs["resigned_quickly"]) & hangs["outcome_for_player"].isin(["win", "draw"])
+    ].sort_values("plies_remaining", ascending=False).head(top_n).copy()
+    if len(narrowed) == 0:
+        return pd.DataFrame(columns=[
+            "game_id", "move_number", "san", "fen_before", "lastmove_from",
+            "lastmove_to", "magnitude", "opponent_name", "utc_date",
+            "outcome_for_player", "player_color"])
+
+    game_ids = narrowed["game_id"].unique().tolist()
+    placeholders = ",".join("?" * len(game_ids))
+    games_df = duck_conn.execute(
+        f"SELECT id AS game_id, opponent_name, utc_date, player_color "
+        f"FROM db.games WHERE id IN ({placeholders})", game_ids).fetchdf()
+    merged = narrowed.merge(games_df, on="game_id", how="left")
+    merged["magnitude"] = merged["plies_remaining"]
+
+    fens, froms, tos, move_numbers = [], [], [], []
+    for _, row in merged.iterrows():
+        snapshot = get_position_and_lastmove(sqlite_conn, row["game_id"], int(row["blunder_ply"]))
+        fen, frm, to, move_number = snapshot if snapshot else (None, None, None, None)
+        fens.append(fen)
+        froms.append(frm)
+        tos.append(to)
+        move_numbers.append(move_number)
+    merged["fen_before"] = fens
+    merged["lastmove_from"] = froms
+    merged["lastmove_to"] = tos
+    merged["move_number"] = move_numbers
+    merged["san"] = merged["blunder_san"]
+    return merged
+
+
+def build_highlight_reel(sqlite_conn, duck_conn, config_path=None):
+    """Merges the 5 narrowed highlight queries into one ranked reel. Each
+    row gets a category tag, a fen+arrow for a static board thumbnail, a
+    rendered one-line caption, and a 0-1 strength for interleaving in the
+    'All' view. Capped at CATEGORY_CAP rows per category before merge.
+
+    No caching layer -- this data only changes after a new analysis batch
+    finishes, and every underlying query is already bounded (top_n=15 or
+    a narrow join), matching e.g. /api/matchups/nemesis's uncached style."""
+    frames = {
+        "brilliant": _brilliant_rows(duck_conn),
+        "puzzle_conversion": _puzzle_conversion_rows(duck_conn),
+        "best_move_streak": _best_move_streak_rows(duck_conn),
+        "blown_mate": _blown_mate_rows(duck_conn),
+        "great_escape": _great_escape_rows(duck_conn, sqlite_conn, config_path),
+    }
+
+    moments = []
+    counts = {}
+    for category, df in frames.items():
+        counts[category] = len(df)
+        cap = _STRENGTH_CAPS[category]
+        for _, row in df.iterrows():
+            caption, magnitude_label = _caption_and_label(category, row)
+            magnitude = float(row["magnitude"])
+            moments.append({
+                "game_id": row["game_id"],
+                "category": category,
+                "move_number": int(row["move_number"]),
+                "san": row["san"],
+                "magnitude": magnitude,
+                "magnitude_label": magnitude_label,
+                "strength": min(magnitude / cap, 1.0),
+                "caption": caption,
+                "opponent_name": row.get("opponent_name"),
+                "utc_date": row.get("utc_date"),
+                "outcome_for_player": row.get("outcome_for_player"),
+                "player_color": row.get("player_color"),
+                "fen": row.get("fen_before"),
+                "lastmove_from": row.get("lastmove_from"),
+                "lastmove_to": row.get("lastmove_to"),
+            })
+    return {"moments": moments, "counts": counts}

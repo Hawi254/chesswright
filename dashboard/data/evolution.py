@@ -16,7 +16,7 @@ chart top-N) is pure pandas on top of that frame.
 """
 import pandas as pd
 
-from _common import get_config
+from connections import get_config
 from confidence import confidence_tier, default_thresholds
 
 # Quarterly buckets: with this user base's volume (hundreds to thousands
@@ -121,6 +121,27 @@ def period_shares(filtered: pd.DataFrame, top_n: int = 4) -> tuple[pd.DataFrame,
     df["share"] = (100.0 * df["n_games"] / totals.where(totals > 0)).fillna(0.0)
     df["label"] = df["period"].map(_period_label)
     return df, top
+
+
+def ledger_period_shares(filtered: pd.DataFrame, families: list[str]) -> pd.DataFrame:
+    """Per-quarter share-of-games for each of `families` (the ledger's own
+    family list, independent of the composition chart's top-N), zero-filled
+    across the full period range so every strip aligns to the composition
+    chart's quarter axis. Adapted from period_shares's own zero-fill
+    logic. Returns long-form: period, label, family, n_games, share."""
+    if filtered.empty or not families:
+        return pd.DataFrame(columns=["period", "label", "family", "n_games", "share"])
+    per_q_totals = filtered.groupby("period")["n_games"].sum()
+    all_periods = range(int(filtered["period"].min()), int(filtered["period"].max()) + 1)
+    grid = pd.MultiIndex.from_product([all_periods, families],
+                                      names=["period", "family"]).to_frame(index=False)
+    fam_counts = (filtered[filtered["family"].isin(families)]
+                  .groupby(["period", "family"], as_index=False)["n_games"].sum())
+    out = grid.merge(fam_counts, on=["period", "family"], how="left").fillna({"n_games": 0})
+    totals = out["period"].map(per_q_totals)
+    out["share"] = (100.0 * out["n_games"] / totals.where(totals > 0)).fillna(0.0)
+    out["label"] = out["period"].map(_period_label)
+    return out
 
 
 def classify_evolution(filtered: pd.DataFrame) -> pd.DataFrame:

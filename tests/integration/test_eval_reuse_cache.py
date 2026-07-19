@@ -24,6 +24,7 @@ sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "dashboard"))
 
 import worker
+import worker_analysis
 from worker import analyze_game
 
 
@@ -213,7 +214,7 @@ class TestPlyCutoff:
     def test_ply_past_cutoff_never_reads_or_writes_cache(self, migrated_db, monkeypatch):
         # Lower the cutoff to 1 so a 2-ply game exercises the "past cutoff" branch
         # without needing a fixture with 25+ plies.
-        monkeypatch.setattr(worker, "REUSE_EVAL_MAX_PLY", 1)
+        monkeypatch.setattr(worker_analysis, "REUSE_EVAL_MAX_PLY", 1)
         conn = _with_runs(migrated_db)
         _insert_game_with_moves(conn, "g1", ["e4", "e5"])
         _insert_game_with_moves(conn, "g2", ["e4", "e5"])  # identical line -> ply 1 AND ply 2 FENs both match
@@ -263,7 +264,7 @@ class TestCacheStatsTally:
     only on an actual hit)."""
 
     def test_mix_of_hits_misses_and_ineligible_plies_in_one_call(self, migrated_db, monkeypatch):
-        monkeypatch.setattr(worker, "REUSE_EVAL_MAX_PLY", 3)
+        monkeypatch.setattr(worker_analysis, "REUSE_EVAL_MAX_PLY", 3)
         conn = _with_runs(migrated_db)
         engine = FakeAnalysisEngine()
 

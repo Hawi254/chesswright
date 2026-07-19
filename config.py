@@ -202,7 +202,7 @@ def _set_section_scalar(section: str, key: str, value, path=None):
     path = pathlib.Path(path) if path else DEFAULT_CONFIG_PATH
     text = path.read_text()
     rendered = "null" if value is None else str(value)
-    pattern = rf'(?m)^({section}:\n(?:[ \t].*\n)*?)(\s*){key}:\s*\S+(\s*#.*)?$'
+    pattern = rf'(?m)^({section}:[ \t]*(?:#.*)?\n(?:[ \t].*\n)*?)(\s*){key}:\s*\S+(\s*#.*)?$'
     new_text, n = re.subn(
         pattern,
         lambda m: f'{m.group(1)}{m.group(2)}{key}: {rendered}{m.group(3) or ""}',

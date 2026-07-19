@@ -34,8 +34,8 @@ export default function CommandPalette({ open, onOpenChange, candidates }: Comma
     return () => document.removeEventListener('keydown', handleKeyDown)
   }, [open, onOpenChange])
 
-  function handleSelect(urlPath: string) {
-    navigate(`/${urlPath}`)
+  function handleSelect(urlPath: string, anchor?: string) {
+    navigate(anchor ? `/${urlPath}#${anchor}` : `/${urlPath}`)
     onOpenChange(false)
   }
 
@@ -61,7 +61,7 @@ export default function CommandPalette({ open, onOpenChange, candidates }: Comma
         <CommandGroup heading="Settings">
           {settings.map((setting) => (
             <CommandItem
-              key={setting.title}
+              key={`${setting.url_path}#${setting.anchor ?? ''}`}
               // "Settings " prefix (not shown -- only {setting.title} is
               // rendered below) so every settings-category entry is
               // findable by searching the group name itself, e.g.
@@ -69,7 +69,7 @@ export default function CommandPalette({ open, onOpenChange, candidates }: Comma
               // to the query "Settings" (it doesn't even contain an 's').
               // Found live while verifying Task 7's Step 3.7.
               value={`Settings ${setting.title}`}
-              onSelect={() => handleSelect(setting.url_path)}
+              onSelect={() => handleSelect(setting.url_path, setting.anchor)}
             >
               {setting.title}
             </CommandItem>

@@ -2,7 +2,7 @@
 import pandas as pd
 
 import chess_utils
-from _common import get_config
+from connections import get_config
 from confidence import confidence_tier, default_thresholds
 
 from ._shared import (

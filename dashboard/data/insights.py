@@ -21,7 +21,7 @@ import pandas as pd
 
 from . import patterns, matchups, game_endings
 from ._shared import TIME_PRESSURE_BUCKETS, THINKING_TIME_BUCKETS, bucket_acpl_blunder_rate
-from _common import get_config
+from connections import get_config
 from confidence import confidence_tier, default_thresholds
 
 # Minimum sample sizes below are deliberately conservative and ad hoc --
@@ -106,6 +106,7 @@ def _piece_hotspot(moves_df, baseline_blunder_rate):
         "detail": f"{ratio:.1f}x your overall blunder rate of {baseline_blunder_rate:.1f}%, "
                   f"over {int(row.n_moves)} analyzed {piece_name} moves.",
         "confidence": confidence_tier(row.n_moves, PIECE_MOVES_THRESHOLDS),
+        "sample_size": int(row.n_moves),
         "severity": confidence_tier(ratio, RATIO_SEVERITY_THRESHOLDS),
         "polarity": "weakness",
         "category": "tactical",
@@ -139,6 +140,7 @@ def _safest_piece(moves_df, baseline_blunder_rate):
         "detail": f"vs. your overall blunder rate of {baseline_blunder_rate:.1f}%, "
                   f"over {int(row.n_moves)} analyzed {piece_name} moves.",
         "confidence": confidence_tier(row.n_moves, PIECE_MOVES_THRESHOLDS),
+        "sample_size": int(row.n_moves),
         "severity": confidence_tier(inverse_ratio, RATIO_SEVERITY_THRESHOLDS),
         "polarity": "strength",
         "category": "tactical",
@@ -168,6 +170,7 @@ def _sharpness(moves_df):
                   f"ones ({forcing.bucket}) -- sharpness is how much the best move beats the "
                   f"second-best, a high gap meaning only one move was actually good.",
         "confidence": confidence_tier(min(flat.n_moves, forcing.n_moves), BUCKET_MOVES_THRESHOLDS),
+        "sample_size": int(min(flat.n_moves, forcing.n_moves)),
         "severity": confidence_tier(abs(delta), BLUNDER_GAP_SEVERITY_THRESHOLDS),
         "polarity": polarity,
         "category": "tactical",
@@ -189,6 +192,7 @@ def _thinking_time(moves_df):
         "detail": f"Your best ({best.blunder_rate:.1f}%) is on \"{best.bucket}\" moves -- "
                   f"not always the slowest bucket that's safest.",
         "confidence": confidence_tier(min(worst.n_moves, best.n_moves), BUCKET_MOVES_THRESHOLDS),
+        "sample_size": int(min(worst.n_moves, best.n_moves)),
         "severity": confidence_tier(worst.blunder_rate - best.blunder_rate, BLUNDER_GAP_SEVERITY_THRESHOLDS),
         "polarity": "mixed",
         "category": "time",
@@ -214,6 +218,7 @@ def _time_pressure(moves_df):
         "headline": f"Blunder rate peaks at {worst.blunder_rate:.1f}% with \"{worst.bucket}\" clock left",
         "detail": f"vs. {best.blunder_rate:.1f}% with \"{best.bucket}\" clock left.",
         "confidence": confidence_tier(min(worst.n_moves, best.n_moves), BUCKET_MOVES_THRESHOLDS),
+        "sample_size": int(min(worst.n_moves, best.n_moves)),
         "severity": confidence_tier(worst.blunder_rate - best.blunder_rate, BLUNDER_GAP_SEVERITY_THRESHOLDS),
         "polarity": "mixed",
         "category": "time",
@@ -233,6 +238,7 @@ def _castling(duck_conn, config_path=None):
         "detail": f"vs. {not_castled.win_pct:.1f}% in games where you don't, "
                   f"in games long enough for castling to be a real option.",
         "confidence": confidence_tier(min(castled.n_games, not_castled.n_games), CASTLE_GAMES_THRESHOLDS),
+        "sample_size": int(min(castled.n_games, not_castled.n_games)),
         "severity": confidence_tier(abs(castled.win_pct - not_castled.win_pct), WINRATE_GAP_SEVERITY_THRESHOLDS),
         "polarity": "strength" if castled.win_pct >= not_castled.win_pct else "weakness",
         "category": "defense",
@@ -263,6 +269,7 @@ def _backrank(moves_df):
         "headline": f"King ACPL off the back rank: {elsewhere.acpl:.1f}",
         "detail": f"vs. {back.acpl:.1f} on the back rank -- the average centipawn loss per move.",
         "confidence": confidence_tier(min(elsewhere.n_moves, back.n_moves), BACKRANK_MOVES_THRESHOLDS),
+        "sample_size": int(min(elsewhere.n_moves, back.n_moves)),
         "severity": confidence_tier(abs(elsewhere.acpl - back.acpl), ACPL_GAP_SEVERITY_THRESHOLDS),
         "polarity": "weakness" if elsewhere.acpl > back.acpl else "strength",
         "category": "defense",
@@ -302,6 +309,7 @@ def _nemesis(duck_conn):
         # comment in matchups.get_nemesis_opponents.
         "opponent_on_lichess": bool(toughest.all_lichess),
         "confidence": confidence_tier(toughest.n, OPPONENT_GAMES_THRESHOLDS),
+        "sample_size": int(toughest.n),
         "severity": severity,
         "polarity": "weakness",
         "category": "matchup",
@@ -335,6 +343,7 @@ def _best_matchup(duck_conn):
         "detail": detail,
         "opponent_name": best.opponent_name,
         "confidence": confidence_tier(best.n, OPPONENT_GAMES_THRESHOLDS),
+        "sample_size": int(best.n),
         "severity": severity,
         "polarity": "strength",
         "category": "matchup",
@@ -460,6 +469,7 @@ def _bishop_color_endings(duck_conn, sqlite_conn, config_path=None):
         "detail": f"vs. {same.acpl:.1f} when both bishops are on the same color, "
                   f"measured from the point each ending was reached.",
         "confidence": confidence_tier(min(opp.n_moves, same.n_moves), BISHOP_ENDING_MOVES_THRESHOLDS),
+        "sample_size": int(min(opp.n_moves, same.n_moves)),
         "severity": confidence_tier(abs(opp.acpl - same.acpl), ACPL_GAP_SEVERITY_THRESHOLDS),
         "polarity": "weakness" if opp.acpl > same.acpl else "strength",
         # "tactical" (not "defense"/"King safety" -- that label is specific

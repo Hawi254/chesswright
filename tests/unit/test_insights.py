@@ -83,6 +83,10 @@ class TestPieceHotspot:
         result = _piece_hotspot(self._df(10, 2), baseline_blunder_rate=20.0)
         assert result["polarity"] == "weakness"
 
+    def test_sample_size_is_the_winning_pieces_move_count(self):
+        result = _piece_hotspot(self._df(10, 2), baseline_blunder_rate=20.0)
+        assert result["sample_size"] == 20
+
 
 @pytest.mark.unit
 class TestSafestPiece:
@@ -113,6 +117,10 @@ class TestSafestPiece:
         result = _safest_piece(self._df(10, 1), baseline_blunder_rate=20.0)
         assert result["severity"] == "high"
         assert result["headline"].startswith("Bishop moves blunder at only 5.0%")
+
+    def test_sample_size_is_the_winning_pieces_move_count(self):
+        result = _safest_piece(self._df(10, 2), baseline_blunder_rate=20.0)
+        assert result["sample_size"] == 20
 
 
 @pytest.mark.unit
@@ -154,6 +162,10 @@ class TestSharpness:
         assert result["severity"] == "high"
         assert "holds steady or falls" in result["headline"]
 
+    def test_sample_size_is_the_smaller_bucket(self):
+        result = _sharpness(self._df(1, 15))
+        assert result["sample_size"] == 40
+
 
 @pytest.mark.unit
 class TestThinkingTime:
@@ -184,6 +196,10 @@ class TestThinkingTime:
     def test_polarity_is_mixed(self):
         result = _thinking_time(self._df(10, 1))
         assert result["polarity"] == "mixed"
+
+    def test_sample_size_is_the_smaller_bucket(self):
+        result = _thinking_time(self._df(10, 1))
+        assert result["sample_size"] == 20
 
 
 @pytest.mark.unit
@@ -217,6 +233,10 @@ class TestTimePressure:
     def test_polarity_is_mixed(self):
         result = _time_pressure(self._df(10, 1))
         assert result["polarity"] == "mixed"
+
+    def test_sample_size_is_the_smaller_bucket(self):
+        result = _time_pressure(self._df(10, 1))
+        assert result["sample_size"] == 20
 
 
 @pytest.mark.unit
@@ -254,6 +274,10 @@ class TestBackrank:
         # ON the back rank here, so being active elsewhere is the strength.
         result = _backrank(self._df(30.0, 5.0))
         assert result["polarity"] == "strength"
+
+    def test_sample_size_is_the_smaller_group(self):
+        result = _backrank(self._df(5.0, 30.0))
+        assert result["sample_size"] == 20
 
 
 # ---------------------------------------------------------------------------
@@ -293,6 +317,7 @@ class TestCastlingSmoke:
             # All castled games win, all non-castled games lose -> castled
             # win_pct (100%) >= not_castled win_pct (0%) -> strength.
             assert result["polarity"] == "strength"
+            assert result["sample_size"] == 5  # min(5 castled, 5 not-castled)
         finally:
             duck.close(); disk.close(); os.unlink(tmp)
 
@@ -316,6 +341,7 @@ class TestNemesisSmoke:
             assert result["severity"] == "high"
             assert result["confidence"] in ("low", "medium", "high")
             assert result["polarity"] == "weakness"
+            assert result["sample_size"] == 5
         finally:
             duck.close(); disk.close(); os.unlink(tmp)
 
@@ -342,6 +368,7 @@ class TestBestMatchup:
             assert result["polarity"] == "strength"
             assert result["confidence"] in ("low", "medium", "high")
             assert "Pushover" in result["headline"]
+            assert result["sample_size"] == 5
         finally:
             duck.close(); disk.close(); os.unlink(tmp)
 
@@ -367,6 +394,7 @@ class TestGiantKillingSmoke:
             assert result["severity"] == "high"
             assert "confidence" not in result
             assert result["polarity"] == "mixed"
+            assert "sample_size" not in result
         finally:
             duck.close(); disk.close(); os.unlink(tmp)
 
@@ -387,6 +415,7 @@ class TestGameEndingsSmoke:
             assert result["severity"] == "low"
             assert "confidence" not in result
             assert result["polarity"] == "neutral"
+            assert "sample_size" not in result
         finally:
             duck.close(); disk.close(); os.unlink(tmp)
 
@@ -409,6 +438,7 @@ class TestTacticalHighlightsSmoke:
             assert result["severity"] == "low"
             assert "confidence" not in result
             assert result["polarity"] == "neutral"
+            assert "sample_size" not in result
         finally:
             duck.close(); disk.close(); os.unlink(tmp)
 
@@ -468,6 +498,10 @@ class TestBishopColorEndingsSmoke:
             assert result["confidence"] in ("low", "medium", "high")
             assert "100.0" in result["headline"]
             assert "20.0" in result["detail"]
+            # Each of the 5 "same"/5 "opposite" games seeds plies 41-45 (5
+            # plies each, all carrying cpl) -> 5 games x 5 plies = 25 analyzed
+            # moves per bucket.
+            assert result["sample_size"] == 25
         finally:
             duck.close(); disk.close(); os.unlink(tmp)
 

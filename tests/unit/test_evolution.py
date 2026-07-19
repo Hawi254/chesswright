@@ -8,7 +8,7 @@ import pytest
 
 from data.evolution import (
     MAJOR_SHARE_PCT, MIN_FAMILY_GAMES,
-    classify_evolution, family_win_trend, period_shares,
+    classify_evolution, family_win_trend, ledger_period_shares, period_shares,
 )
 
 
@@ -199,3 +199,43 @@ class TestFamilyWinTrend:
         out = family_win_trend(df, "X", min_games_per_quarter=2)  # explicit 2 overrides config's 100
         assert len(out) == 1
         assert out.iloc[0].label == "2018 Q1"
+
+
+@pytest.mark.unit
+class TestLedgerPeriodShares:
+    def test_zero_fills_gaps_for_each_family(self):
+        rows = [(2018, 1, "A", 8, 4), (2018, 3, "A", 5, 2)]  # 2018 Q2 is a gap
+        df = _rows(rows)
+        out = ledger_period_shares(df, ["A"])
+        assert set(out.label) == {"2018 Q1", "2018 Q2", "2018 Q3"}
+        gap = out[out.label == "2018 Q2"]
+        assert (gap.n_games == 0).all()
+        assert (gap.share == 0.0).all()
+
+    def test_includes_families_outside_top_n(self):
+        # period_shares only tracks a top_n cutoff (default 4); this
+        # function must return shares for ANY family list passed in, even
+        # a 5th one that period_shares would have folded into "Other".
+        rows = [(2018, 1, fam, 10, 5) for fam in ["A", "B", "C", "D", "E"]]
+        df = _rows(rows)
+        out = ledger_period_shares(df, ["E"])
+        assert set(out.family) == {"E"}
+        assert out.iloc[0].share == pytest.approx(100.0 * 10 / 50)
+
+    def test_share_denominator_is_the_full_period_total(self):
+        # E's share denominator must be ALL families' games that quarter,
+        # not just the games among the requested `families` list.
+        rows = [(2018, 1, "A", 40, 20), (2018, 1, "E", 10, 5)]
+        df = _rows(rows)
+        out = ledger_period_shares(df, ["E"])
+        assert out.iloc[0].share == pytest.approx(100.0 * 10 / 50)
+
+    def test_empty_filtered_returns_empty_with_columns(self):
+        out = ledger_period_shares(_rows([]), ["A"])
+        assert out.empty
+        assert list(out.columns) == ["period", "label", "family", "n_games", "share"]
+
+    def test_empty_families_list_returns_empty(self):
+        df = _rows([(2018, 1, "A", 10, 5)])
+        out = ledger_period_shares(df, [])
+        assert out.empty

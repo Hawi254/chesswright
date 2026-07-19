@@ -27,7 +27,8 @@ def test_preflight_imports_mode_exits_zero():
 
 def test_probe_skipped_when_sse42_confirmed(monkeypatch):
     import desktop_app
-    monkeypatch.setattr(desktop_app, "_sse42_confirmed", lambda: True)
+    import desktop_preflight
+    monkeypatch.setattr(desktop_preflight, "_sse42_confirmed", lambda: True)
 
     def boom(*a, **k):  # pragma: no cover - must not be reached
         raise AssertionError("probe subprocess must not run on a confirmed CPU")
@@ -40,7 +41,8 @@ def test_probe_failure_then_simd_none_retry_success(monkeypatch):
     ARROW_USER_SIMD_LEVEL=NONE survives -> the env var must be exported
     for the server subprocess and launch must continue."""
     import desktop_app
-    monkeypatch.setattr(desktop_app, "_sse42_confirmed", lambda: False)
+    import desktop_preflight
+    monkeypatch.setattr(desktop_preflight, "_sse42_confirmed", lambda: False)
     monkeypatch.delenv("ARROW_USER_SIMD_LEVEL", raising=False)
     calls = []
 
@@ -59,7 +61,8 @@ def test_probe_failure_then_simd_none_retry_success(monkeypatch):
 
 def test_probe_failure_both_ways_exits_readably(monkeypatch, capsys):
     import desktop_app
-    monkeypatch.setattr(desktop_app, "_sse42_confirmed", lambda: False)
+    import desktop_preflight
+    monkeypatch.setattr(desktop_preflight, "_sse42_confirmed", lambda: False)
 
     def fake_run(cmd, **kwargs):
         return types.SimpleNamespace(returncode=-4, stdout="",

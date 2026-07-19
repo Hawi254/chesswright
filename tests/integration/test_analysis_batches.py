@@ -172,6 +172,32 @@ class TestMotifBatchDelta:
 
 
 @pytest.mark.integration
+class TestMotifBatchRangeDelta:
+    def test_range_excludes_before_run_a_and_after_run_b(self, migrated_db):
+        from data.analysis_batches import get_motif_batch_range_delta
+        for rid in (1, 2, 3):
+            _insert_run(migrated_db, rid)
+        migrated_db.execute("INSERT INTO games (id, white, black) VALUES ('g1', 'me', 'them')")
+        _insert_move(migrated_db, "g1", 2, 40, "blunder", 1, motif="fork")
+        _insert_move(migrated_db, "g1", 4, 40, "blunder", 2, motif="fork")
+        _insert_move(migrated_db, "g1", 6, 40, "blunder", 3, motif="fork")
+        migrated_db.commit()
+        df = get_motif_batch_range_delta(migrated_db, 1, 2).set_index("motif")
+        assert df.loc["fork"].n_before == 1   # run1 only
+        assert df.loc["fork"].n_after == 2    # run1 + run2, run3 excluded
+        assert df.loc["fork"].n_in_range == 1
+
+    def test_empty_when_no_mistakes_or_blunders(self, migrated_db):
+        from data.analysis_batches import get_motif_batch_range_delta
+        _insert_run(migrated_db, 1)
+        migrated_db.execute("INSERT INTO games (id, white, black) VALUES ('g1', 'me', 'them')")
+        _insert_move(migrated_db, "g1", 2, 5, "good", 1, motif="fork")
+        migrated_db.commit()
+        df = get_motif_batch_range_delta(migrated_db, None, 1)
+        assert df.empty
+
+
+@pytest.mark.integration
 class TestNewBlundersThisRun:
     def test_only_this_runs_blunders(self, migrated_db):
         from data.analysis_batches import get_new_blunders_this_run
@@ -192,6 +218,89 @@ class TestNewBlundersThisRun:
         _insert_run(migrated_db, 1)
         migrated_db.commit()
         assert get_new_blunders_this_run(migrated_db, 1).empty
+
+
+@pytest.mark.integration
+class TestBatchRangeDelta:
+    def test_unknown_run_b_returns_none(self, migrated_db):
+        from data.analysis_batches import get_batch_range_delta
+        assert get_batch_range_delta(migrated_db, None, 999) is None
+
+    def test_run_a_none_reproduces_start_case(self, migrated_db):
+        from data.analysis_batches import get_batch_range_delta
+        _insert_run(migrated_db, 1)
+        migrated_db.execute("INSERT INTO games (id, white, black) VALUES ('g1', 'me', 'them')")
+        _insert_move(migrated_db, "g1", 2, 20, "good", 1)
+        migrated_db.commit()
+        delta = get_batch_range_delta(migrated_db, None, 1)
+        assert delta["before_acpl"] is None
+        assert delta["before_blunder_rate"] is None
+        assert delta["after_acpl"] == pytest.approx(20.0)
+
+    def test_range_excludes_before_run_a_and_after_run_b(self, migrated_db):
+        """Core regression: run_a=1, run_b=2 with a run 3 present must not
+        leak run 3's moves into 'after' or 'in-range', and run 1's own move
+        (<=run_a) must land in 'before', not 'in-range'."""
+        from data.analysis_batches import get_batch_range_delta
+        for rid in (1, 2, 3):
+            _insert_run(migrated_db, rid)
+        _seed_three_runs(migrated_db)
+
+        delta = get_batch_range_delta(migrated_db, 1, 2)
+        assert delta["before_acpl"] == pytest.approx(15.0)   # NULL(10) + run1(20)
+        assert delta["after_acpl"] == pytest.approx(20.0)    # + run2(30), run3(40) excluded
+        assert delta["new_blunders"] == 1                    # only run2's blunder
+        assert delta["top_motif"] == "fork"
+        assert delta["annotated_run_b"] == 1
+
+    def test_annotated_run_b_zero_when_run_b_not_yet_annotated(self, migrated_db):
+        from data.analysis_batches import get_batch_range_delta
+        _insert_run(migrated_db, 1)
+        _insert_run(migrated_db, 2)
+        migrated_db.execute("INSERT INTO games (id, white, black) VALUES ('g1', 'me', 'them')")
+        _insert_move(migrated_db, "g1", 2, 20, "good", 1)
+        migrated_db.execute("""
+            INSERT INTO moves (game_id, ply, move_number, color, san, is_player_move,
+                                cpl, classification, analysis_run_id)
+            VALUES ('g1', 4, 2, 'w', 'e4', 1, NULL, NULL, 2)
+        """)
+        migrated_db.commit()
+        delta = get_batch_range_delta(migrated_db, 1, 2)
+        assert delta["annotated_run_b"] == 0
+
+    def test_games_in_range_sums_only_runs_strictly_after_a(self, migrated_db):
+        from data.analysis_batches import get_batch_range_delta
+        _insert_run(migrated_db, 1, games_analyzed=10)
+        _insert_run(migrated_db, 2, games_analyzed=5)
+        _insert_run(migrated_db, 3, games_analyzed=7)
+        migrated_db.commit()
+        delta = get_batch_range_delta(migrated_db, 1, 2)
+        assert delta["games_in_range"] == 5
+
+
+@pytest.mark.integration
+class TestNewBlundersInRange:
+    def test_range_excludes_at_or_before_run_a_and_after_run_b(self, migrated_db):
+        from data.analysis_batches import get_new_blunders_in_range
+        for rid in (1, 2, 3):
+            _insert_run(migrated_db, rid)
+        migrated_db.execute("INSERT INTO games (id, white, black) VALUES ('g1', 'me', 'them')")
+        _insert_move(migrated_db, "g1", 2, 40, "blunder", 1)   # excluded: at/before run_a
+        _insert_move(migrated_db, "g1", 4, 90, "blunder", 2)   # included
+        _insert_move(migrated_db, "g1", 6, 999, "blunder", 3)  # excluded: after run_b
+        migrated_db.commit()
+        df = get_new_blunders_in_range(migrated_db, 1, 2)
+        assert df["cpl"].tolist() == [90]
+
+    def test_run_a_none_includes_from_earliest_but_excludes_null_run_legacy_rows(self, migrated_db):
+        from data.analysis_batches import get_new_blunders_in_range
+        _insert_run(migrated_db, 1)
+        migrated_db.execute("INSERT INTO games (id, white, black) VALUES ('g1', 'me', 'them')")
+        _insert_move(migrated_db, "g1", 2, 10, "blunder", None)  # legacy baseline, no run
+        _insert_move(migrated_db, "g1", 4, 40, "blunder", 1)
+        migrated_db.commit()
+        df = get_new_blunders_in_range(migrated_db, None, 1)
+        assert df["cpl"].tolist() == [40]
 
 
 def _seed_structure_ctx(conn, rows):
@@ -268,6 +377,45 @@ class TestPhaseAccuracyBatchDelta:
 
 
 @pytest.mark.integration
+class TestPhaseAccuracyBatchRangeDelta:
+    def test_empty_db(self, migrated_db):
+        from data.analysis_batches import get_phase_accuracy_batch_range_delta
+        _seed_structure_ctx(migrated_db, [])
+        df = get_phase_accuracy_batch_range_delta(migrated_db, None, 1)
+        assert df.empty
+
+    def test_range_excludes_before_run_a_and_after_run_b(self, migrated_db):
+        from data.analysis_batches import get_phase_accuracy_batch_range_delta
+        for rid in (1, 2, 3):
+            _insert_run(migrated_db, rid)
+        migrated_db.execute("INSERT INTO games (id, white, black) VALUES ('g1', 'me', 'them')")
+        _seed_structure_ctx(migrated_db, [("g1", None, None, 60)])
+        # opening (ply < 24): NULL, run1, run2, run3
+        _insert_move(migrated_db, "g1", 2, 10, "good", None)
+        _insert_move(migrated_db, "g1", 4, 20, "inaccuracy", 1)
+        _insert_move(migrated_db, "g1", 6, 30, "mistake", 2)
+        _insert_move(migrated_db, "g1", 8, 40, "blunder", 3)
+        migrated_db.commit()
+
+        df = get_phase_accuracy_batch_range_delta(migrated_db, 1, 2).set_index("phase")
+        opening = df.loc["opening"]
+        assert opening.n_moves_in_range == 1                # run2's move only
+        assert opening.before_acpl == pytest.approx(15.0)   # NULL(10) + run1(20)
+        assert opening.after_acpl == pytest.approx(20.0)    # + run2(30), run3 excluded
+
+    def test_run_a_none_reproduces_start_case(self, migrated_db):
+        from data.analysis_batches import get_phase_accuracy_batch_range_delta
+        _insert_run(migrated_db, 1)
+        migrated_db.execute("INSERT INTO games (id, white, black) VALUES ('g1', 'me', 'them')")
+        _seed_structure_ctx(migrated_db, [("g1", None, None, 60)])
+        _insert_move(migrated_db, "g1", 2, 20, "good", 1)
+        migrated_db.commit()
+        df = get_phase_accuracy_batch_range_delta(migrated_db, None, 1).set_index("phase")
+        assert df.loc["opening"].before_acpl is None
+        assert df.loc["opening"].after_acpl == pytest.approx(20.0)
+
+
+@pytest.mark.integration
 class TestEndgameTypeBatchDelta:
     def test_empty_db(self, migrated_db):
         from data.analysis_batches import get_endgame_type_batch_delta
@@ -322,6 +470,31 @@ class TestEndgameTypeBatchDelta:
         row = df[df.endgame_type == "Rook"].iloc[0]
         # (10+10+10+100) / 4 = 32.5, not (10+100)/2 = 55
         assert row.after_acpl == pytest.approx(32.5)
+
+
+@pytest.mark.integration
+class TestEndgameTypeBatchRangeDelta:
+    def test_empty_db(self, migrated_db):
+        from data.analysis_batches import get_endgame_type_batch_range_delta
+        _seed_structure_ctx(migrated_db, [])
+        df = get_endgame_type_batch_range_delta(migrated_db, None, 1)
+        assert df.empty
+
+    def test_range_excludes_before_run_a_and_after_run_b(self, migrated_db):
+        from data.analysis_batches import get_endgame_type_batch_range_delta
+        for rid in (1, 2):
+            _insert_run(migrated_db, rid)
+        migrated_db.execute("INSERT INTO games (id, white, black) VALUES ('g1', 'me', 'them')")
+        _seed_structure_ctx(migrated_db, [("g1", None, "R1P5vP4", 50)])  # -> "Rook"
+        _insert_move(migrated_db, "g1", 50, 20, "good", None)
+        _insert_move(migrated_db, "g1", 52, 40, "blunder", 1)
+        _insert_move(migrated_db, "g1", 54, 60, "good", 2)
+        migrated_db.commit()
+        df = get_endgame_type_batch_range_delta(migrated_db, 1, 2)
+        row = df[df.endgame_type == "Rook"].iloc[0]
+        assert row.n_moves_in_range == 1
+        assert row.before_acpl == pytest.approx(30.0)   # NULL(20) + run1(40)
+        assert row.after_acpl == pytest.approx(40.0)     # + run2(60)
 
 
 @pytest.mark.integration

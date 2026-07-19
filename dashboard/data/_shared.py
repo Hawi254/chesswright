@@ -5,10 +5,13 @@ more than one analysis/*.py-mirroring query and must stay in exact sync
 across them, so they live here once rather than in whichever domain
 module happened to need them first.
 """
+import math
+
 import pandas as pd
 
 import analytics
 import chess_utils
+from confidence import confidence_tier, default_thresholds
 
 # Mirrors analysis/time_pressure.py's BUCKETS.
 TIME_PRESSURE_BUCKETS = [
@@ -181,6 +184,25 @@ def _fetchone_scalar(duck_conn, sql, default: int | None = 0):
     return row[0] if row is not None else default
 
 
+MIN_ANALYZED_MOVES_FOR_RATING_BENCHMARK = 20  # same cutoff as insights.py's
+# MIN_BUCKET_MOVES -- the established "is this ACPL number reliable"
+# threshold elsewhere in this codebase. Duplicated as a local constant
+# rather than imported from insights.py to avoid a _shared.py -> insights.py
+# -> _shared.py import cycle (insights.py already imports from _shared.py).
+
+
+def estimate_rating_from_acpl(acpl: float) -> int:
+    """Population-level ACPL-to-rating correlation, not a personal or
+    per-finding prediction. Source: Chess Digits' analysis of human play
+    (ELO ~= 3100 * e^(-0.01 * ACPL)), corroborated by Regan & Haworth's
+    "Intrinsic Chess Ratings" (>0.98 correlation between ACPL/STDCPL and
+    Elo across tournament data). The source community is explicit this
+    relationship is weak at the level of attributing a rating delta to
+    one specific behavior -- do not use this to estimate per-finding
+    impact, only this one aggregate reference point."""
+    return round(3100 * math.exp(-0.01 * acpl))
+
+
 def get_headline_stats(duck_conn, sqlite_conn):
     total_games = _fetchone_scalar(duck_conn, "SELECT COUNT(*) FROM db.games")
     analyzed_games = _fetchone_scalar(
@@ -190,6 +212,17 @@ def get_headline_stats(duck_conn, sqlite_conn):
         SELECT 100.0 * SUM(CASE WHEN outcome_for_player='win' THEN 1 ELSE 0 END) / COUNT(*)
         FROM db.games WHERE outcome_for_player IS NOT NULL
     """, default=None)
+
+    rating_confidence = None
+    implied_rating = None
+    if acpl is not None:
+        rating_confidence = confidence_tier(
+            n_moves, default_thresholds(MIN_ANALYZED_MOVES_FOR_RATING_BENCHMARK))
+        if rating_confidence != "insufficient":
+            implied_rating = estimate_rating_from_acpl(acpl)
+        else:
+            rating_confidence = None
+
     return {
         "total_games": total_games,
         "analyzed_games": analyzed_games,
@@ -197,4 +230,6 @@ def get_headline_stats(duck_conn, sqlite_conn):
         "blunder_rate": blunder_rate,
         "win_pct": overall_win_pct,
         "n_analyzed_moves": n_moves,
+        "implied_rating": implied_rating,
+        "rating_confidence": rating_confidence,
     }

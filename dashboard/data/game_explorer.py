@@ -140,3 +140,18 @@ def get_game_detail(sqlite_conn, game_id):
         FROM moves WHERE game_id = ? ORDER BY ply
     """, sqlite_conn, params=[game_id])
     return header, moves
+
+
+def get_position_and_lastmove(sqlite_conn, game_id, ply):
+    """Single indexed point lookup (idx_moves_game(game_id, ply)) for one
+    moment's board snapshot -- cheaper than reconstructing the whole game
+    via get_game_detail when only one position is needed. from_square/
+    to_square are the move's own stored squares, so no client-side SAN
+    resolution (chess.js) is needed to draw an arrow on a static
+    thumbnail -- unlike PositionInspector's resolveArrow, which resolves a
+    SAN string because it doesn't have stored squares to read.
+    Returns (fen_before, from_square, to_square, move_number) or None."""
+    row = sqlite_conn.execute(
+        "SELECT fen_before, from_square, to_square, move_number FROM moves "
+        "WHERE game_id=? AND ply=?", (game_id, ply)).fetchone()
+    return row

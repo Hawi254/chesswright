@@ -16,7 +16,7 @@ describe('navConfig', () => {
       'tactical-highlights', 'insights', 'points', 'evolution',
     ])
     expect(grouped.Explore.map((p) => p.url_path)).toEqual([
-      'game-explorer', 'drill-export', 'training-queue', 'srs-drills',
+      'game-explorer', 'training',
       'opening-tree', 'opponent-prep', 'ask',
     ])
     expect(grouped.App.map((p) => p.url_path)).toEqual([

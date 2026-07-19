@@ -1,19 +1,24 @@
 """FastAPI service wrapping existing, Streamlit-free dashboard/data/*.py
-and dashboard/narrative.py functions. No new business logic; no auth; no
-write paths. See
-docs/superpowers/specs/2026-07-12-frontend-rewrite-spike-design.md and
-docs/superpowers/specs/2026-07-12-overview-identity-zone-port-design.md.
+and dashboard/narrative.py functions via one APIRouter module per
+page/feature area under api/routers/. No new business logic; no auth.
+See docs/superpowers/specs/2026-07-12-frontend-rewrite-spike-design.md,
+docs/superpowers/specs/2026-07-13-game-detail-completion-design.md,
+docs/superpowers/specs/2026-07-13-game-detail-slice2-variation-mode-design.md,
+and docs/superpowers/specs/2026-07-17-api-main-router-split-design.md.
 """
-import time
+import pathlib
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 
-from api.db import get_db_connections
-
-import data
-import narrative
-import achievements
+from api.routers import (
+    analysis_jobs, annotations, ask, batch_impact, board_chat, evolution,
+    game_endings, games, insights, matchups, opening_tree, openings,
+    opponent_prep, overview, patterns, points, settings, tactical_highlights,
+    training, variations,
+)
+import api.shared_data as shared_data
 
 app = FastAPI(title="Chesswright API")
 
@@ -25,101 +30,104 @@ app = FastAPI(title="Chesswright API")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
 )
 
+app.include_router(analysis_jobs.router)
+app.include_router(opponent_prep.router)
+app.include_router(board_chat.router)
+app.include_router(variations.router)
+app.include_router(annotations.router)
+app.include_router(games.router)
+app.include_router(openings.router)
+app.include_router(opening_tree.router)
+app.include_router(game_endings.router)
+app.include_router(points.router)
+app.include_router(batch_impact.router)
+app.include_router(tactical_highlights.router)
+app.include_router(evolution.router)
+app.include_router(insights.router)
+app.include_router(ask.router)
+app.include_router(matchups.router)
+app.include_router(settings.router)
+app.include_router(patterns.router)
+app.include_router(overview.router)
+app.include_router(training.router)
 
-class _TTLCache:
-    """Small hand-written cache for one expensive, argument-less
-    computation -- not a general caching framework. 60s bounds staleness
-    to roughly one minute after a mid-session sync/analysis batch changes
-    the underlying data, rather than caching until process restart
-    (functools.lru_cache with no TTL was considered and rejected for this
-    reason -- see the Overview identity-zone port design spec)."""
-
-    def __init__(self, ttl_seconds):
-        self._ttl_seconds = ttl_seconds
-        self._value = None
-        self._computed_at = None
-
-    def get(self, compute):
-        now = time.monotonic()
-        if self._computed_at is None or (now - self._computed_at) > self._ttl_seconds:
-            self._value = compute()
-            self._computed_at = now
-        return self._value
-
-    def clear(self):
-        self._value = None
-        self._computed_at = None
-
-
-_narrative_cache = _TTLCache(60)
-_career_findings_cache = _TTLCache(60)
+# Where the built React frontend lives -- frontend/dist relative to this
+# file's own directory's parent, both in a source checkout (frontend/dist
+# is produced by `npm run build` in frontend/) and frozen (chesswright-
+# react.spec bundles it to the same relative location under _internal/,
+# since api/main.py itself is bundled at _internal/api/main.py). A plain
+# module-level constant (not resolved inside a function) so tests can
+# monkeypatch it directly -- see test_api_static.py.
+FRONTEND_DIST_DIR = pathlib.Path(__file__).resolve().parent.parent / "frontend" / "dist"
 
 
 def reset_caches():
     """Test-only hook: api.main is a singleton module shared across every
     test in a pytest process, so a cache populated by one test would
-    otherwise leak into the next one."""
-    _narrative_cache.clear()
-    _career_findings_cache.clear()
+    otherwise leak into the next one. Delegates to each router module's own
+    reset_caches() -- main.py already imports every one of them to call
+    include_router(), so it already "knows about" all of them; no separate
+    cache registry is needed (see
+    docs/superpowers/specs/2026-07-17-api-main-router-split-design.md)."""
+    shared_data.reset_caches()
+    overview.reset_caches()
+    games.reset_caches()
+    openings.reset_caches()
+    game_endings.reset_caches()
+    points.reset_caches()
+    evolution.reset_caches()
+    insights.reset_caches()
+    ask.reset_caches()
+    matchups.reset_caches()
+    patterns.reset_caches()
 
 
-@app.get("/api/overview/headline-stats")
-def headline_stats():
-    sqlite_conn, duck_conn = get_db_connections()
-    return data.get_headline_stats(duck_conn, sqlite_conn)
+@app.get("/assets/{asset_path:path}")
+def frontend_asset(asset_path: str):
+    """Serves frontend/dist/assets/* -- the built React app's JS/CSS
+    bundle (Vite emits root-absolute /assets/... references in
+    index.html). Path-traversal-safe: resolves the joined path and
+    verifies it's still inside assets_dir before serving, rather than
+    trusting the path parameter directly."""
+    assets_dir = (FRONTEND_DIST_DIR / "assets").resolve()
+    candidate = (assets_dir / asset_path).resolve()
+    try:
+        candidate.relative_to(assets_dir)
+    except ValueError:
+        raise HTTPException(status_code=404)
+    if not candidate.is_file():
+        raise HTTPException(status_code=404)
+    return FileResponse(candidate)
 
 
-@app.get("/api/overview/rating-trajectory")
-def rating_trajectory():
-    _, duck_conn = get_db_connections()
-    df = data.get_rating_trajectory(duck_conn)
-    return df.to_dict(orient="records")
+@app.get("/{full_path:path}")
+def spa_fallback(full_path: str):
+    """Catch-all SPA-fallback for the built React app's client-side
+    routing (react-router-dom) -- must be the LAST route registered in
+    this file so it never shadows the /api/* routes above. Returns a
+    plain 404 (not a crash) when the frontend hasn't been built yet --
+    api/main.py must still work standalone against a bare `npm run dev`
+    Vite server on 5173, where this route is never hit at all.
 
-
-@app.get("/api/overview/rating-snapshot")
-def rating_snapshot():
-    _, duck_conn = get_db_connections()
-    return data.get_rating_snapshot(duck_conn)
-
-
-@app.get("/api/overview/current-streak")
-def current_streak():
-    _, duck_conn = get_db_connections()
-    return data.get_current_streak(duck_conn)
-
-
-@app.get("/api/overview/career-findings")
-def career_findings():
-    def compute():
-        sqlite_conn, duck_conn = get_db_connections()
-        stats = data.get_headline_stats(duck_conn, sqlite_conn)
-        if stats.get("analyzed_games", 0) == 0:
-            return []
-        return data.get_career_findings(duck_conn, sqlite_conn, stats.get("blunder_rate"))
-    return _career_findings_cache.get(compute)
-
-
-@app.get("/api/overview/achievements")
-def achievements_endpoint():
-    sqlite_conn, _ = get_db_connections()
-    return achievements.get_unlocked_achievements(sqlite_conn, limit=4)
-
-
-@app.get("/api/overview/narrative")
-def narrative_endpoint():
-    def compute():
-        sqlite_conn, duck_conn = get_db_connections()
-        stats = data.get_headline_stats(duck_conn, sqlite_conn)
-        rating_df = data.get_rating_trajectory(duck_conn)
-        explorer_df = data.get_game_explorer_table(duck_conn)
-        top_game = explorer_df.iloc[0] if len(explorer_df) else None
-        return {"narrative": narrative.generate_career_narrative(stats, rating_df, top_game)}
-    return _narrative_cache.get(compute)
-
-
-@app.get("/api/nav/pages")
-def nav_pages():
-    return data.PAGE_CANDIDATES + data.SETTINGS_CANDIDATES
+    Being registered LAST only protects routes that already exist above
+    it -- an /api/* path that ISN'T one of those (a typo, or an endpoint
+    the frontend calls before it's implemented) would otherwise still
+    match this catch-all and get back a 200 OK with index.html's HTML
+    instead of a clean 404, which a fetch()-and-parse-as-JSON caller
+    would see as a confusing JSON-parse error rather than an obvious
+    missing-endpoint one (confirmed live 2026-07-13 against the real
+    frozen build -- see the react-frontend-packaging plan's Task 9).
+    Explicitly excluding the /api/ prefix here keeps that failure mode
+    honest without having to enumerate every real route twice."""
+    if full_path.startswith("api/"):
+        raise HTTPException(status_code=404)
+    index_path = FRONTEND_DIST_DIR / "index.html"
+    if not index_path.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail="Frontend not built -- run `npm run build` in frontend/ first.",
+        )
+    return FileResponse(index_path)

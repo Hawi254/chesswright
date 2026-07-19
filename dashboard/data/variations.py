@@ -20,14 +20,20 @@ class Variation:
 
 @dataclasses.dataclass
 class Annotation:
+    """A glyph/comment/AI-comment attached to one position. Belongs to
+    exactly one of a variation (variation_id set) or a mainline game
+    (game_id set) -- never both. Both are optional, defaulted fields
+    (rather than two dataclasses) so callers on both sides construct
+    the same type; see the Slice 4 design spec's "Open items"."""
     id: str
-    variation_id: str
     move_index: int
     glyph: str | None
     comment: str | None
     ai_comment: str | None
     ai_model: str | None
     generated_at: str | None
+    variation_id: str | None = None
+    game_id: str | None = None
 
 
 def compute_variation_fen(branch_fen: str, moves_uci: list, step: int) -> str:
@@ -70,20 +76,54 @@ def delete_variation(sqlite_conn, variation_id: str) -> None:
 
 
 def list_variations(sqlite_conn, game_id: str) -> list:
+    # created_at has only second resolution, so two variations saved within
+    # the same second tie; rowid (monotonic insertion order, since id is a
+    # TEXT PRIMARY KEY and doesn't replace it) breaks the tie deterministically.
     rows = sqlite_conn.execute("""
         SELECT id, game_id, branch_ply, branch_fen, moves_json, title, created_at, updated_at
-        FROM variations WHERE game_id = ? ORDER BY created_at DESC
+        FROM variations WHERE game_id = ? ORDER BY created_at DESC, rowid DESC
     """, [game_id]).fetchall()
     return [Variation(r[0], r[1], r[2], r[3], json.loads(r[4]), r[5], r[6], r[7]) for r in rows]
+
+
+def get_variation(sqlite_conn, variation_id: str) -> Variation | None:
+    """Single-row lookup by id; None if the variation doesn't exist."""
+    row = sqlite_conn.execute("""
+        SELECT id, game_id, branch_ply, branch_fen, moves_json, title, created_at, updated_at
+        FROM variations WHERE id = ?
+    """, [variation_id]).fetchone()
+    if row is None:
+        return None
+    return Variation(row[0], row[1], row[2], row[3], json.loads(row[4]), row[5], row[6], row[7])
 
 
 def get_variation_annotations(sqlite_conn, variation_id: str) -> dict:
     """Return {move_index: Annotation} for all annotated positions in a variation."""
     rows = sqlite_conn.execute("""
-        SELECT id, variation_id, move_index, glyph, comment, ai_comment, ai_model, generated_at
+        SELECT id, move_index, glyph, comment, ai_comment, ai_model, generated_at
         FROM variation_annotations WHERE variation_id = ? ORDER BY move_index
     """, [variation_id]).fetchall()
-    return {r[2]: Annotation(r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]) for r in rows}
+    return {
+        r[1]: Annotation(id=r[0], move_index=r[1], glyph=r[2], comment=r[3],
+                         ai_comment=r[4], ai_model=r[5], generated_at=r[6],
+                         variation_id=variation_id)
+        for r in rows
+    }
+
+
+def get_variation_annotation(sqlite_conn, variation_id: str, move_index: int) -> Annotation | None:
+    """Single-row lookup; None if unannotated. get_variation_annotations()
+    returns the whole-variation dict, which the per-position endpoint
+    doesn't need."""
+    row = sqlite_conn.execute("""
+        SELECT id, move_index, glyph, comment, ai_comment, ai_model, generated_at
+        FROM variation_annotations WHERE variation_id = ? AND move_index = ?
+    """, [variation_id, move_index]).fetchone()
+    if row is None:
+        return None
+    return Annotation(id=row[0], move_index=row[1], glyph=row[2], comment=row[3],
+                      ai_comment=row[4], ai_model=row[5], generated_at=row[6],
+                      variation_id=variation_id)
 
 
 def upsert_annotation(sqlite_conn, variation_id: str, move_index: int, *,

@@ -8,7 +8,7 @@ describe('MilestonesRow', () => {
     expect(container).toBeEmptyDOMElement()
   })
 
-  it('renders a chip per milestone with name and truncated date', () => {
+  it('renders a chip per milestone with name and truncated date, no heading', () => {
     render(
       <MilestonesRow
         milestones={[
@@ -20,9 +20,11 @@ describe('MilestonesRow', () => {
       />,
     )
 
+    expect(screen.getByTestId('milestones-row')).toBeInTheDocument()
     expect(screen.getByText('First Win')).toBeInTheDocument()
     expect(screen.getByText('2026-01-01')).toBeInTheDocument()
     expect(screen.getByText('Century Club')).toBeInTheDocument()
     expect(screen.getByText('2026-02-15')).toBeInTheDocument()
+    expect(screen.queryByRole('heading')).not.toBeInTheDocument()
   })
 })

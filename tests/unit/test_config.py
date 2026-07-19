@@ -185,6 +185,21 @@ class TestSetSyncSettings:
         cfg = config.load_config(config_yaml)
         assert cfg["sync_chesscom"]["request_timeout_seconds"] == 45
 
+    def test_sets_sync_timeout_when_section_header_has_inline_comment(self, tmp_path):
+        """Real config.yaml's `sync:` line has a trailing `# ...` comment
+        (unlike this file's config_yaml fixture) -- _set_section_scalar's
+        regex required the section header to be a bare `sync:\\n` and
+        silently raised ValueError against the real file. Regression for
+        that live-found bug."""
+        cfg_path = tmp_path / "config.yaml"
+        cfg_path.write_text(
+            "sync:                                # incremental fetch of new games\n"
+            "  request_timeout_seconds: 30\n"
+        )
+        config.set_sync_setting("request_timeout_seconds", 60, path=cfg_path)
+        cfg = config.load_config(cfg_path)
+        assert cfg["sync"]["request_timeout_seconds"] == 60
+
 
 @pytest.mark.unit
 class TestPick:

@@ -63,6 +63,26 @@ def test_save_and_list_variations():
     print("PASS test_save_and_list_variations")
 
 
+def test_get_variation_returns_none_for_unknown_id():
+    conn = _make_db()
+    assert v.get_variation(conn, "does-not-exist") is None
+    print("PASS test_get_variation_returns_none_for_unknown_id")
+
+
+def test_get_variation_returns_matching_row():
+    conn = _make_db()
+    vid = v.save_variation(conn, "game1", 2, STARTING_FEN, ["e2e4", "e7e5"])
+    var = v.get_variation(conn, vid)
+    assert var is not None
+    assert var.id == vid
+    assert var.game_id == "game1"
+    assert var.branch_ply == 2
+    assert var.branch_fen == STARTING_FEN
+    assert var.moves == ["e2e4", "e7e5"]
+    assert var.title is None
+    print("PASS test_get_variation_returns_matching_row")
+
+
 def test_update_variation_moves():
     conn = _make_db()
     vid = v.save_variation(conn, "game1", 1, STARTING_FEN, ["e2e4"])
@@ -135,6 +155,8 @@ if __name__ == "__main__":
     test_compute_variation_fen()
     test_compute_variation_fen_invalid_uci()
     test_save_and_list_variations()
+    test_get_variation_returns_none_for_unknown_id()
+    test_get_variation_returns_matching_row()
     test_update_variation_moves()
     test_delete_variation()
     test_upsert_annotation_insert()

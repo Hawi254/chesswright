@@ -1,178 +1,34 @@
-"""On-demand Stockfish analysis for interactive dashboard panels.
+"""On-demand Stockfish analysis for interactive Streamlit dashboard
+panels. The streamlit-free core (EngineService, LiveResult,
+get_engine_service, get_engine_status_summary) moved to
+dashboard/engine_status.py (2026-07-13) so api/main.py can use engine
+status without importing streamlit -- see that module's docstring. This
+file keeps only what actually touches st.session_state/st.spinner/
+st.checkbox/st.caption.
 
-A single EngineService subprocess is held in @st.cache_resource so it
-survives across Streamlit reruns without re-spawning Stockfish each time.
-A threading.Lock serialises analyse() calls from rapid reruns.
-
-Hard constraints (confirmed in design discussion):
-- Batch running (joblock alive) → return None immediately; never compete
-  for hardware with the batch worker.
-- Always pair Limit(time=..., depth=...) -- depth alone is not safe.
-- Auto-store results to position_cache when depth >= store_threshold.
-- Max 3 restart attempts if the subprocess dies; give up after that.
-
-Reuses worker.find_engine_path, worker.configure_supported, and
-worker.score_to_fields to stay DRY with the batch worker.
+A threading.Lock (inside EngineService, in engine_status.py) serialises
+analyse() calls from rapid reruns.
 """
-import atexit
-import dataclasses
-import json
-import threading
-
-import chess
-import chess.engine
+import config
+import joblock
 import streamlit as st
 
 import chess_display
-import config
-import joblock
-import worker
+import engine_status
+from engine_status import EngineService, LiveResult, get_engine_status_summary  # noqa: F401 -- re-exported
 
 
-@dataclasses.dataclass
-class LiveResult:
-    eval_cp: int | None
-    eval_mate: int | None
-    best_move_san: str | None
-    pv_json: str          # JSON-encoded list of SAN moves
-    depth: int            # actual search depth reached
-    engine_version: str
+def get_engine_service():
+    """Thin wrapper: the real process-wide singleton lives in
+    engine_status.py so api/main.py can reuse it without importing
+    streamlit. .clear() is attached below so dashboard/settings_view.py's
+    existing live_engine.get_engine_service.clear() calls (force a
+    reconnect after an engine-path change) keep clearing the SAME cache
+    engine_status.py owns, not a second, independently-stale one."""
+    return engine_status.get_engine_service()
 
 
-class EngineService:
-    """Wraps a persistent Stockfish subprocess for on-demand analysis.
-
-    Thread-safe via a single threading.Lock.  Restarts on failure up to
-    _MAX_RESTARTS times.  Registers an atexit handler so the subprocess
-    doesn't linger when Streamlit exits.
-    """
-
-    _MAX_RESTARTS = 3
-
-    def __init__(self, path: str, cfg: dict):
-        self._path = path
-        self._cfg = cfg
-        self._engine: chess.engine.SimpleEngine | None = None
-        self._engine_version = ""
-        self._lock = threading.Lock()
-        self._restart_count = 0
-        self._dead = False
-        self._start()
-        atexit.register(self._shutdown)
-
-    def _start(self) -> None:
-        self._engine = chess.engine.SimpleEngine.popen_uci(self._path)
-        self._engine_version = self._engine.id.get("name", "unknown")
-        worker.configure_supported(self._engine, {
-            "Threads": self._cfg.get("threads", 1),
-            "Hash":    self._cfg.get("hash_mb", 32),
-        })
-
-    def _ensure_alive(self) -> bool:
-        """Return True if the engine is ready.  Try to restart if it crashed."""
-        if self._dead:
-            return False
-        if self._engine is not None:
-            return True  # still alive; analyse() will set to None on failure
-        if self._restart_count >= self._MAX_RESTARTS:
-            self._dead = True
-            return False
-        self._restart_count += 1
-        try:
-            self._start()
-            return True
-        except Exception:
-            self._engine = None
-            if self._restart_count >= self._MAX_RESTARTS:
-                self._dead = True
-            return False
-
-    def analyse(self, fen: str) -> LiveResult | None:
-        """Analyse a position.  Returns None if engine unavailable or batch running."""
-        lock_info = joblock.status()
-        if lock_info is not None and lock_info.alive:
-            return None  # hard block: never compete with batch
-
-        time_sec = float(self._cfg.get("time_sec", 0.5))
-        depth    = int(self._cfg.get("depth", 20))
-        limit    = chess.engine.Limit(time=time_sec, depth=depth)
-
-        with self._lock:
-            if not self._ensure_alive():
-                return None
-            try:
-                board = chess.Board(fen)
-                info  = self._engine.analyse(board, limit)
-            except Exception:
-                self._engine = None  # trigger restart on next call
-                return None
-
-        score = info.get("score")
-        if score is None:
-            return None
-
-        eval_cp, eval_mate = worker.score_to_fields(score, board.turn)
-
-        pv_moves = info.get("pv", [])
-        b, pv_sans = board.copy(), []
-        for m in pv_moves[:15]:
-            try:
-                pv_sans.append(b.san(m))
-                b.push(m)
-            except Exception:
-                break
-
-        return LiveResult(
-            eval_cp=eval_cp,
-            eval_mate=eval_mate,
-            best_move_san=pv_sans[0] if pv_sans else None,
-            pv_json=json.dumps(pv_sans),
-            depth=info.get("depth", 0),
-            engine_version=self._engine_version,
-        )
-
-    def _shutdown(self) -> None:
-        if self._engine:
-            try:
-                self._engine.quit()
-            except Exception:
-                pass
-        self._engine = None
-
-
-_service_started = False
-
-
-@st.cache_resource(show_spinner="Starting the analysis engine…")
-def get_engine_service() -> EngineService | None:
-    """Return the singleton EngineService, or None if Stockfish is not found."""
-    global _service_started
-    _service_started = True
-    cfg = config.load_config()
-    ie_cfg = cfg.get("interactive_engine", {})
-    path = worker.find_engine_path(cfg.get("engine", {}).get("path"))
-    if not path:
-        return None
-    try:
-        return EngineService(path, ie_cfg)
-    except Exception:
-        return None
-
-
-def get_engine_status_summary() -> dict:
-    """Cheap, read-only status for display (Overview's status strip). Only
-    reports on an engine ALREADY started elsewhere (e.g. Game Detail's
-    interactive analysis panel) -- never calls get_engine_service() as the
-    first caller, since that's what actually constructs a real Stockfish
-    subprocess on its first-ever invocation. Viewing Overview must never be
-    what eagerly starts the engine for a user who never opened an
-    interactive-analysis feature."""
-    if not _service_started:
-        return {"connected": False, "version": None}
-    service = get_engine_service()
-    if service is None:
-        return {"connected": False, "version": None}
-    return {"connected": not service._dead, "version": service._engine_version or None}
+get_engine_service.clear = lambda: engine_status.clear_engine_service_cache()
 
 
 def batch_running() -> bool:

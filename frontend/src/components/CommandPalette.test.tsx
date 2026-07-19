@@ -8,7 +8,12 @@ import type { PageCandidate } from '../lib/navCandidates'
 const candidates: PageCandidate[] = [
   { category: 'page', title: 'Overview', url_path: 'overview' },
   { category: 'page', title: 'Patterns & Tendencies', url_path: 'patterns' },
-  { category: 'setting', title: 'Anthropic API key', url_path: 'settings' },
+  {
+    category: 'setting',
+    title: 'Local timezone offset',
+    url_path: 'settings/analytics-display',
+    anchor: 'utc-offset',
+  },
 ]
 
 vi.mock('react-router-dom', async () => {
@@ -52,6 +57,19 @@ describe('CommandPalette', () => {
     await userEvent.click(screen.getByText('Patterns & Tendencies'))
 
     expect(navigate).toHaveBeenCalledWith('/patterns')
+    expect(onOpenChange).toHaveBeenCalledWith(false)
+  })
+
+  it('navigates to the category route and sets the field hash when selecting a setting with an anchor', async () => {
+    const navigate = vi.fn()
+    vi.mocked(useNavigate).mockReturnValue(navigate)
+    const onOpenChange = vi.fn()
+    renderPalette(true, onOpenChange)
+
+    await userEvent.type(screen.getByPlaceholderText(/search/i), 'Local timezone')
+    await userEvent.click(screen.getByText('Local timezone offset'))
+
+    expect(navigate).toHaveBeenCalledWith('/settings/analytics-display#utc-offset')
     expect(onOpenChange).toHaveBeenCalledWith(false)
   })
 })

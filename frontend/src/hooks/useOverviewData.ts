@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
+import { API_BASE } from '../lib/apiBase'
 
-const API_BASE = 'http://127.0.0.1:8123'
 
 export interface HeadlineStats {
   total_games: number
@@ -9,6 +9,8 @@ export interface HeadlineStats {
   blunder_rate: number | null
   win_pct: number | null
   n_analyzed_moves: number
+  implied_rating: number | null
+  rating_confidence: 'low' | 'medium' | 'high' | null
 }
 
 export interface RatingSnapshot {
@@ -29,6 +31,7 @@ export interface Finding {
   severity: 'low' | 'medium' | 'high'
   category: 'tactical' | 'time' | 'defense' | 'matchup' | 'giant_killer' | 'general'
   confidence?: 'insufficient' | 'low' | 'medium' | 'high'
+  sample_size?: number
 }
 
 export interface OverviewData {

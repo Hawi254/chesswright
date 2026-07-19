@@ -47,6 +47,7 @@ from .openings import (
     get_opening_moves_by_year, get_player_move_year_stats,
     compute_dominant_move_flips, summarize_position_timeline,
     get_path_to_position, resolve_move_squares,
+    get_representative_path_for_family,
 )
 from .patterns import (
     SHARPNESS_BUCKETS, PIECE_ORDER, PIECE_NAME,
@@ -58,6 +59,7 @@ from .patterns import (
     get_bishop_square_color_performance, get_rook_king_backrank_performance,
     get_castling_performance, get_sharpness_blunder_correlation,
     get_thinking_time_blunder_correlation, get_decisive_moments,
+    get_decisive_moments_breakdown,
     get_instant_move_rate_by_phase, get_instant_move_accuracy_by_legal_replies,
     get_position_character_performance, get_game_side_performance,
     get_square_blunder_heatmap,
@@ -75,16 +77,19 @@ from .matchups import (
 from .game_endings import (
     get_game_end_type_breakdown, get_endgame_type_performance, get_resignation_loss_causes,
     get_resignation_time_pressure_trend, get_time_forfeit_loss_breakdown,
+    build_ending_tree, get_games_for_ending_node, build_ending_summary,
 )
 from .tactical import (
     RIM_SQL,
     get_puzzle_sequences, get_brilliant_candidates, get_best_move_streaks,
     get_blown_mates, get_knight_rim_performance, get_hallucination_blunders,
     get_hallucination_context, get_motif_breakdown, motif_backfill_needed,
+    build_highlight_reel,
 )
 from .game_explorer import (
     BLUNDER_FEST_THRESHOLD, BRILLIANT_FIND_THRESHOLD, NAIL_BITER_THRESHOLD,
     get_game_badges, get_game_explorer_table, get_game_detail,
+    get_position_and_lastmove,
 )
 from .insights import get_career_findings
 from .points import (
@@ -99,11 +104,15 @@ from .evolution import (
     MIN_FAMILY_GAMES, ECO_SECTION_NAMES, STATUS_ORDER,
     get_family_period_counts, filter_counts, period_shares,
     classify_evolution, family_win_trend, get_family_acpl_by_period,
+    ledger_period_shares,
 )
 from .analysis_batches import (
     list_analysis_runs, get_batch_headline_delta, get_phase_accuracy_batch_delta,
     get_endgame_type_batch_delta, get_motif_batch_delta, get_new_blunders_this_run,
     get_batch_trend, get_batch_record_flags, get_batch_counter,
+    get_batch_range_delta, get_new_blunders_in_range,
+    get_phase_accuracy_batch_range_delta, get_endgame_type_batch_range_delta,
+    get_motif_batch_range_delta,
 )
 from .drills import (
     get_motif_drill_positions, get_decisive_moment_positions, build_drill_cards,
@@ -116,7 +125,9 @@ from .srs import (
     get_drilled_motifs, get_analyzed_move_series, get_motif_miss_series,
     compute_motif_transfer,
 )
-from .prep import open_opponent_connections, get_recent_form, get_opening_tendencies
+from .prep import (
+    open_opponent_connections, get_repertoire, get_scout_summary, list_scouted_opponents,
+)
 from .ai_coach import (
     start_conversation, add_turn, record_feedback, get_conversation_messages,
     get_all_turns, get_profile, upsert_profile, count_turns_since,
@@ -126,12 +137,17 @@ from .variations import (
     Variation, Annotation,
     compute_variation_fen,
     save_variation, update_variation_moves, delete_variation,
-    list_variations, get_variation_annotations, upsert_annotation,
+    list_variations, get_variation, get_variation_annotations,
+    get_variation_annotation, upsert_annotation,
+)
+from .annotations import (
+    get_game_annotations, get_game_annotation, upsert_game_annotation,
 )
 from .search import (
     PAGE_CANDIDATES, SETTINGS_CANDIDATES,
     build_dynamic_candidates, rank_candidates,
 )
+from .ask_brief import build_ask_data_brief
 
 __all__ = [
     "TIME_PRESSURE_BUCKETS", "THINKING_TIME_BUCKETS",
@@ -146,6 +162,7 @@ __all__ = [
     "get_opening_moves_by_year", "get_player_move_year_stats",
     "compute_dominant_move_flips", "summarize_position_timeline",
     "get_path_to_position", "resolve_move_squares",
+    "get_representative_path_for_family",
     "SHARPNESS_BUCKETS", "PIECE_ORDER", "PIECE_NAME",
     "get_blunder_rate_by_time_pressure", "get_acpl_by_time_control",
     "get_phase_accuracy", "get_prior_outcome_performance",
@@ -155,6 +172,7 @@ __all__ = [
     "get_bishop_square_color_performance", "get_rook_king_backrank_performance",
     "get_castling_performance", "get_sharpness_blunder_correlation",
     "get_thinking_time_blunder_correlation", "get_decisive_moments",
+    "get_decisive_moments_breakdown",
     "get_instant_move_rate_by_phase", "get_instant_move_accuracy_by_legal_replies",
     "get_position_character_performance", "get_game_side_performance",
     "get_square_blunder_heatmap",
@@ -183,6 +201,7 @@ __all__ = [
     "MIN_FAMILY_GAMES", "ECO_SECTION_NAMES", "STATUS_ORDER",
     "get_family_period_counts", "filter_counts", "period_shares",
     "classify_evolution", "family_win_trend", "get_family_acpl_by_period",
+    "ledger_period_shares",
     "list_analysis_runs", "get_batch_headline_delta", "get_phase_accuracy_batch_delta",
     "get_endgame_type_batch_delta", "get_motif_batch_delta", "get_new_blunders_this_run",
     "get_batch_trend", "get_batch_record_flags", "get_batch_counter",
@@ -193,14 +212,17 @@ __all__ = [
     "get_review_history", "weekly_recall", "learning_curve", "recall_by_source",
     "get_drilled_motifs", "get_analyzed_move_series", "get_motif_miss_series",
     "compute_motif_transfer",
-    "open_opponent_connections", "get_recent_form", "get_opening_tendencies",
+    "open_opponent_connections", "get_repertoire", "get_scout_summary", "list_scouted_opponents",
     "Variation", "Annotation",
     "compute_variation_fen",
     "save_variation", "update_variation_moves", "delete_variation",
-    "list_variations", "get_variation_annotations", "upsert_annotation",
+    "list_variations", "get_variation", "get_variation_annotations",
+    "get_variation_annotation", "upsert_annotation",
+    "get_game_annotations", "get_game_annotation", "upsert_game_annotation",
     "start_conversation", "add_turn", "record_feedback", "get_conversation_messages",
     "get_all_turns", "get_profile", "upsert_profile", "count_turns_since",
     "record_capability_gap", "get_capability_gaps",
     "PAGE_CANDIDATES", "SETTINGS_CANDIDATES",
     "build_dynamic_candidates", "rank_candidates",
+    "build_ask_data_brief",
 ]

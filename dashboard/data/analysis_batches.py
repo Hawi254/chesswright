@@ -53,7 +53,7 @@ import collections
 import pandas as pd
 
 import analytics
-from _common import get_config
+from connections import get_config
 
 from ._shared import _classify_endgame_type
 
@@ -155,6 +155,93 @@ def get_batch_headline_delta(sqlite_conn, run_id: int) -> dict | None:
     }
 
 
+def get_batch_range_delta(sqlite_conn, run_a: int | None, run_b: int) -> dict | None:
+    """Range generalization of get_batch_headline_delta: run_a/run_b are two
+    CHECKPOINTS on the analysis_runs timeline (not "the batch whose effect
+    we're isolating" the way every single-run_id function above treats
+    run_id), so both boundaries are inclusive of their own endpoint:
+      before = analysis_run_id IS NULL OR analysis_run_id <= run_a
+      after  = analysis_run_id IS NULL OR analysis_run_id <= run_b
+    run_a=None reproduces the "Start (no history)" case: before is skipped
+    entirely (before_acpl/before_blunder_rate come back None), matching
+    get_batch_headline_delta's own first-run fallback. "In-range" stats (new
+    blunders/brilliancies, top motif) use analysis_run_id > run_a AND
+    analysis_run_id <= run_b -- when run_a is None this collapses to just
+    "analysis_run_id <= run_b", which already excludes every NULL-run_id
+    legacy row via SQL three-valued comparison logic (NULL > anything is
+    NULL/false), with no extra IS NOT NULL needed. Returns None if run_b
+    doesn't exist. annotated_run_b (distinct from annotated_in_range) is
+    run_b's OWN cpl-bearing move count specifically -- the signal the
+    /api/batch-impact/summary endpoint uses for the pendingAnnotation flag,
+    mirroring get_batch_headline_delta's annotated_this_run but scoped to
+    just the later endpoint, not the whole range."""
+    run = sqlite_conn.execute(
+        "SELECT games_analyzed FROM analysis_runs WHERE id=?", (run_b,)).fetchone()
+    if not run:
+        return None
+
+    games_in_range = sqlite_conn.execute("""
+        SELECT COALESCE(SUM(games_analyzed), 0) FROM analysis_runs
+        WHERE (? IS NULL OR id > ?) AND id <= ?
+    """, (run_a, run_a, run_b)).fetchone()[0]
+
+    before = sqlite_conn.execute("""
+        SELECT AVG(cpl),
+               100.0 * SUM(CASE WHEN classification='blunder' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0)
+        FROM moves
+        WHERE is_player_move=1 AND cpl IS NOT NULL
+          AND ? IS NOT NULL AND (analysis_run_id IS NULL OR analysis_run_id <= ?)
+    """, (run_a, run_a)).fetchone()
+
+    after = sqlite_conn.execute("""
+        SELECT AVG(cpl),
+               100.0 * SUM(CASE WHEN classification='blunder' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0)
+        FROM moves
+        WHERE is_player_move=1 AND cpl IS NOT NULL
+          AND (analysis_run_id IS NULL OR analysis_run_id <= ?)
+    """, (run_b,)).fetchone()
+
+    in_range = sqlite_conn.execute("""
+        SELECT
+            COUNT(CASE WHEN classification='blunder' THEN 1 END),
+            COUNT(CASE WHEN is_brilliant_candidate=1 THEN 1 END),
+            COUNT(CASE WHEN cpl IS NOT NULL THEN 1 END)
+        FROM moves
+        WHERE is_player_move=1
+          AND (? IS NULL OR analysis_run_id > ?) AND analysis_run_id <= ?
+    """, (run_a, run_a, run_b)).fetchone()
+
+    annotated_run_b = sqlite_conn.execute("""
+        SELECT COUNT(*) FROM moves
+        WHERE is_player_move=1 AND analysis_run_id=? AND cpl IS NOT NULL
+    """, (run_b,)).fetchone()[0]
+
+    motif_row = sqlite_conn.execute("""
+        SELECT motif, COUNT(*) AS n
+        FROM moves
+        WHERE is_player_move=1 AND classification='blunder'
+          AND motif IS NOT NULL AND motif != ''
+          AND (? IS NULL OR analysis_run_id > ?) AND analysis_run_id <= ?
+        GROUP BY motif ORDER BY n DESC LIMIT 1
+    """, (run_a, run_a, run_b)).fetchone()
+
+    return {
+        "run_a": run_a,
+        "run_b": run_b,
+        "games_in_range": games_in_range,
+        "before_acpl": before[0],
+        "before_blunder_rate": before[1],
+        "after_acpl": after[0],
+        "after_blunder_rate": after[1],
+        "new_blunders": in_range[0] or 0,
+        "new_brilliant": in_range[1] or 0,
+        "annotated_in_range": in_range[2] or 0,
+        "annotated_run_b": annotated_run_b or 0,
+        "top_motif": motif_row[0] if motif_row else None,
+        "top_motif_count": motif_row[1] if motif_row else 0,
+    }
+
+
 def get_phase_accuracy_batch_delta(sqlite_conn, run_id: int, config_path=None) -> pd.DataFrame:
     """Opening/middlegame/endgame ACPL and blunder rate, before this run
     vs. after it -- the same exclusive CASE-based phase partition
@@ -193,6 +280,48 @@ def get_phase_accuracy_batch_delta(sqlite_conn, run_id: int, config_path=None) -
             "after_blunder_rate": (100.0 * bl_a / n_a) if n_a else None,
         })
     return pd.DataFrame(out, columns=["phase", "n_moves_this_run", "before_acpl", "after_acpl",
+                                       "before_blunder_rate", "after_blunder_rate"])
+
+
+def get_phase_accuracy_batch_range_delta(sqlite_conn, run_a: int | None, run_b: int, config_path=None) -> pd.DataFrame:
+    """Range generalization of get_phase_accuracy_batch_delta -- see
+    get_batch_range_delta's docstring for the inclusive-both-ends boundary
+    change (checkpoint semantics, not single-run isolation)."""
+    cfg = get_config(config_path)
+    analytics.ensure_structure_ctx(sqlite_conn, cfg)
+    middlegame_ply = cfg["analytics"]["middlegame_ply"]
+    rows = sqlite_conn.execute(f"""
+        SELECT CASE WHEN m.ply < {middlegame_ply} THEN 'opening'
+                    WHEN sc.endgame_ply IS NULL OR m.ply < sc.endgame_ply THEN 'middlegame'
+                    ELSE 'endgame' END AS phase,
+               SUM(CASE WHEN ? IS NOT NULL AND (m.analysis_run_id IS NULL OR m.analysis_run_id <= ?)
+                        THEN 1 ELSE 0 END) AS n_before,
+               SUM(CASE WHEN ? IS NOT NULL AND (m.analysis_run_id IS NULL OR m.analysis_run_id <= ?)
+                        THEN m.cpl ELSE 0 END) AS sum_cpl_before,
+               SUM(CASE WHEN ? IS NOT NULL AND (m.analysis_run_id IS NULL OR m.analysis_run_id <= ?)
+                        AND m.classification='blunder' THEN 1 ELSE 0 END) AS blunders_before,
+               SUM(CASE WHEN (m.analysis_run_id IS NULL OR m.analysis_run_id <= ?) THEN 1 ELSE 0 END) AS n_after,
+               SUM(CASE WHEN (m.analysis_run_id IS NULL OR m.analysis_run_id <= ?) THEN m.cpl ELSE 0 END) AS sum_cpl_after,
+               SUM(CASE WHEN (m.analysis_run_id IS NULL OR m.analysis_run_id <= ?) AND m.classification='blunder'
+                        THEN 1 ELSE 0 END) AS blunders_after
+        FROM moves m JOIN games g ON g.id = m.game_id
+        JOIN structure_ctx sc ON sc.game_id = g.id
+        WHERE m.is_player_move=1 AND m.cpl IS NOT NULL
+        GROUP BY phase
+        ORDER BY CASE phase WHEN 'opening' THEN 0 WHEN 'middlegame' THEN 1 ELSE 2 END
+    """, (run_a,) * 6 + (run_b,) * 3).fetchall()
+
+    out = []
+    for phase, n_b, sum_b, bl_b, n_a, sum_a, bl_a in rows:
+        out.append({
+            "phase": phase,
+            "n_moves_in_range": n_a - n_b,
+            "before_acpl": (sum_b / n_b) if n_b else None,
+            "after_acpl": (sum_a / n_a) if n_a else None,
+            "before_blunder_rate": (100.0 * bl_b / n_b) if n_b else None,
+            "after_blunder_rate": (100.0 * bl_a / n_a) if n_a else None,
+        })
+    return pd.DataFrame(out, columns=["phase", "n_moves_in_range", "before_acpl", "after_acpl",
                                        "before_blunder_rate", "after_blunder_rate"])
 
 
@@ -250,6 +379,56 @@ def get_endgame_type_batch_delta(sqlite_conn, run_id: int, config_path=None) -> 
                                        "before_blunder_rate", "after_blunder_rate"])
 
 
+def get_endgame_type_batch_range_delta(sqlite_conn, run_a: int | None, run_b: int, config_path=None) -> pd.DataFrame:
+    """Range generalization of get_endgame_type_batch_delta -- same
+    inclusive-both-ends boundary change as get_batch_range_delta."""
+    cfg = get_config(config_path)
+    analytics.ensure_structure_ctx(sqlite_conn, cfg)
+
+    rows = sqlite_conn.execute("""
+        SELECT sc.endgame_sig,
+               SUM(CASE WHEN ? IS NOT NULL AND (m.analysis_run_id IS NULL OR m.analysis_run_id <= ?)
+                        THEN 1 ELSE 0 END) AS n_before,
+               SUM(CASE WHEN ? IS NOT NULL AND (m.analysis_run_id IS NULL OR m.analysis_run_id <= ?)
+                        THEN m.cpl ELSE 0 END) AS sum_cpl_before,
+               SUM(CASE WHEN ? IS NOT NULL AND (m.analysis_run_id IS NULL OR m.analysis_run_id <= ?)
+                        AND m.classification='blunder' THEN 1 ELSE 0 END) AS blunders_before,
+               SUM(CASE WHEN (m.analysis_run_id IS NULL OR m.analysis_run_id <= ?) THEN 1 ELSE 0 END) AS n_after,
+               SUM(CASE WHEN (m.analysis_run_id IS NULL OR m.analysis_run_id <= ?) THEN m.cpl ELSE 0 END) AS sum_cpl_after,
+               SUM(CASE WHEN (m.analysis_run_id IS NULL OR m.analysis_run_id <= ?) AND m.classification='blunder'
+                        THEN 1 ELSE 0 END) AS blunders_after
+        FROM structure_ctx sc JOIN moves m ON m.game_id = sc.game_id
+        WHERE sc.endgame_sig IS NOT NULL AND sc.endgame_ply IS NOT NULL
+          AND m.ply >= sc.endgame_ply AND m.is_player_move=1 AND m.cpl IS NOT NULL
+        GROUP BY sc.endgame_sig
+    """, (run_a,) * 6 + (run_b,) * 3).fetchall()
+
+    acc = collections.defaultdict(lambda: [0, 0.0, 0, 0, 0.0, 0])
+    for sig, n_b, sum_b, bl_b, n_a, sum_a, bl_a in rows:
+        etype = _classify_endgame_type(sig)
+        if not etype:
+            continue
+        a = acc[etype]
+        a[0] += n_b or 0; a[1] += sum_b or 0.0; a[2] += bl_b or 0
+        a[3] += n_a or 0; a[4] += sum_a or 0.0; a[5] += bl_a or 0
+
+    out = []
+    for etype in ("Queen", "Rook", "Minor piece", "King & pawn"):
+        if etype not in acc:
+            continue
+        n_b, sum_b, bl_b, n_a, sum_a, bl_a = acc[etype]
+        out.append({
+            "endgame_type": etype,
+            "n_moves_in_range": n_a - n_b,
+            "before_acpl": (sum_b / n_b) if n_b else None,
+            "after_acpl": (sum_a / n_a) if n_a else None,
+            "before_blunder_rate": (100.0 * bl_b / n_b) if n_b else None,
+            "after_blunder_rate": (100.0 * bl_a / n_a) if n_a else None,
+        })
+    return pd.DataFrame(out, columns=["endgame_type", "n_moves_in_range", "before_acpl", "after_acpl",
+                                       "before_blunder_rate", "after_blunder_rate"])
+
+
 def get_motif_batch_delta(sqlite_conn, run_id: int) -> pd.DataFrame:
     """Frequency of every missed tactical motif, before this run vs.
     after -- the full breakdown the original digest's single "top motif
@@ -272,6 +451,26 @@ def get_motif_batch_delta(sqlite_conn, run_id: int) -> pd.DataFrame:
     return df.sort_values(["n_this_run", "n_after"], ascending=False).reset_index(drop=True)
 
 
+def get_motif_batch_range_delta(sqlite_conn, run_a: int | None, run_b: int) -> pd.DataFrame:
+    """Range generalization of get_motif_batch_delta -- same inclusive-
+    both-ends boundary change as get_batch_range_delta."""
+    rows = sqlite_conn.execute("""
+        SELECT motif,
+               SUM(CASE WHEN ? IS NOT NULL AND (analysis_run_id IS NULL OR analysis_run_id <= ?)
+                        THEN 1 ELSE 0 END) AS n_before,
+               SUM(CASE WHEN (analysis_run_id IS NULL OR analysis_run_id <= ?) THEN 1 ELSE 0 END) AS n_after
+        FROM moves
+        WHERE is_player_move=1 AND classification IN ('mistake', 'blunder')
+          AND motif IS NOT NULL AND motif != ''
+        GROUP BY motif
+    """, (run_a, run_a, run_b)).fetchall()
+    df = pd.DataFrame(rows, columns=["motif", "n_before", "n_after"])
+    if df.empty:
+        return df.assign(n_in_range=pd.Series(dtype=int))
+    df["n_in_range"] = df["n_after"] - df["n_before"]
+    return df.sort_values(["n_in_range", "n_after"], ascending=False).reset_index(drop=True)
+
+
 def get_new_blunders_this_run(sqlite_conn, run_id: int) -> pd.DataFrame:
     """One row per blunder found in this specific run -- drill-down source
     for the page's "new blunders this run" table. Point lookup on
@@ -282,6 +481,21 @@ def get_new_blunders_this_run(sqlite_conn, run_id: int) -> pd.DataFrame:
         WHERE is_player_move=1 AND classification='blunder' AND analysis_run_id=?
         ORDER BY cpl DESC
     """, sqlite_conn, params=[run_id])
+
+
+def get_new_blunders_in_range(sqlite_conn, run_a: int | None, run_b: int) -> pd.DataFrame:
+    """Range generalization of get_new_blunders_this_run: every blunder
+    whose analysis_run_id falls in (run_a, run_b] -- run_a=None means "from
+    the beginning" (analysis_run_id <= run_b alone, which already excludes
+    NULL-run legacy rows via SQL three-valued comparison, same reasoning as
+    get_batch_range_delta's in-range boundary)."""
+    return pd.read_sql_query("""
+        SELECT game_id, ply, san, cpl, motif
+        FROM moves
+        WHERE is_player_move=1 AND classification='blunder'
+          AND (? IS NULL OR analysis_run_id > ?) AND analysis_run_id <= ?
+        ORDER BY cpl DESC
+    """, sqlite_conn, params=[run_a, run_a, run_b])
 
 
 def get_batch_trend(sqlite_conn) -> pd.DataFrame:

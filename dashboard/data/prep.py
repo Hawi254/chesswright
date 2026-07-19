@@ -3,9 +3,11 @@
 These functions take explicit duck_conn returned by open_opponent_connections(),
 not the cached connections from get_connections() (which point at the user's DB).
 """
+import pathlib
+
 import pandas as pd
 
-from _common import get_duckdb_connection, get_sqlite_connection
+from connections import get_duckdb_connection, get_sqlite_connection
 import opponent_analysis
 
 
@@ -24,25 +26,28 @@ def open_opponent_connections(username: str):
     )
 
 
-def get_recent_form(duck_conn, top_n: int = 20) -> pd.DataFrame:
-    """Opening repertoire by color -- what the opponent actually plays.
-
-    Groups by color and opening_family, filtered to openings with 3+ games.
+def get_repertoire(duck_conn, top_n: int = 20) -> pd.DataFrame:
+    """Opening repertoire by color, merging what the opponent plays with
+    how they score and where they go wrong -- replaces get_recent_form()
+    and get_opening_tendencies(), which computed overlapping aggregates
+    over the same (player_color, opening_family) grouping in two separate
+    tables the Streamlit page rendered side by side (Opening Repertoire /
+    Where They Go Wrong). The React frontend renders one sortable table
+    instead.
 
     n_games/score_pct are computed from db.games ALONE (one row per game,
-    a true GROUP BY at game grain) and avg_cpl from a separate move-level
-    aggregate, then joined on (color, opening) -- NOT from one query that
-    LEFT JOINs moves directly under the games GROUP BY. A single combined
-    query multiplies each game into one row per analysed player move
-    before the GROUP BY runs, so COUNT(*) counted (game, move) pairs
-    instead of games (inflating n_games -- confirmed live, 11 real games
-    against one opponent showed as 295), and AVG(CASE ...) over that same
-    multiplied resultset silently over-weighted score_pct toward games
-    with more analysed moves, since outcome_for_player is a per-game fact
-    repeated once per move row. get_opening_tendencies right below this
-    function already gets n_games right via COUNT(DISTINCT g.id) -- but
-    never needed a game-level rate column, so it never hit this second
-    part of the bug.
+    a true GROUP BY at game grain) and avg_cpl/blunder_pct from a separate
+    move-level aggregate, then joined on (color, opening) -- NOT from one
+    query that LEFT JOINs moves directly under the games GROUP BY. A
+    single combined query multiplies each game into one row per analysed
+    player move before the GROUP BY runs, so COUNT(*) counts (game, move)
+    pairs instead of games (inflating n_games -- confirmed live, 11 real
+    games against one opponent showed as 295), and AVG(CASE ...) over
+    that same multiplied resultset silently over-weights score_pct toward
+    games with more analysed moves, since outcome_for_player is a
+    per-game fact repeated once per move row.
+
+    No default sort -- the frontend table controls sort order.
     """
     games_df = duck_conn.execute("""
         SELECT
@@ -62,33 +67,14 @@ def get_recent_form(duck_conn, top_n: int = 20) -> pd.DataFrame:
     """, [top_n]).fetchdf()
     if games_df.empty:
         games_df["avg_cpl"] = pd.Series(dtype="float64")
+        games_df["blunder_pct"] = pd.Series(dtype="float64")
         return games_df
 
-    cpl_df = duck_conn.execute("""
+    tendencies_df = duck_conn.execute("""
         SELECT
             g.player_color   AS color,
             g.opening_family AS opening,
-            ROUND(AVG(m.cpl), 1) AS avg_cpl
-        FROM db.games g
-        JOIN db.moves m ON m.game_id = g.id AND m.is_player_move = 1
-        WHERE g.analysis_status = 'done'
-          AND g.opening_family  IS NOT NULL
-        GROUP BY g.player_color, g.opening_family
-    """).fetchdf()
-    return games_df.merge(cpl_df, on=["color", "opening"], how="left")
-
-
-def get_opening_tendencies(duck_conn, top_n: int = 20) -> pd.DataFrame:
-    """Blunder rate and ACPL by opening -- where does the opponent go wrong?
-
-    Sorted by blunder_pct descending so the weakest openings appear first.
-    """
-    return duck_conn.execute("""
-        SELECT
-            g.opening_family                                           AS opening,
-            g.player_color                                             AS color,
-            COUNT(DISTINCT g.id)                                       AS n_games,
-            ROUND(AVG(m.cpl), 1)                                       AS avg_cpl,
+            ROUND(AVG(m.cpl), 1) AS avg_cpl,
             ROUND(
                 100.0 * SUM(CASE WHEN m.classification = 'blunder' THEN 1 ELSE 0 END)
                 / NULLIF(COUNT(m.id), 0),
@@ -97,10 +83,42 @@ def get_opening_tendencies(duck_conn, top_n: int = 20) -> pd.DataFrame:
         FROM db.games g
         JOIN db.moves m ON m.game_id = g.id AND m.is_player_move = 1
         WHERE g.analysis_status = 'done'
-          AND m.cpl             IS NOT NULL
           AND g.opening_family  IS NOT NULL
-        GROUP BY g.opening_family, g.player_color
-        HAVING COUNT(DISTINCT g.id) >= 3
-        ORDER BY blunder_pct DESC
-        LIMIT ?
-    """, [top_n]).fetchdf()
+        GROUP BY g.player_color, g.opening_family
+    """).fetchdf()
+    return games_df.merge(tendencies_df, on=["color", "opening"], how="left")
+
+
+def get_scout_summary(duck_conn) -> dict:
+    """Games analysed, color split, and date range -- the Opponent Prep
+    dossier strip's three headline numbers."""
+    row = duck_conn.execute("""
+        SELECT
+            COUNT(*)                                                      AS n_games,
+            SUM(CASE WHEN player_color = 'white' THEN 1 ELSE 0 END)       AS n_white,
+            SUM(CASE WHEN player_color = 'black' THEN 1 ELSE 0 END)       AS n_black,
+            MIN(utc_date)                                                 AS date_from,
+            MAX(utc_date)                                                 AS date_to
+        FROM db.games
+        WHERE analysis_status = 'done'
+    """).fetchone()
+    n_games, n_white, n_black, date_from, date_to = row
+    return {
+        "games_analyzed": n_games or 0,
+        "color_split": {"white": n_white or 0, "black": n_black or 0},
+        "date_range": {"from": date_from, "to": date_to},
+    }
+
+
+def list_scouted_opponents(main_db_path: str) -> list:
+    """Previously-analysed opponents -- scans the opponents/ directory
+    next to the main DB. Same logic as prep_view.py's
+    _render_prev_opponents, extracted so the API route doesn't
+    reimplement a directory scan."""
+    opponents_dir = pathlib.Path(main_db_path).parent / "opponents"
+    if not opponents_dir.exists():
+        return []
+    return [
+        d.name for d in sorted(opponents_dir.iterdir())
+        if d.is_dir() and (d / "games.db").exists()
+    ]

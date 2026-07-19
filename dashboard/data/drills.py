@@ -26,7 +26,7 @@ import pandas as pd
 import analytics
 import chess_utils
 from chess_display import _drill_context
-from _common import get_config
+from connections import get_config
 
 from ._shared import GIANT_KILLING_COLLAPSE_THRESHOLD, TIME_PRESSURE_BUCKETS
 from .openings import get_repertoire_holes

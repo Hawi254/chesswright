@@ -22,26 +22,18 @@ sys.path.insert(0, str(DASHBOARD_DIR))
 
 
 @pytest.mark.integration
-def test_get_connections_works_outside_streamlit(migrated_db_path, monkeypatch, tmp_path):
+def test_open_connections_works_outside_streamlit(migrated_db_path, monkeypatch, tmp_path):
     scratch_config = tmp_path / "config.yaml"
     shutil.copy(REPO_ROOT / "config.yaml", scratch_config)
 
     import config as _config
-    # monkeypatch.setattr (not importlib.reload while CHESSWRIGHT_CONFIG_PATH
-    # is monkeypatched) -- reload re-evaluates DEFAULT_CONFIG_PATH from
-    # the env var but is never reloaded back, leaking this scratch path
-    # into every later test in the same pytest process (confirmed live:
-    # broke dashboard/test_app.py's and tests/ui/test_pages.py's real-DB
-    # checks when run after this file). monkeypatch.setattr reverts
-    # automatically at teardown, same as it does for setenv.
     monkeypatch.setattr(_config, "DEFAULT_CONFIG_PATH", scratch_config)
     _config.set_player_name("spike_test_player", path=str(scratch_config))
     _config.set_database_path(str(migrated_db_path), path=str(scratch_config))
 
-    import _common
-    _common.get_connections.clear()  # st.cache_resource is process-wide;
-                                      # force a fresh read for this config.
-    sqlite_conn, duck_conn = _common.get_connections()
+    import connections
+    connections.clear_cache()  # process-wide singleton; force a fresh read for this config.
+    sqlite_conn, duck_conn = connections.open_connections()
 
     assert duck_conn.execute("SELECT COUNT(*) FROM db.games").fetchone()[0] == 0
     assert sqlite_conn.execute("SELECT COUNT(*) FROM games").fetchone()[0] == 0
@@ -63,8 +55,8 @@ def api_client(migrated_db_path, monkeypatch, tmp_path):
     _config.set_player_name("spike_test_player", path=str(scratch_config))
     _config.set_database_path(str(migrated_db_path), path=str(scratch_config))
 
-    import _common
-    _common.get_connections.clear()
+    import connections
+    connections.clear_cache()
 
     import api.main as api_main
     api_main.reset_caches()  # module-level TTL caches persist across tests
@@ -80,6 +72,46 @@ def test_headline_stats_endpoint(api_client):
     body = resp.json()
     assert body["total_games"] == 0
     assert body["analyzed_games"] == 0
+    # acpl is None on an empty DB -> both gated fields stay None too.
+    assert body["implied_rating"] is None
+    assert body["rating_confidence"] is None
+
+
+@pytest.mark.integration
+def test_headline_stats_endpoint_omits_rating_below_move_threshold(api_client, monkeypatch):
+    import analytics
+
+    def fake_acpl_and_blunder_rate(*args, **kwargs):
+        # n_moves=15 is below MIN_ANALYZED_MOVES_FOR_RATING_BENCHMARK (20).
+        return (15, 3, 50.0, 5.0)
+
+    monkeypatch.setattr(analytics, "acpl_and_blunder_rate", fake_acpl_and_blunder_rate)
+
+    resp = api_client.get("/api/overview/headline-stats")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["acpl"] == 50.0
+    assert body["implied_rating"] is None
+    assert body["rating_confidence"] is None
+
+
+@pytest.mark.integration
+def test_headline_stats_endpoint_includes_rating_above_move_threshold(api_client, monkeypatch):
+    import analytics
+
+    def fake_acpl_and_blunder_rate(*args, **kwargs):
+        # n_moves=25 clears the "low" threshold (20) but not "medium" (60).
+        return (25, 5, 50.0, 5.0)
+
+    monkeypatch.setattr(analytics, "acpl_and_blunder_rate", fake_acpl_and_blunder_rate)
+
+    resp = api_client.get("/api/overview/headline-stats")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["acpl"] == 50.0
+    # 3100 * e^(-0.01 * 50) ~= 1880.24 -> rounds to 1880.
+    assert body["implied_rating"] == 1880
+    assert body["rating_confidence"] == "low"
 
 
 @pytest.mark.integration
@@ -90,10 +122,67 @@ def test_rating_trajectory_endpoint(api_client):
 
 
 @pytest.mark.integration
+def test_acpl_trajectory_endpoint(api_client):
+    resp = api_client.get("/api/overview/acpl-trajectory")
+    assert resp.status_code == 200
+    assert resp.json() == []  # empty migrated DB has no analyzed games
+
+
+@pytest.mark.integration
 def test_rating_snapshot_endpoint(api_client):
     resp = api_client.get("/api/overview/rating-snapshot")
     assert resp.status_code == 200
     assert isinstance(resp.json(), dict)
+
+
+@pytest.mark.integration
+def test_headline_trend_endpoint_gated_when_no_old_snapshot(api_client):
+    resp = api_client.get("/api/overview/headline-trend")
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "compared_to_date": None, "acpl_delta": None, "blunder_rate_delta": None,
+        "win_pct_delta": None, "implied_rating_delta": None,
+    }
+
+
+@pytest.mark.integration
+def test_headline_trend_endpoint_populated(api_client, migrated_db_path, monkeypatch):
+    import datetime
+    import sqlite3
+
+    import analytics
+
+    def fake_acpl_and_blunder_rate(*args, **kwargs):
+        # n_moves=200 clears every rating-confidence threshold, so
+        # implied_rating on the "current" side is guaranteed non-None.
+        return (200, 10, 40.0, 5.0)
+    monkeypatch.setattr(analytics, "acpl_and_blunder_rate", fake_acpl_and_blunder_rate)
+
+    old_date = (datetime.date.today() - datetime.timedelta(days=120)).isoformat()
+    conn = sqlite3.connect(migrated_db_path)
+    conn.execute("""
+        INSERT INTO metric_snapshots
+            (snapshot_date, total_games, analyzed_games, acpl, blunder_rate, win_pct,
+             n_analyzed_moves, implied_rating, rating_confidence)
+        VALUES (?, 5, 5, 50.0, 8.0, 45.0, 100, 1900, 'medium')
+    """, (old_date,))
+    conn.commit()
+    conn.close()
+
+    resp = api_client.get("/api/overview/headline-trend")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["compared_to_date"] == old_date
+    assert body["acpl_delta"] == pytest.approx(40.0 - 50.0)
+    assert body["blunder_rate_delta"] == pytest.approx(5.0 - 8.0)
+    # win_pct on an empty-games migrated DB is None regardless of the
+    # acpl_and_blunder_rate monkeypatch (it comes from a separate duck_conn
+    # query over db.games) -- asserting None here, not a fabricated value,
+    # avoids depending on DuckDB-snapshot-refresh timing for a games row
+    # inserted after the api_client fixture already opened its connections
+    # (see the duckdb_sqlite_same_process_hazard project memory).
+    assert body["win_pct_delta"] is None
+    assert body["implied_rating_delta"] is not None
 
 
 @pytest.mark.integration
@@ -166,6 +255,65 @@ def test_narrative_endpoint_ttl_cache(api_client, monkeypatch):
 
 
 @pytest.mark.integration
+def test_career_highlight_endpoint_empty_db(api_client):
+    resp = api_client.get("/api/overview/career-highlight")
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+@pytest.mark.integration
+def test_career_highlight_endpoint_returns_top_3(api_client, monkeypatch):
+    import pandas as pd
+    import data
+
+    call_count = {"n": 0}
+
+    def fake_get_game_explorer_table(*args, **kwargs):
+        call_count["n"] += 1
+        return pd.DataFrame([
+            {"game_id": f"game{i}", "opponent_name": f"Opponent{i}", "utc_date": "2026-01-01",
+             "outcome_for_player": "win", "is_comeback": i == 0, "is_giant_killing": False,
+             "is_brilliant_find": False, "is_blunder_fest": False, "is_nail_biter": False,
+             "drama_score": 300 - i}
+            for i in range(5)
+        ])
+
+    monkeypatch.setattr(data, "get_game_explorer_table", fake_get_game_explorer_table)
+
+    resp1 = api_client.get("/api/overview/career-highlight")
+    resp2 = api_client.get("/api/overview/career-highlight")
+
+    assert resp1.status_code == 200
+    body = resp1.json()
+    assert len(body) == 3
+    assert [g["game_id"] for g in body] == ["game0", "game1", "game2"]
+    assert body[0]["is_comeback"] is True
+    assert body[1]["is_comeback"] is False
+    assert resp2.json() == body
+    assert call_count["n"] == 1  # TTL cache still in effect
+
+
+@pytest.mark.integration
+def test_career_highlight_endpoint_returns_fewer_than_3_when_db_has_fewer(api_client, monkeypatch):
+    import pandas as pd
+    import data
+
+    def fake_get_game_explorer_table(*args, **kwargs):
+        return pd.DataFrame([{
+            "game_id": "only_game", "opponent_name": "TestOpponent", "utc_date": "2026-01-01",
+            "outcome_for_player": "win", "is_comeback": True, "is_giant_killing": False,
+            "is_brilliant_find": False, "is_blunder_fest": False, "is_nail_biter": True,
+            "drama_score": 250,
+        }])
+
+    monkeypatch.setattr(data, "get_game_explorer_table", fake_get_game_explorer_table)
+
+    resp = api_client.get("/api/overview/career-highlight")
+    assert resp.status_code == 200
+    assert len(resp.json()) == 1
+
+
+@pytest.mark.integration
 def test_achievements_endpoint_empty_db(api_client):
     resp = api_client.get("/api/overview/achievements")
     assert resp.status_code == 200
@@ -189,6 +337,83 @@ def test_achievements_endpoint_returns_unlocked_achievements(api_client, monkeyp
     assert resp.json() == [{"achievement_id": "first_win", "name": "First Win",
                              "description": "Win your first recorded game.",
                              "unlocked_at": "2026-01-01T00:00:00"}]
+
+
+@pytest.mark.integration
+def test_coaching_plan_status_endpoint_no_cached_narrative(api_client):
+    resp = api_client.get("/api/overview/coaching-plan-status")
+    assert resp.status_code == 200
+    assert resp.json() == {"cached": False}
+
+
+@pytest.mark.integration
+def test_coaching_plan_status_endpoint_with_cached_narrative(api_client, monkeypatch):
+    import data
+
+    def fake_get_cached_narrative(conn, subject_type, subject_key):
+        assert subject_type == "coaching"
+        assert subject_key == "recommendations"
+        return ("Some cached coaching text.", "2026-01-01T00:00:00")
+
+    monkeypatch.setattr(data, "get_cached_narrative", fake_get_cached_narrative)
+
+    resp = api_client.get("/api/overview/coaching-plan-status")
+    assert resp.status_code == 200
+    assert resp.json() == {"cached": True}
+
+
+@pytest.mark.integration
+def test_engine_status_endpoint_not_connected_by_default(api_client):
+    resp = api_client.get("/api/overview/engine-status")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["connected"] is False
+    assert body["version"] is None
+    assert isinstance(body["app_version"], str) and body["app_version"] != ""
+
+
+@pytest.mark.integration
+def test_engine_status_endpoint_reports_connected_engine(api_client, monkeypatch):
+    import engine_status
+
+    def fake_get_engine_status_summary():
+        return {"connected": True, "version": "17.1"}
+
+    monkeypatch.setattr(engine_status, "get_engine_status_summary", fake_get_engine_status_summary)
+
+    resp = api_client.get("/api/overview/engine-status")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["connected"] is True
+    assert body["version"] == "17.1"
+
+
+@pytest.mark.integration
+def test_win_rate_by_color_endpoint_empty_db(api_client):
+    resp = api_client.get("/api/overview/win-rate-by-color")
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+@pytest.mark.integration
+def test_win_rate_by_color_endpoint_returns_rows(api_client, monkeypatch):
+    import pandas as pd
+    import data
+
+    def fake_get_win_rate_by_color(*args, **kwargs):
+        return pd.DataFrame([
+            {"player_color": "white", "n": 60, "win_pct": 58.0, "draw_pct": 4.0},
+            {"player_color": "black", "n": 40, "win_pct": 50.4, "draw_pct": 3.0},
+        ])
+
+    monkeypatch.setattr(data, "get_win_rate_by_color", fake_get_win_rate_by_color)
+
+    resp = api_client.get("/api/overview/win-rate-by-color")
+    assert resp.status_code == 200
+    assert resp.json() == [
+        {"player_color": "white", "n": 60, "win_pct": 58.0, "draw_pct": 4.0},
+        {"player_color": "black", "n": 40, "win_pct": 50.4, "draw_pct": 3.0},
+    ]
 
 
 @pytest.mark.integration

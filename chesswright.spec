@@ -19,12 +19,19 @@ from PyInstaller.utils.hooks import collect_all
 block_cipher = None
 ROOT = pathlib.Path(".").resolve()
 
-BACKEND_MODULES = [
-    "ingest.py", "worker.py", "annotate.py", "analytics.py", "db.py",
-    "config.py", "chess_utils.py", "migrate.py", "sync.py", "opening_explorer.py",
-    "db_import.py", "joblock.py", "motif.py", "opponent_analysis.py",
-    "sync_chesscom.py", "chesscom_pgn.py", "backfill_batch_eval_cache.py",
-]
+# Computed, not hand-maintained: every root-level .py file except the
+# entry file and its two direct siblings (the only root-level .py files
+# PyInstaller's static Analysis already traces correctly via normal
+# import from desktop_app.py -- everything else here is only reachable
+# at runtime through Streamlit's dynamic, file-path-based launch of
+# dashboard/app.py, per the module docstring above). A hand-maintained
+# list drifted from reality (achievements.py silently missing, a real
+# ModuleNotFoundError on the Overview page in a frozen build) with
+# nothing to catch the drift -- this can't drift because it's not a list.
+BACKEND_DATA_EXCLUDE = {"desktop_app.py", "desktop_preflight.py", "desktop_server.py"}
+BACKEND_MODULES = sorted(
+    p.name for p in ROOT.glob("*.py") if p.name not in BACKEND_DATA_EXCLUDE
+)
 
 datas = [(str(ROOT / "config.yaml"), ".")]
 datas += [(str(ROOT / name), ".") for name in BACKEND_MODULES]
@@ -89,7 +96,8 @@ _fetch_duckdb_ext(ROOT / "build_assets" / "duckdb_extensions")
 hiddenimports = []
 binaries = []
 for pkg in ["streamlit", "chess", "yaml", "duckdb", "pandas", "matplotlib",
-            "anthropic", "requests", "plotly", "keyring", "jinja2", "markdown"]:
+            "anthropic", "requests", "plotly", "keyring", "jinja2", "markdown",
+            "rapidfuzz"]:
     pkg_datas, pkg_binaries, pkg_hiddenimports = collect_all(pkg)
     datas += pkg_datas
     binaries += pkg_binaries

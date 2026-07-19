@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
+import { API_BASE } from '../lib/apiBase'
 import { STATIC_CANDIDATES, type PageCandidate } from '../lib/navCandidates'
 
-const API_BASE = 'http://127.0.0.1:8123'
 
 export interface UsePageCandidatesResult {
   candidates: PageCandidate[]

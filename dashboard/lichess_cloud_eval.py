@@ -30,7 +30,7 @@ import json
 import chess
 import requests
 
-from live_engine import LiveResult
+from engine_status import LiveResult
 
 CLOUD_EVAL_URL = "https://lichess.org/api/cloud-eval"
 # Same politeness convention as sync_chesscom.py's USER_AGENT -- points at

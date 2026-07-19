@@ -10,70 +10,15 @@ requiring the whole page to rerun on every poll -- confirmed pattern from
 analysis_jobs_view.py.
 """
 import pathlib
-import threading
 
 import streamlit as st
 
-import job_runner
+import opponent_prep_runner
 import joblock
-import opponent_analysis
 import data
 import pro_gate
 from _common import get_config, get_connections
 from theme import thin_data_message
-
-_lock = threading.Lock()
-_thread: threading.Thread | None = None
-_state: dict = {"status": "idle"}
-_stop_event: threading.Event | None = None
-
-_STEP_LABELS = {
-    "migrating":  "Setting up database...",
-    "fetching":   "Fetching games from lichess...",
-    "analyzing":  "Running Stockfish analysis...",
-    "annotating": "Annotating moves...",
-    "starting":   "Starting...",
-}
-
-
-def _is_running() -> bool:
-    with _lock:
-        return _thread is not None and _thread.is_alive()
-
-
-def _start(username: str, n_games: int) -> None:
-    global _thread, _state, _stop_event
-    stop = threading.Event()
-
-    def _on_progress(step: str) -> None:
-        with _lock:
-            _state["step"] = step
-
-    def _run() -> None:
-        with _lock:
-            _state.update({"status": "running", "username": username, "step": "starting"})
-        try:
-            opponent_analysis.run_for_opponent(
-                username, n_games, stop_event=stop, on_progress=_on_progress
-            )
-            with _lock:
-                _state["status"] = "done"
-        except Exception as exc:
-            with _lock:
-                _state.update({"status": "error", "error": str(exc)})
-
-    with _lock:
-        _state = {"status": "starting", "username": username, "step": "starting"}
-        _stop_event = stop
-        _thread = threading.Thread(target=_run, daemon=True)
-        _thread.start()
-
-
-def _stop() -> None:
-    with _lock:
-        if _stop_event:
-            _stop_event.set()
-        _state["status"] = "stopping"
 
 
 @st.fragment(run_every="2s")
@@ -87,18 +32,17 @@ def _status_fragment() -> None:
     fragment with a new ID, then the old run_every callback fires against
     the now-gone ID. Keeping all rendering in the fragment avoids this.
     """
-    with _lock:
-        state = dict(_state)
+    state = opponent_prep_runner.get_state()
     status = state.get("status", "idle")
 
     if status in ("starting", "running", "stopping"):
         step = state.get("step", "starting")
-        label = _STEP_LABELS.get(step, step)
+        label = opponent_prep_runner.STEP_LABELS.get(step, step)
         username = state.get("username", "")
         st.info(f"Analysing **{username}**: {label}")
         if status != "stopping":
             if st.button("Stop analysis"):
-                _stop()
+                opponent_prep_runner.stop()
                 st.rerun(scope="fragment")
         return
 
@@ -142,43 +86,21 @@ def _render_scout_report(username: str) -> None:
         if n < 5:
             st.warning(thin_data_message(n, 5))
 
-        form_df = data.get_recent_form(duck_conn)
-        tendencies_df = data.get_opening_tendencies(duck_conn)
+        repertoire_df = data.get_repertoire(duck_conn)
 
-        if not form_df.empty:
+        if not repertoire_df.empty:
             st.subheader("Opening Repertoire")
-            st.caption("Openings with 3+ analysed games, by color.")
-            col1, col2 = st.columns(2)
+            st.caption("Openings with 3+ analysed games, by color. Sorted by blunder rate.")
             col_map = {
                 "opening": "Opening", "n_games": "Games",
-                "score_pct": "Score %", "avg_cpl": "ACPL",
+                "score_pct": "Score %", "avg_cpl": "ACPL", "blunder_pct": "Blunder %",
             }
-            with col1:
-                w = form_df[form_df.color == "white"].drop(columns=["color"])
-                if not w.empty:
-                    st.markdown("**As White**")
-                    st.dataframe(w.rename(columns=col_map), width='stretch',
-                                 hide_index=True)
-            with col2:
-                b = form_df[form_df.color == "black"].drop(columns=["color"])
-                if not b.empty:
-                    st.markdown("**As Black**")
-                    st.dataframe(b.rename(columns=col_map), width='stretch',
-                                 hide_index=True)
-
-        if not tendencies_df.empty:
-            st.subheader("Where They Go Wrong")
-            st.caption("Openings sorted by blunder rate — target these in your prep.")
+            sorted_df = repertoire_df.sort_values("blunder_pct", ascending=False, na_position="last")
             st.dataframe(
-                tendencies_df.rename(columns={
-                    "opening": "Opening", "color": "Color", "n_games": "Games",
-                    "avg_cpl": "ACPL", "blunder_pct": "Blunder %",
-                }),
-                width='stretch',
-                hide_index=True,
+                sorted_df.rename(columns=col_map),
+                width='stretch', hide_index=True,
             )
-
-        if form_df.empty and tendencies_df.empty:
+        else:
             st.info(
                 "Not enough annotated games to compute a report. "
                 "Re-run after more games finish analysis, or try fetching more games."
@@ -208,7 +130,7 @@ def _render_scout_report(username: str) -> None:
                 else:
                     _, main_duck_conn = get_connections()
                     tournament_prep.render_tournament_prep_report(
-                        username, n, form_df, tendencies_df, main_duck_conn
+                        username, n, repertoire_df, main_duck_conn
                     )
     finally:
         for conn in (sqlite_conn, duck_conn):
@@ -233,8 +155,7 @@ def _render_prev_opponents() -> None:
     st.subheader("Previously Analysed Opponents")
     for name in done:
         if st.button(name, key=f"prev_{name}"):
-            with _lock:
-                _state.update({"status": "done", "username": name})
+            opponent_prep_runner.load_existing(name)
             st.rerun(scope="fragment")
 
 
@@ -261,21 +182,11 @@ def render() -> None:
         if not username:
             st.warning("Enter a lichess username.")
         else:
-            lock = joblock.status()
-            if _is_running():
-                st.warning("An opponent analysis is already running.")
-            elif job_runner.is_running():
-                st.warning(
-                    "Your own analysis batch is running. "
-                    "Stop it from Analysis Jobs before starting opponent prep."
-                )
-            elif lock is not None and lock.alive:
-                st.warning(
-                    f"An analysis process (PID {lock.pid}) is running outside this app. "
-                    "Stop it before starting opponent prep."
-                )
+            try:
+                opponent_prep_runner.start(username, n_games)
+            except (RuntimeError, joblock.LockHeldError) as e:
+                st.warning(str(e))
             else:
-                _start(username, n_games)
                 st.rerun()
 
     # ---------- Live status + results (fragment handles all states) ----------

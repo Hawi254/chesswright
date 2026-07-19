@@ -76,6 +76,16 @@ class TestSchemaColumns:
             "SELECT * FROM sqlite_master WHERE type='index'").fetchall()}
         assert any("queue" in idx for idx in indexes)
 
+    def test_game_annotations_has_cascade_fk(self, migrated_db):
+        sql = migrated_db.execute(
+            "SELECT sql FROM sqlite_master WHERE name='game_annotations'").fetchone()[0]
+        assert "ON DELETE CASCADE" in sql
+
+    def test_game_annotations_columns(self, migrated_db):
+        cols = {r[1] for r in migrated_db.execute("PRAGMA table_info(game_annotations)").fetchall()}
+        assert cols == {"id", "game_id", "ply", "glyph", "comment",
+                        "ai_comment", "ai_model", "generated_at"}
+
 
 @pytest.mark.integration
 class TestForeignKeyEnforcement:
@@ -106,3 +116,34 @@ class TestForeignKeyEnforcement:
         row = migrated_db.execute(
             "SELECT id FROM variation_annotations WHERE id='ann1'").fetchone()
         assert row is None, "Annotation should have been cascade-deleted"
+
+    def test_game_annotation_cascade_delete(self, migrated_db):
+        migrated_db.execute("PRAGMA foreign_keys = ON")
+        migrated_db.execute(
+            "INSERT INTO games (id, white, black) VALUES ('gtest3', 'W', 'B')")
+        migrated_db.execute("""
+            INSERT INTO game_annotations (id, game_id, ply, glyph)
+            VALUES ('gann1', 'gtest3', 4, '!')
+        """)
+        migrated_db.commit()
+        migrated_db.execute("DELETE FROM games WHERE id='gtest3'")
+        migrated_db.commit()
+        row = migrated_db.execute(
+            "SELECT id FROM game_annotations WHERE id='gann1'").fetchone()
+        assert row is None, "Annotation should have been cascade-deleted"
+
+    def test_game_annotation_unique_game_id_ply(self, migrated_db):
+        migrated_db.execute("PRAGMA foreign_keys = ON")
+        migrated_db.execute(
+            "INSERT INTO games (id, white, black) VALUES ('gtest4', 'W', 'B')")
+        migrated_db.execute("""
+            INSERT INTO game_annotations (id, game_id, ply, glyph)
+            VALUES ('gann2', 'gtest4', 4, '!')
+        """)
+        migrated_db.commit()
+        with pytest.raises(Exception):
+            migrated_db.execute("""
+                INSERT INTO game_annotations (id, game_id, ply, glyph)
+                VALUES ('gann3', 'gtest4', 4, '?')
+            """)
+            migrated_db.commit()

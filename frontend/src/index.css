@@ -8,8 +8,71 @@
   --color-negative: #B0584F;
   --color-text: #E8E6E1;
   --color-text-muted: rgb(232 230 225 / 0.6);
+  --font-condensed: "Archivo Narrow", "Arial Narrow", sans-serif;
+  --font-cw-serif: Georgia, "Iowan Old Style", serif;
 }
 
 body {
   margin: 0;
+}
+
+/* Engine Room identity, promoted app-wide (2026-07-13) so the shell
+   (header/sidebar) reads as the same product as Overview instead of a
+   generic dashboard wrapping one well-designed page. Originally scoped
+   to .cw-overview only; kept as :root custom properties (not the
+   @theme block above) so existing Overview components' var(--cw-*)
+   references need no changes. THEME (lib/theme.ts) intentionally still
+   mirrors the older dashboard/theme.py palette for default chart-color
+   fallbacks on any page that doesn't pass explicit chart colors -- that
+   contract is separate and unaffected by this. */
+:root {
+  --cw-canvas: #0B0F14;
+  --cw-panel: #131A22;
+  --cw-panel-2: #0F141B;
+  --cw-copper: #E08A3C;
+  --cw-cyan: #4FB8C4;
+  --cw-text: #ECEEF0;
+  --cw-muted: rgb(236 238 240 / 0.6);
+  --cw-line: #232B37;
+}
+
+/* Overview-only extras layered on top of the app-wide tokens above --
+   ported from the shipped Streamlit redesign (dashboard/overview_view.py's
+   OVERVIEW_CSS). See
+   docs/superpowers/specs/2026-07-13-overview-react-engine-room-design.md. */
+.cw-overview {
+  --cw-line-soft: #1a212b;
+  background-color: var(--cw-canvas);
+}
+
+/* Win-rate "eval bar" rise, ported from the Streamlit OVERVIEW_CSS's
+   cw-ov-rail-rise -- see docs/superpowers/specs/2026-07-13-overview-react-engine-room-design.md. */
+@keyframes cw-rail-rise {
+  from { height: 50%; }
+  to { height: var(--cw-rail-target, 50%); }
+}
+.cw-rail-fill {
+  animation: cw-rail-rise 1.4s cubic-bezier(0.16, 0.9, 0.25, 1) 0.1s both;
+}
+
+/* One orchestrated load-in for the Overview zones -- see OverviewPage.tsx. */
+@keyframes cw-zone-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.cw-zone-stagger {
+  animation: cw-zone-in 0.4s ease-out both;
+}
+
+.settings-field-highlight {
+  transition: background-color 1.4s ease-out;
+  background-color: color-mix(in srgb, var(--cw-copper) 20%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cw-rail-fill,
+  .cw-zone-stagger {
+    animation-duration: 0.01ms !important;
+    animation-delay: 0s !important;
+  }
 }

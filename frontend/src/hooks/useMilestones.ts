@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
+import { API_BASE } from '../lib/apiBase'
 
-const API_BASE = 'http://127.0.0.1:8123'
 
 export interface Milestone {
   achievement_id: string
