@@ -1,4 +1,6 @@
-""""Where Your Points Go" page queries -- expected-points decomposition.
+"""Points ledger: the win-probability-curve decomposition and the
+Points-page aggregation queries built on top of it -- one of two topic
+modules split out of the former dashboard/data/points.py.
 
 Every fully analyzed game already stores a complete win-probability curve
 (win_prob_before on every move, mover's POV -- flipped to the player's
@@ -32,9 +34,9 @@ a single @st.cache_data'd call, no materialized cache needed.
 import pandas as pd
 
 from _common import get_config
+from confidence import confidence_tier, default_thresholds
 
-from ._shared import TIME_PRESSURE_BUCKETS
-from .game_endings import MATE_DISTANCE_BUCKETS
+from .._shared import TIME_PRESSURE_BUCKETS
 
 WINNING_WP = 0.70          # genuinely winning -- conversion duty begins
 LOST_WP = 0.25             # position lost
@@ -200,7 +202,7 @@ def summarize_buckets(classified):
     return out
 
 
-def monthly_points(classified, min_games=3):
+def monthly_points(classified, min_games: int | None = None, config_path=None):
     """Per month: actual score vs. score with leaks recovered, both as
     raw point sums and per-game percentages (the chart plots the
     percentages -- monthly game volume varies by two orders of magnitude
@@ -208,7 +210,11 @@ def monthly_points(classified, min_games=3):
     a real datetime: the 'YYYY.MM' period strings LOOK numeric to plotly,
     which coerces them onto a fractional-year continuous axis (confirmed
     on the rendered chart, axis read 2018..2026). Months under min_games
-    are dropped -- same single-game-noise guard as get_progress_by_month."""
+    are dropped -- same single-game-noise guard as get_progress_by_month.
+    min_games defaults to analytics.min_sample_size when not passed
+    explicitly."""
+    if min_games is None:
+        min_games = get_config(config_path)["analytics"]["min_sample_size"]
     df = classified[classified.period.notna() & (classified.period != "")]
     if df.empty:
         return pd.DataFrame(columns=["period", "month", "n_games", "actual",
@@ -219,7 +225,10 @@ def monthly_points(classified, min_games=3):
            .reset_index()
            .sort_values("period", ignore_index=True))
     out["potential"] = out.actual + out.leaked
-    out = out[out.n_games >= min_games].drop(columns="leaked").reset_index(drop=True)
+    month_thresholds = default_thresholds(min_games)
+    out = out[out.n_games.map(
+        lambda n: confidence_tier(n, month_thresholds) != "insufficient")]
+    out = out.drop(columns="leaked").reset_index(drop=True)
     out["actual_pct"] = 100.0 * out.actual / out.n_games
     out["potential_pct"] = 100.0 * out.potential / out.n_games
     out["month"] = pd.to_datetime(out.period, format="%Y.%m")
@@ -245,153 +254,3 @@ def conversion_breakdown(classified, dim):
            .reset_index(names=dim))
     out["n_games"] = out.n_games.astype(int)
     return out
-
-
-def get_failed_conversion_causes(duck_conn, classified, config_path=None):
-    """Classifies every failed-conversion game by why the conversion
-    likely failed, and (for the hung-piece bucket) which piece type
-    hung -- the failed-conversion counterpart to
-    game_endings.get_resignation_loss_causes, restricted to the window
-    AFTER the position first became winning (first_winning_ply), since a
-    hang/blown-mate/clock-crunch BEFORE that point isn't what turned a
-    winning position into a non-win.
-
-    Unlike resignation causes, there is no not_analyzed bucket here: the
-    points ledger only ever contains analysis_status='done' games (see
-    get_points_ledger), so every game already has as much engine
-    coverage as it will ever get -- if no move-level signal fires, that
-    is a real "other" (a gradual give-back with no single clean cause),
-    not a backlog gap. Confirmed live (2026-07-07): the ~200-game
-    failed-conversion population has zero overlap with the small set of
-    legacy 'done' games that predate cpl/classification entirely.
-
-    A game is classified, in priority order, using only moves at or
-    after first_winning_ply:
-      1. "hung_piece" -- the same hanging-piece definition
-         tactical.get_hallucination_blunders and
-         game_endings.get_resignation_loss_causes use (a blunder whose
-         opponent's IMMEDIATE next move recaptures on the same square
-         for >= hallucination_min_material_delta), closest to the game's
-         end among qualifying moves.
-      2. "blown_mate" -- the same definition tactical.get_blown_mates
-         uses (a forced mate was on the board -- eval_mate > 0 before
-         the player's own move -- and the player deviated from the
-         engine's best move), closest to the end.
-      3. "time_pressure" -- no hang or blown mate, but the player's own
-         clock was already in TIME_PRESSURE_BUCKETS' "critical" band
-         (<5% of base time) at their last recorded move in this window.
-         No opponent-lead condition here (unlike the resignation
-         time-pressure check) -- converting precisely under a ticking
-         clock is a real mechanism on its own, it doesn't need the
-         opponent to also be short.
-      4. "other" -- none of the above fired; a genuine gradual
-         give-back.
-
-    Takes the already-classified ledger (classify_points_ledger's
-    output) rather than re-fetching -- both first_winning_ply (a
-    ply-level threshold per game) and the failed_conversion game_id list
-    are already sitting in that frame, computed once, for free, in
-    get_points_ledger's own wp-curve scan. Passed into this query as a
-    VALUES list (small: ~200 rows on the real database) rather than a
-    second SQL derivation of "when did this game become winning", so
-    there is exactly one implementation of the WINNING_WP threshold to
-    keep in sync.
-
-    Returns (reason_df, piece_df, mate_df) -- same shapes as
-    get_resignation_loss_causes: reason_df (reason, n, pct -- pct of all
-    failed-conversion games), piece_df (hung_piece, n, pct -- pct of
-    hung_piece failed conversions only), mate_df (bucket, n, pct -- pct
-    of blown_mate failed conversions only, bucketed by
-    game_endings.MATE_DISTANCE_BUCKETS). All three empty (not None) when
-    there are no failed-conversion games yet.
-    """
-    cfg = get_config(config_path)
-    min_material_delta = cfg["analytics"]["hallucination_min_material_delta"]
-    critical_fraction = TIME_PRESSURE_BUCKETS[0][2]  # 0.05, "critical (<5%)"
-
-    empty_reason = pd.DataFrame(columns=["reason", "n", "pct"])
-    empty_piece = pd.DataFrame(columns=["hung_piece", "n", "pct"])
-    empty_mate = pd.DataFrame(columns=["bucket", "n", "pct"])
-
-    conv = classified[classified.bucket == "failed_conversion"]
-    if conv.empty:
-        return empty_reason, empty_piece, empty_mate
-
-    pairs = list(zip(conv.game_id, conv.first_winning_ply.astype(int)))
-    values_sql = ", ".join(["(?, ?)"] * len(pairs))
-    params = [v for pair in pairs for v in pair]
-
-    df = duck_conn.execute(f"""
-        WITH fw(game_id, first_winning_ply) AS (VALUES {values_sql}),
-        last_hang AS (
-            SELECT fw.game_id, m.piece AS hung_piece,
-                   ROW_NUMBER() OVER (PARTITION BY fw.game_id ORDER BY m.ply DESC) AS rn
-            FROM db.moves m
-            JOIN db.moves m2 ON m2.game_id = m.game_id AND m2.ply = m.ply + 1
-            JOIN fw ON fw.game_id = m.game_id
-            WHERE m.is_player_move = 1 AND m.classification = 'blunder' AND m.cpl IS NOT NULL
-              AND m.ply >= fw.first_winning_ply
-              AND m2.is_capture = 1 AND m2.to_square = m.to_square
-              AND m2.material_delta >= {min_material_delta}
-            QUALIFY rn = 1
-        ),
-        last_blown_mate AS (
-            SELECT fw.game_id, m.eval_mate,
-                   ROW_NUMBER() OVER (PARTITION BY fw.game_id ORDER BY m.ply DESC) AS rn
-            FROM db.moves m
-            JOIN fw ON fw.game_id = m.game_id
-            WHERE m.is_player_move = 1 AND m.eval_mate IS NOT NULL AND m.eval_mate > 0
-              AND m.san != m.best_move_san
-              AND m.ply >= fw.first_winning_ply
-            QUALIFY rn = 1
-        ),
-        last_player_clock AS (
-            SELECT fw.game_id, m.clock_seconds, g.base_seconds,
-                   ROW_NUMBER() OVER (PARTITION BY fw.game_id ORDER BY m.ply DESC) AS rn
-            FROM db.moves m
-            JOIN fw ON fw.game_id = m.game_id
-            JOIN db.games g ON g.id = m.game_id
-            WHERE m.is_player_move = 1 AND m.clock_seconds IS NOT NULL
-              AND m.ply >= fw.first_winning_ply
-              AND g.base_seconds IS NOT NULL AND g.base_seconds > 0
-            QUALIFY rn = 1
-        )
-        SELECT fw.game_id,
-               CASE WHEN h.hung_piece IS NOT NULL THEN 'hung_piece'
-                    WHEN bm.game_id IS NOT NULL THEN 'blown_mate'
-                    WHEN pc.game_id IS NOT NULL
-                         AND CAST(pc.clock_seconds AS DOUBLE) / pc.base_seconds < {critical_fraction}
-                         THEN 'time_pressure'
-                    ELSE 'other' END AS reason,
-               h.hung_piece, bm.eval_mate
-        FROM fw
-        LEFT JOIN last_hang h ON h.game_id = fw.game_id
-        LEFT JOIN last_blown_mate bm ON bm.game_id = fw.game_id
-        LEFT JOIN last_player_clock pc ON pc.game_id = fw.game_id
-    """, params).fetchdf()
-
-    if df.empty:
-        return empty_reason, empty_piece, empty_mate
-
-    total = len(df)
-    reason_df = df.groupby("reason").size().reindex(
-        ["hung_piece", "blown_mate", "time_pressure", "other"], fill_value=0).reset_index(name="n")
-    reason_df["pct"] = 100.0 * reason_df.n / total
-
-    hung = df[df.reason == "hung_piece"]
-    n_hung = len(hung)
-    piece_df = hung.groupby("hung_piece").size().reset_index(name="n")
-    piece_df["pct"] = 100.0 * piece_df.n / n_hung if n_hung else 0.0
-    piece_df = piece_df.sort_values("n", ascending=False).reset_index(drop=True)
-
-    blown = df[df.reason == "blown_mate"]
-    n_blown = len(blown)
-    moves_to_mate = blown.eval_mate.abs()
-    mate_rows = []
-    for label, lo, hi in MATE_DISTANCE_BUCKETS:
-        n = int(((moves_to_mate >= lo) & (moves_to_mate < hi)).sum())
-        if n:
-            mate_rows.append((label, n, 100.0 * n / n_blown if n_blown else 0.0))
-    mate_df = pd.DataFrame(mate_rows, columns=["bucket", "n", "pct"])
-
-    return reason_df, piece_df, mate_df

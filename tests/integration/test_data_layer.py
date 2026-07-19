@@ -78,6 +78,87 @@ class TestOverviewData:
         finally:
             duck.close(); disk.close(); os.unlink(tmp)
 
+    def test_get_rating_snapshot_on_empty_db(self, migrated_db):
+        from data.overview import get_rating_snapshot
+        duck, disk, tmp = _duck_from_conn(migrated_db)
+        try:
+            result = get_rating_snapshot(duck)
+            assert result == {"current_rating": None, "peak_rating": None}
+        finally:
+            duck.close(); disk.close(); os.unlink(tmp)
+
+    def test_get_rating_snapshot_returns_most_recent_and_peak(self, migrated_db):
+        migrated_db.execute(
+            "INSERT INTO games (id, player_rating, utc_date, utc_time, outcome_for_player) "
+            "VALUES ('g1', 1500, '2026.01.01', '10:00:00', 'win')")
+        migrated_db.execute(
+            "INSERT INTO games (id, player_rating, utc_date, utc_time, outcome_for_player) "
+            "VALUES ('g2', 1650, '2026.03.01', '10:00:00', 'win')")
+        migrated_db.execute(
+            "INSERT INTO games (id, player_rating, utc_date, utc_time, outcome_for_player) "
+            "VALUES ('g3', 1600, '2026.06.01', '10:00:00', 'loss')")
+        migrated_db.commit()
+        from data.overview import get_rating_snapshot
+        duck, disk, tmp = _duck_from_conn(migrated_db)
+        try:
+            result = get_rating_snapshot(duck)
+            assert result == {"current_rating": 1600, "peak_rating": 1650}
+        finally:
+            duck.close(); disk.close(); os.unlink(tmp)
+
+    def test_get_current_streak_on_empty_db(self, migrated_db):
+        from data.overview import get_current_streak
+        duck, disk, tmp = _duck_from_conn(migrated_db)
+        try:
+            result = get_current_streak(duck)
+            assert result == {"outcome": None, "length": 0}
+        finally:
+            duck.close(); disk.close(); os.unlink(tmp)
+
+    def test_get_current_streak_counts_consecutive_same_outcome(self, migrated_db):
+        rows = [
+            ("g1", "win", "2026.01.01"),
+            ("g2", "loss", "2026.01.02"),
+            ("g3", "win", "2026.01.03"),
+            ("g4", "win", "2026.01.04"),
+            ("g5", "win", "2026.01.05"),
+        ]
+        for game_id, outcome, date in rows:
+            migrated_db.execute(
+                "INSERT INTO games (id, outcome_for_player, utc_date, utc_time) "
+                "VALUES (?, ?, ?, '10:00:00')", (game_id, outcome, date))
+        migrated_db.commit()
+        from data.overview import get_current_streak
+        duck, disk, tmp = _duck_from_conn(migrated_db)
+        try:
+            result = get_current_streak(duck)
+            assert result == {"outcome": "win", "length": 3}
+        finally:
+            duck.close(); disk.close(); os.unlink(tmp)
+
+    def test_get_recent_form_returns_last_n_games_newest_first(self, migrated_db):
+        rows = [
+            ("g1", "win", "Alice", "2026.01.01", 8),
+            ("g2", "loss", "Bob", "2026.01.02", -6),
+            ("g3", "draw", "Carol", "2026.01.03", 1),
+        ]
+        for game_id, outcome, opponent, date, delta in rows:
+            migrated_db.execute(
+                "INSERT INTO games (id, outcome_for_player, opponent_name, utc_date, utc_time, "
+                "player_rating_change) VALUES (?, ?, ?, ?, '10:00:00', ?)",
+                (game_id, outcome, opponent, date, delta))
+        migrated_db.commit()
+        from data.overview import get_recent_form_snapshot
+        duck, disk, tmp = _duck_from_conn(migrated_db)
+        try:
+            df = get_recent_form_snapshot(duck, n=2)
+            assert len(df) == 2
+            assert df.iloc[0]["opponent_name"] == "Carol"
+            assert df.iloc[0]["player_rating_change"] == 1
+            assert df.iloc[1]["opponent_name"] == "Bob"
+        finally:
+            duck.close(); disk.close(); os.unlink(tmp)
+
 
 @pytest.mark.integration
 class TestGameEndingsData:
@@ -176,6 +257,23 @@ class TestOpeningsData:
         try:
             df = get_openings_table(duck, migrated_db, min_games=1)
             assert df is not None
+        finally:
+            duck.close(); disk.close(); os.unlink(tmp)
+
+    def test_get_openings_table_uses_config_min_sample_size(self, migrated_db, monkeypatch):
+        from data import openings as openings_module
+        monkeypatch.setattr(
+            openings_module.config, "load_config",
+            lambda *a, **kw: {"analytics": {"min_sample_size": 1}})
+        migrated_db.execute(
+            "INSERT INTO games (id, white, black, outcome_for_player, "
+            "opening_family, player_color) VALUES "
+            "('g1', 'W', 'B', 'win', 'Sicilian', 'white')")
+        migrated_db.commit()
+        duck, disk, tmp = _duck_from_conn(migrated_db)
+        try:
+            df = openings_module.get_openings_table(duck, migrated_db)
+            assert "Sicilian" in df.opening_family.values  # 1 game qualifies at min_sample_size=1
         finally:
             duck.close(); disk.close(); os.unlink(tmp)
 
@@ -418,6 +516,214 @@ class TestMatchupsData:
         finally:
             duck.close(); disk.close(); os.unlink(tmp)
 
+    def test_get_opponent_profile_on_empty_db(self, migrated_db):
+        from data.matchups import get_opponent_profile
+        duck, disk, tmp = _duck_from_conn(migrated_db)
+        try:
+            profile = get_opponent_profile(duck, "NoOne")
+            assert profile["n_games"] == 0
+            assert profile["openings"].empty
+            assert profile["position"].empty
+            assert profile["castling"].empty
+            assert profile["action_side"].empty
+            assert profile["clock"].empty
+        finally:
+            duck.close(); disk.close(); os.unlink(tmp)
+
+    def _seed_opponent_game(self, conn, game_id, opponent_name, opening_family, outcome,
+                            base_seconds, castle_white_sq, castle_black_sq, capture_square,
+                            fen_at_checkpoint, cpl, classification, clock_seconds):
+        """One game exercising all 5 opponent-profile axes at once: an
+        opening_family + outcome/cpl row (openings axis), a ply=24
+        (real config.yaml middlegame_ply) fen_before row (position axis),
+        one castle move per side (castling axis), one capture (action-side
+        axis), and clock_seconds on the same is_player_move cpl row
+        (clock axis)."""
+        conn.execute(
+            "INSERT INTO games (id, white, black, opponent_name, opening_family, "
+            "outcome_for_player, base_seconds) VALUES (?, 'W', 'B', ?, ?, ?, ?)",
+            (game_id, opponent_name, opening_family, outcome, base_seconds))
+        conn.execute(
+            "INSERT INTO moves (game_id, ply, move_number, color, san, is_castle, to_square) "
+            "VALUES (?, 1, 1, 'w', 'O-O', 1, ?)", (game_id, castle_white_sq))
+        conn.execute(
+            "INSERT INTO moves (game_id, ply, move_number, color, san, is_castle, to_square) "
+            "VALUES (?, 2, 1, 'b', 'O-O', 1, ?)", (game_id, castle_black_sq))
+        conn.execute(
+            "INSERT INTO moves (game_id, ply, move_number, color, san, is_capture, to_square) "
+            "VALUES (?, 3, 2, 'w', 'Nxc6', 1, ?)", (game_id, capture_square))
+        conn.execute(
+            "INSERT INTO moves (game_id, ply, move_number, color, san, fen_before) "
+            "VALUES (?, 24, 12, 'w', 'Nf3', ?)", (game_id, fen_at_checkpoint))
+        conn.execute(
+            "INSERT INTO moves (game_id, ply, move_number, color, san, is_player_move, "
+            "cpl, classification, clock_seconds) VALUES (?, 30, 15, 'w', 'Qd2', 1, ?, ?, ?)",
+            (game_id, cpl, classification, clock_seconds))
+        conn.commit()
+
+    def test_get_opponent_profile_seeded(self, migrated_db):
+        """Two games vs. 'Foe' (different openings, one same-side/kingside-
+        heavy win, one opposite-side/queenside-heavy loss) plus a decoy
+        game vs. a different opponent using the SAME opening_family/FEN --
+        confirms the WHERE opponent_name filter, not just the underlying
+        groupby logic (already covered for the whole-DB case by
+        TestPositionCharacterData)."""
+        from data.matchups import get_opponent_profile
+        CLOSED_FEN = "rnbqkbnr/ppp2ppp/4p3/3pP3/3P4/8/PPP2PPP/RNBQKBNR b KQkq - 0 3"
+        OPEN_FEN = "4k3/8/8/8/8/8/8/4K3 w - - 0 1"
+        # g1: same-side castling (kingside/kingside), one kingside capture
+        # (e5) -> kingside-heavy, closed position, comfortable clock (0.5),
+        # no blunder.
+        self._seed_opponent_game(
+            migrated_db, "g1", "Foe", "Sicilian Defense", "win", 300,
+            "g1", "g8", "e5", CLOSED_FEN, 20, "good", 150)
+        # g2: opposite-side castling (queenside/kingside), two queenside
+        # captures -> queenside-heavy, open position, critical clock
+        # (0.033), blunder.
+        self._seed_opponent_game(
+            migrated_db, "g2", "Foe", "French Defense", "loss", 300,
+            "c1", "g8", "b6", OPEN_FEN, 80, "blunder", 10)
+        # g3: decoy, different opponent, same opening/FEN shape as g1 --
+        # must be excluded from every 'Foe' axis below.
+        self._seed_opponent_game(
+            migrated_db, "g3", "Other", "Sicilian Defense", "win", 300,
+            "g1", "g8", "e5", CLOSED_FEN, 20, "good", 150)
+        duck, disk, tmp = _duck_from_conn(migrated_db)
+        try:
+            profile = get_opponent_profile(duck, "Foe")
+            assert profile["n_games"] == 2
+
+            openings = {row.opening_family: (row.n_games, row.win_pct, row.acpl)
+                        for row in profile["openings"].itertuples()}
+            assert openings["Sicilian Defense"] == (1, 100.0, 20.0)
+            assert openings["French Defense"] == (1, 0.0, 80.0)
+
+            position = {row.bucket: (row.n_games, row.win_pct)
+                        for row in profile["position"].itertuples()}
+            assert position["closed"] == (1, 100.0)
+            assert position["open"] == (1, 0.0)
+
+            castling = {row.castling_config: (row.n_games, row.win_pct)
+                        for row in profile["castling"].itertuples()}
+            assert castling["same-side"] == (1, 100.0)
+            assert castling["opposite-side"] == (1, 0.0)
+
+            action_side = {row.action_side: (row.n_games, row.win_pct)
+                           for row in profile["action_side"].itertuples()}
+            assert action_side["kingside-heavy"] == (1, 100.0)
+            assert action_side["queenside-heavy"] == (1, 0.0)
+
+            clock = {row.bucket: (row.n_moves, row.acpl, row.blunder_rate)
+                     for row in profile["clock"].itertuples()}
+            assert clock["comfortable (30-60%)"] == (1, 20.0, 0.0)
+            assert clock["critical (<5%)"] == (1, 80.0, 100.0)
+        finally:
+            duck.close(); disk.close(); os.unlink(tmp)
+
+    def test_get_nemesis_opponents_uses_config_min_sample_size(self, migrated_db, monkeypatch):
+        from data import matchups as matchups_module
+        monkeypatch.setattr(
+            matchups_module, "get_config",
+            lambda config_path=None: {"analytics": {"min_sample_size": 1}})
+        migrated_db.execute(
+            "INSERT INTO games (id, white, black, outcome_for_player, "
+            "opponent_name, rating_diff) VALUES ('g1', 'W', 'B', 'loss', 'Bob', 0)")
+        migrated_db.commit()
+        duck, disk, tmp = _duck_from_conn(migrated_db)
+        try:
+            df = matchups_module.get_nemesis_opponents(duck)
+            assert "Bob" in df.opponent_name.values  # 1 game qualifies at min_sample_size=1
+        finally:
+            duck.close(); disk.close(); os.unlink(tmp)
+
+    def test_get_opponent_swindle_rate(self):
+        """Pure pandas, no DB -- covers the WHERE-opponent filter, the
+        loss-only filter, and the missed_swindle share, plus the
+        None-not-zero convention when there are no losses at all."""
+        import pandas as pd
+        from data.matchups import get_opponent_swindle_rate
+        ledger = pd.DataFrame([
+            {"opponent_name": "Foe", "outcome_for_player": "loss", "bucket": "missed_swindle"},
+            {"opponent_name": "Foe", "outcome_for_player": "loss", "bucket": "none"},
+            {"opponent_name": "Foe", "outcome_for_player": "win", "bucket": "none"},
+            {"opponent_name": "Other", "outcome_for_player": "loss", "bucket": "missed_swindle"},
+        ])
+        result = get_opponent_swindle_rate(ledger, "Foe")
+        assert result == {"n_losses": 2, "n_missed_swindle": 1, "swindle_rate_pct": 50.0}
+
+        no_loss_result = get_opponent_swindle_rate(ledger, "NoOne")
+        assert no_loss_result == {"n_losses": 0, "n_missed_swindle": 0, "swindle_rate_pct": None}
+
+
+@pytest.mark.integration
+class TestPrepData:
+    def test_get_recent_form_on_empty_db(self, migrated_db):
+        from data.prep import get_recent_form
+        duck, disk, tmp = _duck_from_conn(migrated_db)
+        try:
+            df = get_recent_form(duck)
+            assert df.empty
+        finally:
+            duck.close(); disk.close(); os.unlink(tmp)
+
+    def test_get_recent_form_n_games_and_score_pct_not_move_count_weighted(self, migrated_db):
+        """Regression test for a real bug (docs/implementation_roadmap.md
+        §27 Decision 4's tournament-prep build): the original query did
+        COUNT(*)/AVG(CASE...) directly over a LEFT JOIN to moves, so a
+        game's outcome and its own existence got counted once per
+        analysed player move instead of once per game. Three games, same
+        opponent color/opening, DELIBERATELY different move counts (1, 3,
+        2) so n_games and score_pct only come out right if the fix
+        aggregates games and moves at separate grains before combining."""
+        from data.prep import get_recent_form
+        conn = migrated_db
+        conn.execute(
+            "INSERT INTO games (id, white, black, player_color, opening_family, "
+            "outcome_for_player, analysis_status) VALUES "
+            "('g1','W','B','white','Italian Game','win','done')")
+        conn.execute(
+            "INSERT INTO moves (game_id, ply, move_number, color, san, "
+            "is_player_move, cpl) VALUES ('g1', 1, 1, 'w', 'e4', 1, 10)")
+
+        conn.execute(
+            "INSERT INTO games (id, white, black, player_color, opening_family, "
+            "outcome_for_player, analysis_status) VALUES "
+            "('g2','W','B','white','Italian Game','loss','done')")
+        for ply, cpl in [(1, 20), (3, 30), (5, 40)]:
+            conn.execute(
+                "INSERT INTO moves (game_id, ply, move_number, color, san, "
+                "is_player_move, cpl) VALUES ('g2', ?, ?, 'w', 'e4', 1, ?)",
+                (ply, (ply + 1) // 2, cpl))
+
+        conn.execute(
+            "INSERT INTO games (id, white, black, player_color, opening_family, "
+            "outcome_for_player, analysis_status) VALUES "
+            "('g3','W','B','white','Italian Game','win','done')")
+        for ply, cpl in [(1, 5), (3, 15)]:
+            conn.execute(
+                "INSERT INTO moves (game_id, ply, move_number, color, san, "
+                "is_player_move, cpl) VALUES ('g3', ?, ?, 'w', 'e4', 1, ?)",
+                (ply, (ply + 1) // 2, cpl))
+        conn.commit()
+
+        duck, disk, tmp = _duck_from_conn(conn)
+        try:
+            df = get_recent_form(duck)
+            assert len(df) == 1
+            row = df.iloc[0]
+            # 3 games, NOT 6 (1+3+2 move rows) -- the pre-fix bug's exact
+            # symptom (295 "games" for an opponent with 11 real games,
+            # found live during tournament-prep verification).
+            assert row.n_games == 3
+            # Game-weighted (win, loss, win) = 200/3 = 66.7%, not the
+            # move-weighted 50.0% the pre-fix query produced (1 win-row +
+            # 3 loss-rows + 2 win-rows -> 3/6).
+            assert row.score_pct == pytest.approx(66.7, abs=0.05)
+            # avg_cpl is legitimately move-weighted (10+20+30+40+5+15)/6
+            assert row.avg_cpl == pytest.approx(20.0, abs=0.05)
+        finally:
+            duck.close(); disk.close(); os.unlink(tmp)
+
 
 @pytest.mark.integration
 class TestTacticalData:
@@ -515,6 +821,50 @@ class TestPatternsData:
             assert rating_pivot.loc[0, 12] == pytest.approx(25.0)   # avg(100, -50)
             assert win_pivot.loc[1, 18] == pytest.approx(100.0)
             assert rating_pivot.loc[1, 18] == pytest.approx(300.0)
+        finally:
+            duck.close(); disk.close(); os.unlink(tmp)
+
+    def test_get_day_hour_heatmap_applies_utc_offset(self, migrated_db, monkeypatch):
+        """hour_utc=23 with a +2 offset lands in hour_local=1 (wraps past
+        midnight) -- shifts hour only, leaves day_of_week alone, matching
+        this app's existing CLI report_by_hour_bucket convention
+        (analytics.py) rather than inventing a new cross-adjustment."""
+        from data import patterns as patterns_module
+        from data.patterns import time_and_session as time_and_session_module
+        migrated_db.execute(
+            "INSERT INTO games (id, white, black, outcome_for_player, "
+            "day_of_week, hour_utc, rating_diff) VALUES ('g1', 'W', 'B', 'win', 3, 23, 0)")
+        migrated_db.commit()
+        duck, disk, tmp = _duck_from_conn(migrated_db)
+        monkeypatch.setattr(
+            time_and_session_module, "get_config",
+            lambda config_path=None: {"analytics": {"utc_offset_hours": 2}})
+        try:
+            win_pivot, _ = patterns_module.get_day_hour_heatmap(duck)
+            assert 1 in win_pivot.columns
+            assert 23 not in win_pivot.columns
+        finally:
+            duck.close(); disk.close(); os.unlink(tmp)
+
+    def test_get_event_name_breakdown_uses_config_min_sample_size(self, migrated_db, monkeypatch):
+        from data import patterns as patterns_module
+        from data.patterns import events as events_module
+        monkeypatch.setattr(
+            events_module, "get_config",
+            lambda config_path=None: {"analytics": {"min_sample_size": 1}})
+        migrated_db.execute(
+            "INSERT INTO games (id, white, black, outcome_for_player, event) "
+            "VALUES ('g1', 'W', 'B', 'win', 'Weekly Rapid Arena')")
+        # _event_perf_rows INNER JOINs moves -- a game needs at least one
+        # move row to appear in that scan at all.
+        migrated_db.execute(
+            "INSERT INTO moves (game_id, ply, move_number, color, san) "
+            "VALUES ('g1', 1, 1, 'w', 'e4')")
+        migrated_db.commit()
+        duck, disk, tmp = _duck_from_conn(migrated_db)
+        try:
+            df = patterns_module.get_event_name_breakdown(duck)
+            assert "Weekly Rapid Arena" in df.event.values  # 1 game qualifies at min_sample_size=1
         finally:
             duck.close(); disk.close(); os.unlink(tmp)
 
@@ -741,10 +1091,10 @@ class TestPointsData:
         """moves: list of dicts, one per ply, with whichever of
         win_prob_before/classification/cpl/eval_mate/best_move_san/
         piece/to_square/is_capture/material_delta/clock_seconds/
-        is_player_move (color-derived default: white=player, matching
-        this game's player_color='white') the scenario needs -- unlisted
-        fields default to NULL/0, matching a real ingest row that never
-        reached a given analysis stage."""
+        fen_before/is_player_move (color-derived default: white=player,
+        matching this game's player_color='white') the scenario needs --
+        unlisted fields default to NULL/0, matching a real ingest row
+        that never reached a given analysis stage."""
         conn.execute("""
             INSERT INTO games (id, site, white, black, result,
                 outcome_for_player, analysis_status, utc_date,
@@ -762,13 +1112,13 @@ class TestPointsData:
                 INSERT INTO moves (game_id, ply, move_number, color, san,
                     is_player_move, win_prob_before, clock_seconds,
                     classification, cpl, eval_mate, best_move_san,
-                    piece, to_square, is_capture, material_delta)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    piece, to_square, is_capture, material_delta, fen_before)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (game_id, ply, (ply + 1) // 2, color, mv.get("san", "e4"),
                   is_player_move, mv.get("win_prob_before"), mv.get("clock_seconds"),
                   mv.get("classification"), mv.get("cpl"), mv.get("eval_mate"),
                   mv.get("best_move_san"), mv.get("piece"), mv.get("to_square"),
-                  mv.get("is_capture", 0), mv.get("material_delta")))
+                  mv.get("is_capture", 0), mv.get("material_delta"), mv.get("fen_before")))
         conn.commit()
 
     def test_get_failed_conversion_causes_on_empty_ledger(self, migrated_db):
@@ -855,6 +1205,268 @@ class TestPointsData:
             reason_lookup = dict(zip(reason_df.reason, reason_df.n))
             assert reason_lookup["hung_piece"] == 1
             assert reason_lookup.get("blown_mate", 0) == 0
+        finally:
+            duck.close(); disk.close(); os.unlink(tmp)
+
+    def test_monthly_points_uses_config_min_sample_size(self, monkeypatch):
+        import pandas as pd
+        from data.points import ledger
+        from data import points as points_module
+        monkeypatch.setattr(
+            ledger, "get_config",
+            lambda config_path=None: {"analytics": {"min_sample_size": 1}})
+        classified = pd.DataFrame({
+            "game_id": ["g1"], "period": ["2026.01"], "points": [1.0], "leaked": [0.0],
+        })
+        out = points_module.monthly_points(classified)
+        assert len(out) == 1  # 1 game qualifies at min_sample_size=1
+
+
+@pytest.mark.integration
+class TestGetConversionDrillPositions:
+    """dashboard/data/points.py's get_conversion_drill_positions -- the
+    drill-card counterpart to get_failed_conversion_causes, scoped to
+    hung_piece/blown_mate only (the two reasons with an unambiguous
+    single ply). Reuses TestPointsData._seed_causes_game, now extended
+    to also accept fen_before."""
+
+    _seed_causes_game = TestPointsData._seed_causes_game
+
+    def test_hung_piece_and_blown_mate_produce_positions(self, migrated_db):
+        from data import points
+
+        # Same scenarios as test_get_failed_conversion_causes_classifies_reasons,
+        # with fen_before/best_move_san added to the qualifying ply of each.
+        self._seed_causes_game(migrated_db, "fc_hang", "loss", [
+            {"ply": 1, "win_prob_before": 0.50},
+            {"ply": 3, "win_prob_before": 0.75},
+            {"ply": 5, "win_prob_before": 0.75, "classification": "blunder", "cpl": 250,
+             "san": "Qe5", "piece": "Q", "to_square": "e5",
+             "fen_before": "fen_fc_hang", "best_move_san": "Nf3"},
+            {"ply": 6, "is_player_move": 0, "is_capture": 1, "to_square": "e5",
+             "material_delta": 900, "san": "Rxe5"},
+            {"ply": 7, "win_prob_before": 0.10},
+        ])
+        self._seed_causes_game(migrated_db, "fc_mate", "draw", [
+            {"ply": 1, "win_prob_before": 0.50},
+            {"ply": 3, "win_prob_before": 0.75},
+            {"ply": 5, "win_prob_before": 0.75, "eval_mate": 5,
+             "san": "Nf3", "best_move_san": "Qxh7#", "fen_before": "fen_fc_mate"},
+            {"ply": 7, "win_prob_before": 0.40},
+        ])
+        duck, disk, tmp = _duck_from_conn(migrated_db)
+        try:
+            df = points.get_conversion_drill_positions(duck, top_n=20).set_index("game_id")
+            assert df.loc["fc_hang"].reason == "hung_piece"
+            assert df.loc["fc_hang"].fen_before == "fen_fc_hang"
+            assert df.loc["fc_hang"].best_move_san == "Nf3"
+            assert df.loc["fc_mate"].reason == "blown_mate"
+            assert df.loc["fc_mate"].fen_before == "fen_fc_mate"
+            assert df.loc["fc_mate"].best_move_san == "Qxh7#"
+        finally:
+            duck.close(); disk.close(); os.unlink(tmp)
+
+    def test_time_pressure_and_other_excluded(self, migrated_db):
+        """time_pressure and other failed-conversion games have no clean
+        single-ply signal here (unlike get_failed_conversion_causes,
+        which still classifies/counts them) -- they must produce NO row
+        at all, the deliberate scope exclusion."""
+        from data import points
+
+        self._seed_causes_game(migrated_db, "fc_timepressure", "loss", [
+            {"ply": 1, "win_prob_before": 0.50},
+            {"ply": 3, "win_prob_before": 0.75},
+            {"ply": 5, "win_prob_before": 0.70, "clock_seconds": 10},
+            {"ply": 7, "win_prob_before": 0.20},
+        ])
+        self._seed_causes_game(migrated_db, "fc_other", "draw", [
+            {"ply": 1, "win_prob_before": 0.50},
+            {"ply": 3, "win_prob_before": 0.75},
+            {"ply": 5, "win_prob_before": 0.72},
+            {"ply": 7, "win_prob_before": 0.40},
+        ])
+        duck, disk, tmp = _duck_from_conn(migrated_db)
+        try:
+            df = points.get_conversion_drill_positions(duck, top_n=20)
+            assert set(df.game_id) == set()
+        finally:
+            duck.close(); disk.close(); os.unlink(tmp)
+
+    def test_hang_beats_blown_mate(self, migrated_db):
+        """Both a qualifying hang AND a qualifying blown mate exist after
+        the win was reached -- hung_piece must win (same priority as
+        get_failed_conversion_causes), and the returned position must be
+        the HANG's fen_before/best_move_san, not the mate's."""
+        from data import points
+
+        self._seed_causes_game(migrated_db, "fc_priority", "loss", [
+            {"ply": 1, "win_prob_before": 0.50},
+            {"ply": 3, "win_prob_before": 0.75},
+            {"ply": 5, "win_prob_before": 0.75, "eval_mate": 5,
+             "san": "Nf3", "best_move_san": "Qxh7#", "fen_before": "fen_mate_ply"},
+            {"ply": 7, "win_prob_before": 0.72, "classification": "blunder", "cpl": 250,
+             "san": "Qe5", "piece": "Q", "to_square": "e5",
+             "fen_before": "fen_hang_ply", "best_move_san": "Rd1"},
+            {"ply": 8, "is_player_move": 0, "is_capture": 1, "to_square": "e5",
+             "material_delta": 900, "san": "Rxe5"},
+            {"ply": 9, "win_prob_before": 0.10},
+        ])
+        duck, disk, tmp = _duck_from_conn(migrated_db)
+        try:
+            df = points.get_conversion_drill_positions(duck, top_n=20).set_index("game_id")
+            assert df.loc["fc_priority"].reason == "hung_piece"
+            assert df.loc["fc_priority"].fen_before == "fen_hang_ply"
+            assert df.loc["fc_priority"].best_move_san == "Rd1"
+        finally:
+            duck.close(); disk.close(); os.unlink(tmp)
+
+    def test_empty_ledger_returns_empty_dataframe(self, migrated_db):
+        from data import points
+
+        duck, disk, tmp = _duck_from_conn(migrated_db)
+        try:
+            df = points.get_conversion_drill_positions(duck, top_n=20)
+            assert df.empty
+            assert list(df.columns) == [
+                "game_id", "fen_before", "best_move_san", "actual_move_san", "reason"]
+        finally:
+            duck.close(); disk.close(); os.unlink(tmp)
+
+
+@pytest.mark.integration
+class TestGetDefenseDrillPositions:
+    """dashboard/data/points.py's get_defense_drill_positions -- the
+    Defense Trainer's drill-card source: the worst mistake/blunder (by
+    cpl) made while win_prob_before <= EVEN_WP (0.45), scoped to games in
+    the failed_hold/missed_swindle buckets. A different signal shape from
+    get_conversion_drill_positions (raw cpl, not a hang/mate cause-ladder)
+    but the same self-contained ledger-computation pattern, so reuses
+    TestPointsData._seed_causes_game (ply-indexed win_prob_before/
+    classification/cpl/fen_before/best_move_san rows)."""
+
+    _seed_causes_game = TestPointsData._seed_causes_game
+
+    def test_failed_hold_bucket_produces_qualifying_row(self, migrated_db):
+        from data import points
+
+        # Held even (wp 0.48 >= EVEN_WP at move 15) then a real blunder at
+        # wp 0.30 (<= EVEN_WP, "already worse") before fading to a loss.
+        # peak_wp stays < WINNING_WP (not conversion); never recovers from
+        # <= LOST_WP so post_lost_peak_wp stays NULL (not swindle) ->
+        # failed_hold.
+        self._seed_causes_game(migrated_db, "def_hold", "loss", [
+            {"ply": 1, "win_prob_before": 0.50},
+            {"ply": 29, "win_prob_before": 0.48},   # move 15
+            {"ply": 33, "win_prob_before": 0.30, "classification": "blunder", "cpl": 150,
+             "san": "Re1", "fen_before": "fen_def_hold", "best_move_san": "Rd1"},
+            {"ply": 41, "win_prob_before": 0.10},
+        ])
+        duck, disk, tmp = _duck_from_conn(migrated_db)
+        try:
+            classified = points.classify_points_ledger(points.get_points_ledger(duck))
+            assert classified.set_index("game_id").loc["def_hold"].bucket == "failed_hold"
+
+            df = points.get_defense_drill_positions(duck, top_n=20).set_index("game_id")
+            row = df.loc["def_hold"]
+            assert row.fen_before == "fen_def_hold"
+            assert row.best_move_san == "Rd1"
+            assert row.actual_move_san == "Re1"
+            assert row.cpl == 150
+            assert row.opening == "Test Opening"
+            assert row.move_number == 17
+        finally:
+            duck.close(); disk.close(); os.unlink(tmp)
+
+    def test_missed_swindle_bucket_produces_qualifying_row(self, migrated_db):
+        from data import points
+
+        # Drops to wp 0.10 (<= LOST_WP), blunders again at wp 0.40 (<=
+        # EVEN_WP, still "already worse"), then is handed a real chance
+        # (wp 0.55 >= SWINDLE_CHANCE_WP, with a prior min <= LOST_WP) and
+        # still loses -> missed_swindle.
+        self._seed_causes_game(migrated_db, "def_swindle", "loss", [
+            {"ply": 1, "win_prob_before": 0.50},
+            {"ply": 11, "win_prob_before": 0.10},   # move 6, triggers prior_min <= LOST_WP
+            {"ply": 15, "win_prob_before": 0.40, "classification": "blunder", "cpl": 180,
+             "san": "Nb1", "fen_before": "fen_def_swindle", "best_move_san": "Nc3"},
+            {"ply": 25, "win_prob_before": 0.55},   # the swindle chance
+            {"ply": 35, "win_prob_before": 0.05},
+        ])
+        duck, disk, tmp = _duck_from_conn(migrated_db)
+        try:
+            classified = points.classify_points_ledger(points.get_points_ledger(duck))
+            assert classified.set_index("game_id").loc["def_swindle"].bucket == "missed_swindle"
+
+            df = points.get_defense_drill_positions(duck, top_n=20).set_index("game_id")
+            row = df.loc["def_swindle"]
+            assert row.fen_before == "fen_def_swindle"
+            assert row.best_move_san == "Nc3"
+            assert row.cpl == 180
+            assert row.opening == "Test Opening"
+        finally:
+            duck.close(); disk.close(); os.unlink(tmp)
+
+    def test_non_qualifying_bucket_excluded_despite_low_wp_mistake(self, migrated_db):
+        """A plain loss (never held even, never recovers into swindle
+        range -> bucket 'none') must be excluded even though it has a
+        low-win-prob (<= EVEN_WP) blunder somewhere in its curve."""
+        from data import points
+
+        self._seed_causes_game(migrated_db, "def_none", "loss", [
+            {"ply": 1, "win_prob_before": 0.50},
+            {"ply": 9, "win_prob_before": 0.30, "classification": "blunder", "cpl": 300,
+             "san": "Qd3", "fen_before": "fen_def_none", "best_move_san": "Qd2"},
+            {"ply": 19, "win_prob_before": 0.05},
+            {"ply": 39, "win_prob_before": 0.02},
+        ])
+        duck, disk, tmp = _duck_from_conn(migrated_db)
+        try:
+            classified = points.classify_points_ledger(points.get_points_ledger(duck))
+            assert classified.set_index("game_id").loc["def_none"].bucket == "none"
+
+            df = points.get_defense_drill_positions(duck, top_n=20)
+            assert "def_none" not in set(df.game_id)
+        finally:
+            duck.close(); disk.close(); os.unlink(tmp)
+
+    def test_multiple_qualifying_mistakes_highest_cpl_wins(self, migrated_db):
+        """Two qualifying (win_prob_before <= EVEN_WP, mistake/blunder)
+        rows in the same failed_hold game -- the higher-cpl one must win
+        (rn=1 behavior), not the later or earlier one."""
+        from data import points
+
+        self._seed_causes_game(migrated_db, "def_multi", "loss", [
+            {"ply": 1, "win_prob_before": 0.50},
+            {"ply": 29, "win_prob_before": 0.48},   # move 15, held even
+            {"ply": 33, "win_prob_before": 0.30, "classification": "blunder", "cpl": 150,
+             "san": "Re1", "fen_before": "fen_def_multi_high", "best_move_san": "Rd1"},
+            {"ply": 37, "win_prob_before": 0.20, "classification": "mistake", "cpl": 80,
+             "san": "Qc3", "fen_before": "fen_def_multi_low", "best_move_san": "Qc2"},
+            {"ply": 41, "win_prob_before": 0.10},
+        ])
+        duck, disk, tmp = _duck_from_conn(migrated_db)
+        try:
+            classified = points.classify_points_ledger(points.get_points_ledger(duck))
+            assert classified.set_index("game_id").loc["def_multi"].bucket == "failed_hold"
+
+            df = points.get_defense_drill_positions(duck, top_n=20)
+            matching = df[df.game_id == "def_multi"]
+            assert len(matching) == 1
+            assert matching.iloc[0].fen_before == "fen_def_multi_high"
+            assert matching.iloc[0].cpl == 150
+        finally:
+            duck.close(); disk.close(); os.unlink(tmp)
+
+    def test_empty_when_no_defense_games(self, migrated_db):
+        from data import points
+
+        duck, disk, tmp = _duck_from_conn(migrated_db)
+        try:
+            df = points.get_defense_drill_positions(duck, top_n=20)
+            assert df.empty
+            assert list(df.columns) == [
+                "game_id", "fen_before", "best_move_san", "actual_move_san",
+                "move_number", "opening", "cpl"]
         finally:
             duck.close(); disk.close(); os.unlink(tmp)
 
@@ -1271,3 +1883,405 @@ class TestPositionCharacterData:
             assert n_total == 30
         finally:
             duck.close(); disk.close(); os.unlink(tmp)
+
+
+@pytest.mark.integration
+class TestAiCoachData:
+    """dashboard/data/ai_coach.py -- AI Coach (Pro feature) CRUD: plain core
+    plumbing, no Claude API calls, no tool-set/prompt logic."""
+
+    def test_start_conversation_and_add_turns_in_order(self, migrated_db):
+        from data import ai_coach as C
+        conv_id = C.start_conversation(migrated_db)
+        assert isinstance(conv_id, int)
+        t1 = C.add_turn(migrated_db, conv_id, "user", "How's my endgame?")
+        t2 = C.add_turn(migrated_db, conv_id, "assistant", "Let's look at your rook endings.")
+        assert t2 > t1
+        messages = C.get_conversation_messages(migrated_db, conv_id)
+        assert messages == [
+            {"role": "user", "content": "How's my endgame?"},
+            {"role": "assistant", "content": "Let's look at your rook endings."},
+        ]
+
+    def test_add_turn_rejects_invalid_role(self, migrated_db):
+        from data import ai_coach as C
+        conv_id = C.start_conversation(migrated_db)
+        with pytest.raises(ValueError):
+            C.add_turn(migrated_db, conv_id, "system", "not allowed")
+
+    def test_get_conversation_messages_scoped_to_one_conversation(self, migrated_db):
+        from data import ai_coach as C
+        conv1 = C.start_conversation(migrated_db)
+        conv2 = C.start_conversation(migrated_db)
+        C.add_turn(migrated_db, conv1, "user", "conv1 question")
+        C.add_turn(migrated_db, conv2, "user", "conv2 question")
+        assert len(C.get_conversation_messages(migrated_db, conv1)) == 1
+        assert C.get_conversation_messages(migrated_db, conv1)[0]["content"] == "conv1 question"
+
+    def test_record_feedback_on_assistant_turn(self, migrated_db):
+        from data import ai_coach as C
+        conv_id = C.start_conversation(migrated_db)
+        turn_id = C.add_turn(migrated_db, conv_id, "assistant", "Some advice.")
+        C.record_feedback(migrated_db, turn_id, -1)
+        turns = C.get_all_turns(migrated_db)
+        assert turns[0]["feedback"] == -1
+
+    def test_record_feedback_rejects_invalid_turn_id(self, migrated_db):
+        from data import ai_coach as C
+        with pytest.raises(ValueError):
+            C.record_feedback(migrated_db, 999999, 1)
+
+    def test_record_feedback_rejects_non_assistant_turn(self, migrated_db):
+        from data import ai_coach as C
+        conv_id = C.start_conversation(migrated_db)
+        user_turn_id = C.add_turn(migrated_db, conv_id, "user", "hi")
+        with pytest.raises(ValueError):
+            C.record_feedback(migrated_db, user_turn_id, 1)
+
+    def test_record_feedback_rejects_invalid_value(self, migrated_db):
+        from data import ai_coach as C
+        conv_id = C.start_conversation(migrated_db)
+        turn_id = C.add_turn(migrated_db, conv_id, "assistant", "hi")
+        with pytest.raises(ValueError):
+            C.record_feedback(migrated_db, turn_id, 2)
+
+    def test_get_all_turns_ordering_and_thumbs_down_filter(self, migrated_db):
+        from data import ai_coach as C
+        conv_id = C.start_conversation(migrated_db)
+        t1 = C.add_turn(migrated_db, conv_id, "user", "q1")
+        t2 = C.add_turn(migrated_db, conv_id, "assistant", "bad advice")
+        t3 = C.add_turn(migrated_db, conv_id, "assistant", "good advice")
+        C.record_feedback(migrated_db, t2, -1)
+        C.record_feedback(migrated_db, t3, 1)
+
+        all_turns = C.get_all_turns(migrated_db)
+        assert [t["id"] for t in all_turns] == [t1, t2, t3]
+
+        filtered = C.get_all_turns(migrated_db, exclude_thumbs_down=True)
+        assert [t["id"] for t in filtered] == [t1, t3]
+
+    def test_get_all_turns_since_timestamp(self, migrated_db):
+        from data import ai_coach as C
+        conv_id = C.start_conversation(migrated_db)
+        migrated_db.execute("""
+            INSERT INTO ai_coach_turns (conversation_id, role, content, created_at)
+            VALUES (?, 'user', 'old message', '2026-01-01T00:00:00')
+        """, [conv_id])
+        migrated_db.execute("""
+            INSERT INTO ai_coach_turns (conversation_id, role, content, created_at)
+            VALUES (?, 'user', 'new message', '2026-06-01T00:00:00')
+        """, [conv_id])
+        migrated_db.commit()
+
+        since = C.get_all_turns(migrated_db, since="2026-03-01T00:00:00")
+        assert [t["content"] for t in since] == ["new message"]
+
+        combined = C.get_all_turns(migrated_db, exclude_thumbs_down=True,
+                                    since="2026-03-01T00:00:00")
+        assert [t["content"] for t in combined] == ["new message"]
+
+    def test_profile_get_returns_none_before_any_upsert(self, migrated_db):
+        from data import ai_coach as C
+        assert C.get_profile(migrated_db) is None
+
+    def test_profile_upsert_round_trip(self, migrated_db):
+        from data import ai_coach as C
+        C.upsert_profile(migrated_db, "Player struggles in rook endings.",
+                          12, "2026-06-01T00:00:00", "claude-sonnet-5")
+        profile = C.get_profile(migrated_db)
+        assert profile == {
+            "summary_text": "Player struggles in rook endings.",
+            "source_turns": 12,
+            "generated_at": "2026-06-01T00:00:00",
+            "model": "claude-sonnet-5",
+        }
+        # upsert again -- always writes back to id=1, replacing the row
+        C.upsert_profile(migrated_db, "Updated summary.", 20,
+                          "2026-07-01T00:00:00", "claude-sonnet-5")
+        profile2 = C.get_profile(migrated_db)
+        assert profile2["summary_text"] == "Updated summary."
+        assert profile2["source_turns"] == 20
+        # still a single row (id=1 singleton, not a second row)
+        n_rows = migrated_db.execute(
+            "SELECT COUNT(*) FROM ai_coach_profile").fetchone()[0]
+        assert n_rows == 1
+
+    def test_count_turns_since_staleness_helper(self, migrated_db):
+        from data import ai_coach as C
+        conv_id = C.start_conversation(migrated_db)
+        migrated_db.execute("""
+            INSERT INTO ai_coach_turns (conversation_id, role, content, created_at)
+            VALUES (?, 'user', 'old', '2026-01-01T00:00:00')
+        """, [conv_id])
+        migrated_db.execute("""
+            INSERT INTO ai_coach_turns (conversation_id, role, content, created_at)
+            VALUES (?, 'user', 'new1', '2026-06-01T00:00:00')
+        """, [conv_id])
+        migrated_db.execute("""
+            INSERT INTO ai_coach_turns (conversation_id, role, content, created_at)
+            VALUES (?, 'user', 'new2', '2026-06-02T00:00:00')
+        """, [conv_id])
+        migrated_db.commit()
+        assert C.count_turns_since(migrated_db, "2026-03-01T00:00:00") == 2
+        assert C.count_turns_since(migrated_db, "2026-12-31T00:00:00") == 0
+
+    def test_record_and_get_capability_gaps_newest_first(self, migrated_db):
+        from data import ai_coach as C
+        conv_id = C.start_conversation(migrated_db)
+        turn1 = C.add_turn(migrated_db, conv_id, "assistant", "partial answer one")
+        turn2 = C.add_turn(migrated_db, conv_id, "assistant", "partial answer two")
+
+        gap1_id = C.record_capability_gap(
+            migrated_db, turn1, "average move time by opening",
+            "no per-opening move-time aggregation exists")
+        assert isinstance(gap1_id, int)
+        gap2_id = C.record_capability_gap(
+            migrated_db, turn2, "best performing time control",
+            "no per-time-control win-rate breakdown exists")
+        assert gap2_id > gap1_id
+
+        gaps = C.get_capability_gaps(migrated_db)
+        # newest first (created_at DESC) -- gap2 was recorded after gap1.
+        assert [g["id"] for g in gaps] == [gap2_id, gap1_id]
+        assert gaps[0]["turn_id"] == turn2
+        assert gaps[0]["question_summary"] == "best performing time control"
+        assert gaps[0]["missing_data_description"] == (
+            "no per-time-control win-rate breakdown exists")
+        assert gaps[1]["turn_id"] == turn1
+
+    def test_get_capability_gaps_respects_limit(self, migrated_db):
+        from data import ai_coach as C
+        conv_id = C.start_conversation(migrated_db)
+        turn_id = C.add_turn(migrated_db, conv_id, "assistant", "answer")
+        for i in range(5):
+            C.record_capability_gap(migrated_db, turn_id, f"question {i}", f"missing {i}")
+        assert len(C.get_capability_gaps(migrated_db, limit=3)) == 3
+        assert len(C.get_capability_gaps(migrated_db)) == 5
+
+    def test_record_capability_gap_requires_real_turn_id(self, migrated_db):
+        """ai_coach_capability_gaps.turn_id REFERENCES ai_coach_turns(id) --
+        this migrated_db fixture connection runs with foreign_keys ON (see
+        conftest.py's migrated_db fixture and db.py's get_connection, which
+        both explicitly set this PRAGMA every connection since it's not a
+        database-file-level setting in SQLite), so inserting against a
+        turn_id that doesn't exist must raise, not silently succeed."""
+        from data import ai_coach as C
+        with pytest.raises(sqlite3.IntegrityError):
+            C.record_capability_gap(
+                migrated_db, 999999, "some question", "some missing data")
+
+
+class TestBoardChatData:
+    """dashboard/data/board_chat.py -- Board Chat (Pro feature) CRUD: a
+    game-scoped, multi-turn Claude conversation embedded in Game Detail's
+    variation explorer. Plain core plumbing, no Claude API calls, no
+    tool-set/prompt logic. Mirrors TestAiCoachData's shape for the
+    functions shared in spirit with ai_coach.py, plus new tests for
+    get_turns_for_display and list_conversations_for_game, which have no
+    ai_coach.py analog."""
+
+    def test_start_conversation_and_add_turns_in_order(self, populated_db):
+        from data import board_chat as C
+        game_id = populated_db.execute("SELECT id FROM games LIMIT 1").fetchone()[0]
+        conv_id = C.start_conversation(populated_db, game_id)
+        assert isinstance(conv_id, int)
+        t1 = C.add_turn(populated_db, conv_id, "user", "What was the best move here?")
+        t2 = C.add_turn(populated_db, conv_id, "assistant", "Nf3 was strongest.")
+        assert t2 > t1
+        messages = C.get_conversation_messages(populated_db, conv_id)
+        assert messages == [
+            {"role": "user", "content": "What was the best move here?"},
+            {"role": "assistant", "content": "Nf3 was strongest."},
+        ]
+
+    def test_add_turn_rejects_invalid_role(self, populated_db):
+        from data import board_chat as C
+        game_id = populated_db.execute("SELECT id FROM games LIMIT 1").fetchone()[0]
+        conv_id = C.start_conversation(populated_db, game_id)
+        with pytest.raises(ValueError):
+            C.add_turn(populated_db, conv_id, "system", "not allowed")
+
+    def test_get_conversation_messages_scoped_to_one_conversation(self, populated_db):
+        from data import board_chat as C
+        game_id = populated_db.execute("SELECT id FROM games LIMIT 1").fetchone()[0]
+        conv1 = C.start_conversation(populated_db, game_id)
+        conv2 = C.start_conversation(populated_db, game_id)
+        C.add_turn(populated_db, conv1, "user", "conv1 question")
+        C.add_turn(populated_db, conv2, "user", "conv2 question")
+        assert len(C.get_conversation_messages(populated_db, conv1)) == 1
+        assert C.get_conversation_messages(populated_db, conv1)[0]["content"] == "conv1 question"
+
+    def test_get_turns_for_display_board_directives_round_trip(self, populated_db):
+        from data import board_chat as C
+        import json as json_mod
+        game_id = populated_db.execute("SELECT id FROM games LIMIT 1").fetchone()[0]
+        conv_id = C.start_conversation(populated_db, game_id)
+        t1 = C.add_turn(populated_db, conv_id, "user", "what about e4?")
+        directives = json_mod.dumps([
+            {"tool": "show_arrow", "from_square": "e2", "to_square": "e4", "style": "player_move"},
+        ])
+        t2 = C.add_turn(populated_db, conv_id, "assistant", "e4 is fine.",
+                         board_directives=directives)
+
+        turns = C.get_turns_for_display(populated_db, conv_id)
+        assert [t["id"] for t in turns] == [t1, t2]
+        assert turns[0]["role"] == "user"
+        assert turns[0]["board_directives"] is None
+        assert turns[1]["role"] == "assistant"
+        assert turns[1]["board_directives"] == [
+            {"tool": "show_arrow", "from_square": "e2", "to_square": "e4", "style": "player_move"},
+        ]
+        assert turns[1]["content"] == "e4 is fine."
+        assert "created_at" in turns[0]
+
+    def test_list_conversations_for_game_newest_first_with_turn_counts(self, populated_db):
+        from data import board_chat as C
+        game_id = populated_db.execute("SELECT id FROM games LIMIT 1").fetchone()[0]
+        conv1 = C.start_conversation(populated_db, game_id)
+        C.add_turn(populated_db, conv1, "user", "q1")
+        conv2 = C.start_conversation(populated_db, game_id)
+        C.add_turn(populated_db, conv2, "user", "q1")
+        C.add_turn(populated_db, conv2, "assistant", "a1")
+        C.add_turn(populated_db, conv2, "user", "q2")
+
+        conversations = C.list_conversations_for_game(populated_db, game_id)
+        # newest first -- conv2 was started after conv1.
+        assert [c["id"] for c in conversations] == [conv2, conv1]
+        counts = {c["id"]: c["turn_count"] for c in conversations}
+        assert counts[conv1] == 1
+        assert counts[conv2] == 3
+        assert "started_at" in conversations[0]
+
+    def test_list_conversations_for_game_empty_case(self, populated_db):
+        from data import board_chat as C
+        game_id = populated_db.execute("SELECT id FROM games LIMIT 1").fetchone()[0]
+        assert C.list_conversations_for_game(populated_db, game_id) == []
+
+    def test_record_and_get_capability_gaps_newest_first(self, populated_db):
+        from data import board_chat as C
+        game_id = populated_db.execute("SELECT id FROM games LIMIT 1").fetchone()[0]
+        conv_id = C.start_conversation(populated_db, game_id)
+        turn1 = C.add_turn(populated_db, conv_id, "assistant", "partial answer one")
+        turn2 = C.add_turn(populated_db, conv_id, "assistant", "partial answer two")
+
+        gap1_id = C.record_capability_gap(
+            populated_db, turn1, "average move time by opening",
+            "no per-opening move-time aggregation exists")
+        assert isinstance(gap1_id, int)
+        gap2_id = C.record_capability_gap(
+            populated_db, turn2, "best performing time control",
+            "no per-time-control win-rate breakdown exists")
+        assert gap2_id > gap1_id
+
+        gaps = C.get_capability_gaps(populated_db)
+        # newest first (created_at DESC) -- gap2 was recorded after gap1.
+        assert [g["id"] for g in gaps] == [gap2_id, gap1_id]
+        assert gaps[0]["turn_id"] == turn2
+        assert gaps[0]["question_summary"] == "best performing time control"
+        assert gaps[0]["missing_data_description"] == (
+            "no per-time-control win-rate breakdown exists")
+        assert gaps[1]["turn_id"] == turn1
+
+    def test_get_capability_gaps_respects_limit(self, populated_db):
+        from data import board_chat as C
+        game_id = populated_db.execute("SELECT id FROM games LIMIT 1").fetchone()[0]
+        conv_id = C.start_conversation(populated_db, game_id)
+        turn_id = C.add_turn(populated_db, conv_id, "assistant", "answer")
+        for i in range(5):
+            C.record_capability_gap(populated_db, turn_id, f"question {i}", f"missing {i}")
+        assert len(C.get_capability_gaps(populated_db, limit=3)) == 3
+        assert len(C.get_capability_gaps(populated_db)) == 5
+
+    def test_record_capability_gap_requires_real_turn_id(self, populated_db):
+        """board_chat_capability_gaps.turn_id REFERENCES board_chat_turns(id)
+        -- this populated_db fixture connection runs with foreign_keys ON
+        (see conftest.py), so inserting against a turn_id that doesn't
+        exist at all must raise, not silently succeed."""
+        from data import board_chat as C
+        with pytest.raises(sqlite3.IntegrityError):
+            C.record_capability_gap(
+                populated_db, 999999, "some question", "some missing data")
+
+    def test_record_capability_gap_rejects_ai_coach_turn_id(self, populated_db):
+        """Direct regression test for the schema fix in migration 0036 /
+        docs/scoping/ai-coach-board-interaction-implementation-plan-
+        2026-07-08.md §0.2: board_chat_capability_gaps.turn_id is FK'd to
+        board_chat_turns(id), NOT ai_coach_turns(id) -- reusing
+        ai_coach_capability_gaps for board-chat gap reports would have let
+        a board_chat_turns.id collide with an unrelated ai_coach_turns.id,
+        or (correctly, as tested here) simply fail the FK check when the
+        id only exists in the OTHER table. A turn_id that is a real,
+        valid ai_coach_turns.id (but not a board_chat_turns.id) must still
+        raise IntegrityError against board_chat_capability_gaps -- proving
+        the FK is real and scoped to the right table, not just present."""
+        from data import ai_coach as ai_coach_data
+        from data import board_chat as C
+        ai_coach_conv_id = ai_coach_data.start_conversation(populated_db)
+        ai_coach_turn_id = ai_coach_data.add_turn(
+            populated_db, ai_coach_conv_id, "assistant", "an ai coach reply")
+
+        # Sanity check: this id is real, just in the wrong table.
+        assert populated_db.execute(
+            "SELECT 1 FROM ai_coach_turns WHERE id = ?", [ai_coach_turn_id]
+        ).fetchone() is not None
+        assert populated_db.execute(
+            "SELECT 1 FROM board_chat_turns WHERE id = ?", [ai_coach_turn_id]
+        ).fetchone() is None
+
+        with pytest.raises(sqlite3.IntegrityError):
+            C.record_capability_gap(
+                populated_db, ai_coach_turn_id, "some question", "some missing data")
+
+    def test_record_feedback_on_assistant_turn(self, populated_db):
+        from data import board_chat as C
+        game_id = populated_db.execute("SELECT id FROM games LIMIT 1").fetchone()[0]
+        conv_id = C.start_conversation(populated_db, game_id)
+        turn_id = C.add_turn(populated_db, conv_id, "assistant", "Nf3 is strongest.")
+        C.record_feedback(populated_db, turn_id, -1)
+        row = populated_db.execute(
+            "SELECT feedback FROM board_chat_turns WHERE id = ?", [turn_id]).fetchone()
+        assert row[0] == -1
+
+    def test_record_feedback_rejects_invalid_turn_id(self, populated_db):
+        from data import board_chat as C
+        with pytest.raises(ValueError):
+            C.record_feedback(populated_db, 999999, 1)
+
+    def test_record_feedback_rejects_non_assistant_turn(self, populated_db):
+        from data import board_chat as C
+        game_id = populated_db.execute("SELECT id FROM games LIMIT 1").fetchone()[0]
+        conv_id = C.start_conversation(populated_db, game_id)
+        user_turn_id = C.add_turn(populated_db, conv_id, "user", "what about e4?")
+        with pytest.raises(ValueError):
+            C.record_feedback(populated_db, user_turn_id, 1)
+
+    def test_record_feedback_rejects_invalid_value(self, populated_db):
+        from data import board_chat as C
+        game_id = populated_db.execute("SELECT id FROM games LIMIT 1").fetchone()[0]
+        conv_id = C.start_conversation(populated_db, game_id)
+        turn_id = C.add_turn(populated_db, conv_id, "assistant", "hi")
+        with pytest.raises(ValueError):
+            C.record_feedback(populated_db, turn_id, 2)
+
+    def test_record_feedback_scoped_to_correct_turn(self, populated_db):
+        from data import board_chat as C
+        game_id = populated_db.execute("SELECT id FROM games LIMIT 1").fetchone()[0]
+        conv_id = C.start_conversation(populated_db, game_id)
+        t1 = C.add_turn(populated_db, conv_id, "user", "q1")
+        t2 = C.add_turn(populated_db, conv_id, "assistant", "bad advice")
+        t3 = C.add_turn(populated_db, conv_id, "assistant", "good advice")
+        C.record_feedback(populated_db, t2, -1)
+        C.record_feedback(populated_db, t3, 1)
+
+        turns = C.get_turns_for_display(populated_db, conv_id)
+        by_id = {t["id"]: t for t in turns}
+        assert by_id[t1]["role"] == "user"
+        # get_turns_for_display doesn't select feedback (display shape only
+        # needs id/role/content/board_directives/created_at) -- confirm the
+        # persisted value directly against the table instead.
+        assert populated_db.execute(
+            "SELECT feedback FROM board_chat_turns WHERE id = ?", [t2]).fetchone()[0] == -1
+        assert populated_db.execute(
+            "SELECT feedback FROM board_chat_turns WHERE id = ?", [t3]).fetchone()[0] == 1
+        assert populated_db.execute(
+            "SELECT feedback FROM board_chat_turns WHERE id = ?", [t1]).fetchone()[0] is None

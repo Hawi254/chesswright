@@ -18,7 +18,8 @@ import job_runner
 import joblock
 import opponent_analysis
 import data
-from _common import get_config
+import pro_gate
+from _common import get_config, get_connections
 from theme import thin_data_message
 
 _lock = threading.Lock()
@@ -182,6 +183,33 @@ def _render_scout_report(username: str) -> None:
                 "Not enough annotated games to compute a report. "
                 "Re-run after more games finish analysis, or try fetching more games."
             )
+
+        with st.container(border=True):
+            st.subheader("Tournament Prep Report")
+            st.caption(
+                "A downloadable prep sheet combining their repertoire with your "
+                "personal record against them."
+            )
+            if not pro_gate.is_pro_active():
+                st.info(
+                    "**Tournament Prep Report** is a Chesswright Pro feature — combine "
+                    "what this opponent tends to play with your own personal record "
+                    "against them in one downloadable document. "
+                    "Upgrade at [chesswright.gumroad.com](https://chesswright.gumroad.com)."
+                )
+            else:
+                try:
+                    from chesswright_pro import tournament_prep
+                except ImportError:
+                    st.error(
+                        "Pro is licensed but the chesswright_pro package couldn't be "
+                        "imported. Try reinstalling it."
+                    )
+                else:
+                    _, main_duck_conn = get_connections()
+                    tournament_prep.render_tournament_prep_report(
+                        username, n, form_df, tendencies_df, main_duck_conn
+                    )
     finally:
         for conn in (sqlite_conn, duck_conn):
             try:

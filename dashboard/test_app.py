@@ -4,16 +4,40 @@ st.testing.v1.AppTest (headless, no browser) -- per the user's explicit
 testing-approach decision for Phase 6. Run directly: python3
 dashboard/test_app.py (or via pytest if ever added to this project).
 """
+import os
 import pathlib
+import shutil
 import sys
 import tempfile
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
+DASHBOARD_DIR = str(pathlib.Path(__file__).resolve().parent)
+_REPO_ROOT = pathlib.Path(DASHBOARD_DIR).parent
+sys.path.insert(0, str(_REPO_ROOT))
+
+# The shipped config.yaml's player.name is the "CHANGE_ME" placeholder --
+# a real value must never be committed there (it would leak into the
+# public repo's default, since config.yaml is tracked, not gitignored).
+# AppTest still needs a config where player.name isn't the placeholder,
+# or app.py's onboarding sentinel (app.py's NEEDS_ONBOARDING check)
+# routes every test straight to onboarding_view instead of Overview.
+# So tests get their own scratch copy via the CHESSWRIGHT_CONFIG_PATH
+# env var config.py already supports. This MUST happen before config.py
+# is imported anywhere else in this process: DEFAULT_CONFIG_PATH is a
+# module-level constant resolved from the env var once, at first import,
+# not re-read later (see desktop_app.py's run_worker_mode() docstring
+# for the same ordering caveat).
+_scratch_config = pathlib.Path(
+    tempfile.mkdtemp(prefix="chesswright-test-config-")) / "config.yaml"
+shutil.copy(_REPO_ROOT / "config.yaml", _scratch_config)
+os.environ["CHESSWRIGHT_CONFIG_PATH"] = str(_scratch_config)
+import config as _config
+_config.set_player_name("TestPlayer", path=str(_scratch_config))
+
 from streamlit.testing.v1 import AppTest
 
 APP_PATH = str(pathlib.Path(__file__).resolve().parent / "app.py")
-DASHBOARD_DIR = str(pathlib.Path(__file__).resolve().parent)
 
 
 def _page_apptest(module_name, call_with_dummy_pages=False):
@@ -42,6 +66,18 @@ def test_app_runs_without_exception():
     at = AppTest.from_file(APP_PATH)
     at.run(timeout=60)
     assert not at.exception, f"App raised: {at.exception}"
+
+
+def test_overview_page_shows_three_zone_headers():
+    """Confirms the Task 5 rewrite actually renders all three zones, not
+    just that the page loads without an exception."""
+    at = AppTest.from_file(APP_PATH)
+    at.run(timeout=60)
+    assert not at.exception, f"App raised: {at.exception}"
+    page_text = "\n".join(m.value for m in at.markdown)
+    assert "Your chess identity" in page_text
+    assert "Progress" in page_text and "milestones" in page_text
+    assert "Your coaching plan" in page_text
 
 
 def test_all_career_pages_render():
@@ -190,6 +226,14 @@ def test_narrative_is_deterministic_for_the_same_game():
     narrative_1 = narrative.generate_narrative(header, moves)
     narrative_2 = narrative.generate_narrative(header, moves)
     assert narrative_1 == narrative_2
+
+
+def test_overview_css_is_well_formed_style_block():
+    from overview_view import OVERVIEW_CSS
+    assert OVERVIEW_CSS.strip().startswith("<style>")
+    assert OVERVIEW_CSS.strip().endswith("</style>")
+    assert ".cw-ov-rail" in OVERVIEW_CSS
+    assert "theme.POSITIVE" not in OVERVIEW_CSS  # must be interpolated, not literal
 
 
 if __name__ == "__main__":

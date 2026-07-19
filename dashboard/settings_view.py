@@ -6,6 +6,8 @@ installer who isn't assumed to be comfortable with environment
 variables or a terminal at all.
 """
 import pathlib
+import shutil
+import stat
 
 import requests
 import streamlit as st
@@ -15,13 +17,150 @@ import config
 import db_import
 import live_engine
 import sync_chesscom
+import worker
 from _common import resolve_db_path
 import components.native_file_picker as native_file_picker
 
 
+_SETTINGS_INDEX = [
+    ("Account & Data", "Anthropic API key", "api key claude narrative commentary"),
+    ("Account & Data", "Import an existing database", "database import migrate"),
+    ("Account & Data", "Chess.com account", "chesscom sync"),
+    ("Analysis Engine", "Engine location", "stockfish engine path detect browse"),
+    ("Analysis Engine", "Live engine settings", "interactive engine depth threads hash time"),
+    ("Analysis Engine", "Engine Profiles", "preset laptop desktop deep analysis tournament"),
+    ("Analytics & Display", "Local timezone", "utc offset hour time of day"),
+    ("Analytics & Display", "Confidence threshold", "sample size min games confidence"),
+    ("Ingestion", "Non-standard variants", "chess960 atomic variant policy"),
+    ("Ingestion", "Analysis queue order", "queue strategy interleaved chronological"),
+    ("Advanced", "Advanced settings", "pv_max_len reuse_evals worker sync timeout"),
+    ("Anthropic API key", "Anthropic API key", "api key claude"),
+    ("Chesswright Pro", "Chesswright Pro", "license coach mode student profile"),
+    ("Support", "Support this project", "sponsor donate"),
+]
+
+
+def _rank_settings_matches(query: str, limit: int = 5) -> list[tuple[str, str]]:
+    """Ranks _SETTINGS_INDEX entries against *query* by label+keywords,
+    returning (tab_label, field_label) pairs, best match first. Pure
+    function (no Streamlit calls) so it's unit-testable without AppTest."""
+    from rapidfuzz import process, fuzz
+    candidates = [f"{label} {keywords}" for _tab, label, keywords in _SETTINGS_INDEX]
+    # score_cutoff=45, not the plan's 40: at 40, an unrelated nonsense query
+    # ("zzzznonsense") still scored 42.9 against "Confidence threshold" under
+    # the installed rapidfuzz version's WRatio, producing a false-positive
+    # match instead of an empty result. 45 clears that noise while still
+    # matching all the real keyword queries tested below.
+    ranked = process.extract(query, candidates, scorer=fuzz.WRatio,
+                              limit=limit, score_cutoff=45)
+    return [(_SETTINGS_INDEX[idx][0], _SETTINGS_INDEX[idx][1]) for _text, _score, idx in ranked]
+
+
+def _render_search_box():
+    query = st.text_input("🔍 Search settings", key="settings_search_query",
+                           placeholder="e.g. timezone, engine, confidence…")
+    if not query.strip():
+        return
+    matches = _rank_settings_matches(query)
+    if not matches:
+        st.caption("No matching settings found.")
+        return
+    st.caption("Jump to:")
+    for i, (tab, label) in enumerate(matches):
+        if st.button(f"{label}  (in {tab})", key=f"settings_search_jump_{i}"):
+            st.session_state["settings_active_tab"] = tab
+            st.session_state["settings_jump_field"] = label
+            st.rerun()
+
+
 def render():
     st.title("Settings")
+    _render_search_box()
 
+    jump_tab = st.session_state.get("settings_active_tab")
+    jump_field = st.session_state.get("settings_jump_field")
+    tab_labels = [
+        "Account & Data", "Analysis Engine", "Analytics & Display", "Ingestion",
+        "Advanced", "Anthropic API key", "Chesswright Pro", "Support",
+    ]
+    if jump_tab:
+        st.session_state["settings_tabs_active"] = jump_tab
+    # `key=` + `on_change="rerun"`, not a bare `default=`: live-verified
+    # 2026-07-11 against installed streamlit==1.58.0 via a minimal
+    # Playwright reproduction -- `default=` only sets the initially
+    # selected tab on the widget's very first mount; on every later
+    # rerun (e.g. the one triggered by a search-box jump click) it's
+    # silently ignored and the tabs widget keeps whatever tab the
+    # frontend already had active, so a jump from an already-open
+    # Settings page permanently no-ops. `key=` + `on_change="rerun"`
+    # makes the widget "stateful" (Streamlit's own term), which DOES
+    # re-read a pre-set session_state[key] value on every rerun --
+    # confirmed working in the same reproduction. Pre-seeding the key
+    # only `if jump_tab` (above) leaves the widget's own persisted
+    # value alone on every other rerun, so ordinary manual tab clicks
+    # are unaffected.
+    (tab_account, tab_engine, tab_analytics, tab_ingestion, tab_advanced,
+     tab_api, tab_pro, tab_support) = st.tabs(
+        tab_labels, key="settings_tabs_active", on_change="rerun")
+
+    with tab_account:
+        _render_account_data_tab(jump_field if jump_tab == "Account & Data" else None)
+    with tab_engine:
+        _render_analysis_engine_tab(jump_field if jump_tab == "Analysis Engine" else None)
+    with tab_analytics:
+        _render_analytics_display_tab(jump_field if jump_tab == "Analytics & Display" else None)
+    with tab_ingestion:
+        _render_ingestion_tab(jump_field if jump_tab == "Ingestion" else None)
+    with tab_advanced:
+        _render_advanced_tab()
+    with tab_api:
+        _render_api_key_tab()
+    with tab_pro:
+        _render_pro_section()
+    with tab_support:
+        _render_support_section()
+
+    st.session_state.pop("settings_active_tab", None)
+    st.session_state.pop("settings_jump_field", None)
+
+
+def _install_engine_binary(src_path: pathlib.Path, engines_dir: pathlib.Path,
+                            validate_fn=None) -> str:
+    """Copies src_path into engines_dir, marks it executable, and validates
+    it as a real UCI engine (worker.validate_engine_path by default --
+    overridable so tests don't need a real engine binary). Returns the
+    engine's self-reported name. Raises RuntimeError (from validate_fn) if
+    it isn't a working UCI engine -- the partially-installed file is
+    removed before re-raising, so a bad pick never lingers in engines_dir."""
+    validate_fn = validate_fn or worker.validate_engine_path
+    engines_dir.mkdir(parents=True, exist_ok=True)
+    dest = engines_dir / src_path.name
+    shutil.copy2(src_path, dest)
+    dest.chmod(dest.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    try:
+        return validate_fn(str(dest))
+    except RuntimeError:
+        dest.unlink(missing_ok=True)
+        raise
+
+
+def _install_engine_upload(uploaded_file, engines_dir: pathlib.Path,
+                            validate_fn=None) -> str:
+    """Same as _install_engine_binary, for an st.file_uploader result
+    instead of a filesystem path (write_bytes instead of copy2)."""
+    validate_fn = validate_fn or worker.validate_engine_path
+    engines_dir.mkdir(parents=True, exist_ok=True)
+    dest = engines_dir / pathlib.Path(uploaded_file.name).name
+    dest.write_bytes(uploaded_file.getvalue())
+    dest.chmod(dest.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    try:
+        return validate_fn(str(dest))
+    except RuntimeError:
+        dest.unlink(missing_ok=True)
+        raise
+
+
+def _render_api_key_tab():
     st.subheader("Anthropic API key")
     st.caption(
         "Optional. Powers the on-demand 'richer narrative' / commentary "
@@ -83,6 +222,96 @@ def render():
             st.success("Saved key removed.")
             st.rerun()
 
+
+def _clear_interactive_engine_widget_state():
+    """Pops the ie_* session_state keys the Live Engine form's number_input/
+    checkbox widgets are keyed on. Needed before any action that writes
+    interactive_engine.* to config.yaml from OUTSIDE that form (Engine
+    Profiles' Apply, Reset to defaults) -- the form only re-seeds a key
+    from config when that key is absent from session_state, so without
+    this the widgets keep showing whatever the user last typed instead of
+    the value that was just written. Live-verified 2026-07-11: Apply
+    correctly updated config.yaml but the Depth limit field kept showing
+    the pre-Apply value until this fix, silently misleading the user into
+    thinking Apply hadn't worked."""
+    for _k in ("ie_time_sec", "ie_depth", "ie_threads", "ie_hash_mb",
+               "ie_store_threshold", "ie_use_cloud_eval"):
+        st.session_state.pop(_k, None)
+
+
+def _render_analysis_engine_tab(highlight_field=None):
+    if highlight_field:
+        st.info(f"🔍 Jumped here for: **{highlight_field}**")
+    st.subheader("Engine location")
+    st.caption(
+        "The Stockfish (or other UCI-compatible) engine binary used by "
+        "both the batch analysis worker and the on-demand probes below. "
+        "Auto-detected on first run -- use this if you've since installed "
+        "Stockfish somewhere new, or want to switch engines.")
+
+    cfg = config.load_config()
+    current_path = cfg["engine"].get("path")
+    detected_path = current_path or worker.find_engine_path(None)
+
+    if detected_path:
+        st.success(f"Using: `{detected_path}`" +
+                   ("" if current_path else " (auto-detected)"))
+    else:
+        st.error(
+            "No chess engine found. Install Stockfish from "
+            "[stockfishchess.org/download](https://stockfishchess.org/download/) "
+            "or browse for one below.")
+
+    if st.button("Re-detect"):
+        found = worker.find_engine_path(None)
+        if found:
+            config.set_engine_path(found)
+            live_engine.get_engine_service.clear()
+            st.success(f"Found and saved: `{found}`.")
+            st.rerun()
+        else:
+            st.error("Still couldn't find one automatically.")
+
+    st.warning(
+        "Only pick a binary you obtained directly from "
+        "[stockfishchess.org/download](https://stockfishchess.org/download/) "
+        "or the official release page of another UCI engine. This app "
+        "will execute the file you select -- do not pick a file from an "
+        "untrusted source.")
+
+    engines_dir = pathlib.Path(config.DEFAULT_CONFIG_PATH).parent / "engines"
+
+    picked_path = native_file_picker.pick(
+        "engine", label="Browse for its executable file (native dialog)…",
+        key="settings_engine_native_picker")
+    if picked_path and picked_path != st.session_state.get(
+            "settings_engine_native_picker_applied"):
+        st.session_state["settings_engine_native_picker_applied"] = picked_path
+        with st.spinner("Checking it speaks UCI..."):
+            try:
+                engine_name = _install_engine_binary(pathlib.Path(picked_path), engines_dir)
+            except RuntimeError as e:
+                st.error(str(e))
+            else:
+                config.set_engine_path(str(engines_dir / pathlib.Path(picked_path).name))
+                live_engine.get_engine_service.clear()
+                st.success(f"Confirmed and saved: {engine_name}.")
+                st.rerun()
+
+    uploaded_engine = st.file_uploader(
+        "Or upload its executable file:", key="settings_engine_uploader")
+    if uploaded_engine is not None:
+        with st.spinner("Checking it speaks UCI..."):
+            try:
+                engine_name = _install_engine_upload(uploaded_engine, engines_dir)
+            except RuntimeError as e:
+                st.error(str(e))
+            else:
+                config.set_engine_path(str(engines_dir / pathlib.Path(uploaded_engine.name).name))
+                live_engine.get_engine_service.clear()
+                st.success(f"Confirmed and saved: {engine_name}.")
+                st.rerun()
+
     st.divider()
     st.subheader("Live engine settings")
     st.caption(
@@ -90,9 +319,6 @@ def render():
         "game detail panels. The live engine is always paused when the batch "
         "worker is running — these settings only affect interactive probes.")
     ie_cfg = config.load_config().get("interactive_engine", {})
-    # Seed session_state from config on the very first render so explicit
-    # keys below initialise correctly, but don't overwrite values the user
-    # has already submitted (session_state persists across page navigation).
     _ie_defaults = {
         "ie_time_sec":        float(ie_cfg.get("time_sec", 0.5)),
         "ie_depth":           int(ie_cfg.get("depth", 20)),
@@ -171,6 +397,233 @@ def render():
             st.error(f"Could not save settings: {e}")
 
     st.divider()
+    st.subheader("Engine Profiles")
+    st.caption(
+        "Save your current engine speed/depth settings under a name you "
+        "choose, and switch between them later -- e.g. 'Laptop' vs. "
+        "'Desktop' vs. 'Deep Analysis'. Not the same as Chesswright Pro's "
+        "student profiles further down this page, which are separate "
+        "databases for different players.")
+
+    profile_names = config.list_engine_profiles()
+    col1, col2 = st.columns(2)
+    with col1:
+        new_profile_name = st.text_input("Save current settings as…",
+                                          key="new_engine_profile_name")
+        if st.button("Save profile") and new_profile_name.strip():
+            config.save_engine_profile(new_profile_name.strip())
+            st.success(f"Saved profile '{new_profile_name.strip()}'.")
+            st.rerun()
+    with col2:
+        if profile_names:
+            selected_profile = st.selectbox("Saved profiles", profile_names,
+                                             key="selected_engine_profile")
+            apply_col, delete_col = st.columns(2)
+            if apply_col.button("Apply", key="apply_engine_profile"):
+                config.apply_engine_profile(selected_profile)
+                _clear_interactive_engine_widget_state()
+                live_engine.get_engine_service.clear()
+                st.success(f"Applied '{selected_profile}'.")
+                st.rerun()
+            confirm_delete = delete_col.checkbox(
+                "Confirm delete", key="confirm_delete_engine_profile")
+            if delete_col.button("Delete", key="delete_engine_profile",
+                                  disabled=not confirm_delete):
+                config.delete_engine_profile(selected_profile)
+                st.success(f"Deleted '{selected_profile}'.")
+                st.rerun()
+        else:
+            st.caption("No saved profiles yet.")
+
+    st.divider()
+    if st.button("Reset engine settings to defaults", key="reset_engine_defaults"):
+        template_path = pathlib.Path(config.__file__).resolve().parent / "config.yaml"
+        template_cfg = config.load_config(template_path)
+        config.reset_engine_path()
+        config.save_interactive_engine(template_cfg["interactive_engine"])
+        _clear_interactive_engine_widget_state()
+        live_engine.get_engine_service.clear()
+        st.success("Engine settings reset to defaults.")
+        st.rerun()
+
+
+def _render_analytics_display_tab(highlight_field=None):
+    if highlight_field:
+        st.info(f"🔍 Jumped here for: **{highlight_field}**")
+    st.subheader("Local timezone")
+    st.caption(
+        "Your local UTC offset, used to show 'time of day' findings "
+        "(like the day-of-week × hour win-rate map on Patterns & "
+        "Tendencies) in your own local time instead of raw UTC.")
+    cfg = config.load_config()
+    offset = st.number_input(
+        "UTC offset (hours)", min_value=-12, max_value=14, step=1,
+        value=int(cfg["analytics"]["utc_offset_hours"]),
+        help="E.g. -5 for US Eastern Standard Time, +1 for Central "
+             "European Time.")
+    if st.button("Save timezone"):
+        config.set_analytics_setting("utc_offset_hours", int(offset))
+        st.cache_data.clear()
+        st.toast("Timezone saved.", icon="✅")
+        st.rerun()
+
+    st.divider()
+    st.subheader("Confidence threshold")
+    st.caption(
+        "The minimum sample size (games/positions) a stat needs before "
+        "it's shown as trustworthy instead of flagged '(small sample)' "
+        "across Insights, Openings, Matchups, and other pages. One shared "
+        "threshold, not a per-page setting.")
+    min_sample_size = st.number_input(
+        "Minimum sample size", min_value=1, max_value=100, step=1,
+        value=int(cfg["analytics"]["min_sample_size"]),
+        help="Groups below this many analyzed games are shown but marked "
+             "as a small sample, rather than hidden.")
+    if st.button("Save confidence threshold"):
+        config.set_analytics_setting("min_sample_size", int(min_sample_size))
+        st.cache_data.clear()
+        st.toast("Confidence threshold saved.", icon="✅")
+        st.rerun()
+
+    st.divider()
+    if st.button("Reset analytics & display settings to defaults", key="reset_analytics_defaults"):
+        template_path = pathlib.Path(config.__file__).resolve().parent / "config.yaml"
+        template_cfg = config.load_config(template_path)
+        config.set_analytics_setting("utc_offset_hours", template_cfg["analytics"]["utc_offset_hours"])
+        config.set_analytics_setting("min_sample_size", template_cfg["analytics"]["min_sample_size"])
+        st.cache_data.clear()
+        st.success("Analytics & Display settings reset to defaults.")
+        st.rerun()
+
+
+def _render_ingestion_tab(highlight_field=None):
+    if highlight_field:
+        st.info(f"🔍 Jumped here for: **{highlight_field}**")
+    st.subheader("New game ingestion")
+    st.caption(
+        "Controls how future syncs (lichess/chess.com) and the analysis "
+        "worker treat newly-fetched games. Doesn't affect games already "
+        "in your database.")
+    cfg = config.load_config()
+
+    variant_options = ["skip", "include"]
+    variant_policy = st.selectbox(
+        "Non-standard variants (Chess960, Atomic, ...)",
+        options=variant_options,
+        index=variant_options.index(cfg["ingestion"]["variant_policy"]),
+        help="'skip' (default) ignores non-Standard-chess games entirely -- "
+             "safe, since the batch engine assumes normal rules. Only "
+             "choose 'include' if you plan to analyze those games with a "
+             "variant-aware engine separately.")
+
+    queue_options = ["interleaved_by_year", "chronological", "reverse_chronological"]
+    queue_strategy = st.selectbox(
+        "Analysis queue order",
+        options=queue_options,
+        index=queue_options.index(cfg["ingestion"]["queue_strategy"]),
+        help="Only takes effect for a manual full re-import (running ingest.py "
+             "directly) -- regular syncs from this app always place newly-fetched "
+             "games at the front of the queue regardless of this setting. "
+             "'interleaved_by_year' (default) samples across your whole history "
+             "early instead of only your oldest or newest games.")
+
+    if st.button("Save ingestion settings"):
+        config.set_ingestion_setting("variant_policy", variant_policy)
+        config.set_ingestion_setting("queue_strategy", queue_strategy)
+        st.toast("Ingestion settings saved.", icon="✅")
+        st.rerun()
+
+    st.divider()
+    if st.button("Reset ingestion settings to defaults", key="reset_ingestion_defaults"):
+        template_path = pathlib.Path(config.__file__).resolve().parent / "config.yaml"
+        template_cfg = config.load_config(template_path)
+        config.set_ingestion_setting("variant_policy", template_cfg["ingestion"]["variant_policy"])
+        config.set_ingestion_setting("queue_strategy", template_cfg["ingestion"]["queue_strategy"])
+        st.success("Ingestion settings reset to defaults.")
+        st.rerun()
+
+
+def _render_advanced_tab():
+    with st.expander("Advanced settings", expanded=False):
+        st.caption(
+            "Lower-level tuning knobs -- most of which config.yaml itself "
+            "documents as safe defaults not worth changing. Shown here so "
+            "they're not YAML-only, without pretending they're as commonly "
+            "needed as the settings on the other tabs.")
+        cfg = config.load_config()
+
+        st.markdown("**Batch engine**")
+        pv_max_len = st.number_input(
+            "Stored line length (plies)", min_value=1, max_value=60, step=1,
+            value=int(cfg["engine"]["pv_max_len"]), key="adv_pv_max_len",
+            help="Plies of each line's continuation to store (storage vs. detail).")
+        reuse_evals = st.checkbox(
+            "Reuse a prior batch result for an exact-FEN repeat position",
+            value=bool(cfg["engine"]["reuse_evals"]), key="adv_reuse_evals",
+            help="Instead of re-running Stockfish. Unchecking restores the "
+                 "old always-re-analyze behavior.")
+
+        st.markdown("**Batch worker**")
+        consecutive_failure_limit = st.number_input(
+            "Stop after this many consecutive game failures", min_value=1,
+            max_value=100, step=1,
+            value=int(cfg["worker"]["consecutive_failure_limit"]),
+            key="adv_consecutive_failure_limit",
+            help="Stops the batch rather than silently failing the whole queue.")
+        commit_every_n_moves = st.number_input(
+            "Commit every N moves", min_value=1, max_value=100, step=1,
+            value=int(cfg["worker"]["commit_every_n_moves"]),
+            key="adv_commit_every_n_moves",
+            help="1 (default) is safest -- a crash loses at most the "
+                 "in-flight position. Not recommended to change.")
+
+        st.markdown("**Ingestion queue fairness**")
+        berserk_max_clock_fraction = st.number_input(
+            "Berserk clock fraction", min_value=0.0, max_value=1.0, step=0.05,
+            format="%.2f", value=float(cfg["ingestion"]["berserk_max_clock_fraction"]),
+            key="adv_berserk_max_clock_fraction",
+            help="A color is flagged berserk when its first clock reading "
+                 "is at or below this fraction of the base time.")
+        backlog_quota = st.number_input(
+            "Backlog quota", min_value=0.0, max_value=1.0, step=0.05,
+            format="%.2f", value=float(cfg["ingestion"]["backlog_quota"]),
+            key="adv_backlog_quota",
+            help="Minimum share of recently-analyzed games that must come "
+                 "from the historical backlog, even while new synced games "
+                 "are pending. 0 = recent games always win; 1 = backlog only.")
+        backlog_quota_window = st.number_input(
+            "Backlog quota window (games)", min_value=1, max_value=1000, step=1,
+            value=int(cfg["ingestion"]["backlog_quota_window"]),
+            key="adv_backlog_quota_window",
+            help="How many of the most recently analyzed games the backlog "
+                 "quota above looks at.")
+
+        st.markdown("**Sync timeouts**")
+        sync_timeout = st.number_input(
+            "Lichess sync request timeout (s)", min_value=1, max_value=300, step=1,
+            value=int(cfg["sync"]["request_timeout_seconds"]), key="adv_sync_timeout")
+        sync_chesscom_timeout = st.number_input(
+            "Chess.com sync request timeout (s)", min_value=1, max_value=300, step=1,
+            value=int(cfg["sync_chesscom"]["request_timeout_seconds"]),
+            key="adv_sync_chesscom_timeout")
+
+        if st.button("Save advanced settings"):
+            config.set_engine_setting("pv_max_len", int(pv_max_len))
+            config.set_engine_setting("reuse_evals", bool(reuse_evals))
+            config.set_worker_setting("consecutive_failure_limit", int(consecutive_failure_limit))
+            config.set_worker_setting("commit_every_n_moves", int(commit_every_n_moves))
+            config.set_ingestion_setting("berserk_max_clock_fraction", round(float(berserk_max_clock_fraction), 2))
+            config.set_ingestion_setting("backlog_quota", round(float(backlog_quota), 2))
+            config.set_ingestion_setting("backlog_quota_window", int(backlog_quota_window))
+            config.set_sync_setting("request_timeout_seconds", int(sync_timeout))
+            config.set_sync_chesscom_setting("request_timeout_seconds", int(sync_chesscom_timeout))
+            st.toast("Advanced settings saved.", icon="✅")
+            st.rerun()
+
+
+def _render_account_data_tab(highlight_field=None):
+    if highlight_field:
+        st.info(f"🔍 Jumped here for: **{highlight_field}**")
     st.subheader("Import an existing database")
     st.caption(
         "For returning users: point at a chesswright-compatible database "
@@ -246,12 +699,6 @@ def render():
     st.divider()
     _render_chesscom_section()
 
-    st.divider()
-    _render_pro_section()
-
-    st.divider()
-    _render_support_section()
-
 
 def _render_chesscom_section():
     """Additive-only chess.com sync (see BRIEF.md's chess.com integration
@@ -326,7 +773,8 @@ def _render_pro_section():
             "**Coach Mode** is available in Chesswright Pro.\n\n"
             "Pro adds student profile management — analyse any lichess player's "
             "games in an isolated database, switch between profiles without "
-            "losing your own analysis, and generate per-game reports.\n\n"
+            "losing your own analysis, and generate per-game and tournament-prep "
+            "reports.\n\n"
             "Purchase at [chesswright.gumroad.com](https://chesswright.gumroad.com) "
             "then install the Pro package and enter your license key here."
         )

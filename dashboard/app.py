@@ -25,8 +25,12 @@ import streamlit as st
 from version import __version__
 
 import analytics
+import data
 import theme
 from _common import get_config, get_connections
+from cached_queries import (
+    cached_headline_stats, cached_openings_table_full, cached_career_findings,
+)
 import overview_view
 import patterns_view
 import openings_view
@@ -45,6 +49,7 @@ import batch_impact_view
 import ask_view
 import drill_export_view
 import srs_drill_view
+import training_queue_view
 import opening_tree_view
 import prep_view
 import annotate
@@ -240,10 +245,14 @@ overview_page = st.Page(
         matchups_page=matchups_page,
         endings_page=endings_page,
         highlights_page=highlights_page,
+        insights_page=insights_page,
+        openings_page=openings_page,
     ),
     title="Overview", url_path="overview", default=not NEEDS_ONBOARDING)
-patterns_page = st.Page(patterns_view.render, title="Patterns & Tendencies",
-                         url_path="patterns")
+patterns_page = st.Page(
+    lambda: patterns_view.render(endings_page=endings_page, matchups_page=matchups_page,
+                                  training_queue_page=training_queue_page),
+    title="Patterns & Tendencies", url_path="patterns")
 openings_page = st.Page(
     lambda: openings_view.render(drill_export_page=drill_export_page),
     title="Openings & Repertoire", url_path="openings",
@@ -251,8 +260,9 @@ openings_page = st.Page(
 matchups_page = st.Page(lambda: matchups_view.render(matchups_page, detail_page,
                                                      prep_page=prep_page),
                          title="Matchups & Opponents", url_path="matchups")
-endings_page = st.Page(game_endings_view.render, title="Game Endings",
-                        url_path="game-endings")
+endings_page = st.Page(
+    lambda: game_endings_view.render(patterns_page=patterns_page),
+    title="Game Endings", url_path="game-endings")
 highlights_page = st.Page(
     lambda: tactical_highlights_view.render(
         highlights_page, detail_page, drill_export_page=drill_export_page,
@@ -265,12 +275,27 @@ insights_page = st.Page(
 )
 points_page = st.Page(lambda: points_view.render(points_page, detail_page),
                        title="Where Your Points Go", url_path="points")
-evolution_page = st.Page(evolution_view.render, title="Repertoire Evolution",
-                          url_path="evolution")
+evolution_page = st.Page(
+    lambda: evolution_view.render(openings_page=openings_page),
+    title="Repertoire Evolution", url_path="evolution")
 explorer_page = st.Page(lambda: game_explorer_view.render(explorer_page, detail_page),
                          title="Game Explorer", url_path="game-explorer")
-drill_export_page = st.Page(drill_export_view.render, title="Drill Export",
-                             url_path="drill-export")
+drill_export_page = st.Page(
+    lambda: drill_export_view.render(srs_drill_page=srs_drill_page),
+    title="Drill Export", url_path="drill-export")
+# Training Center MVP (roadmap S17 Q4 / S19) -- placed in "Explore" next to
+# the practice tools it feeds into (Drill Export, Opponent Prep), not in
+# "Career" alongside the read-only reporting pages it draws its findings
+# from. No new "Training Center" nav group yet: the roadmap's full Phase 5
+# vision (trainers, plans, achievements) doesn't exist yet, and standing up
+# a whole new sidebar group for one page would be premature -- revisit once
+# more Phase 5 pages actually land.
+training_queue_page = st.Page(
+    lambda: training_queue_view.render(drill_export_page=drill_export_page,
+                                        prep_page=prep_page,
+                                        analysis_jobs_page=analysis_jobs_page),
+    title="Training Queue", url_path="training-queue",
+)
 srs_drill_page = st.Page(srs_drill_view.render, title="SRS Drills ✦",
                           url_path="srs-drills")
 opening_tree_page = st.Page(opening_tree_view.render, title="Opening Tree ✦",
@@ -293,12 +318,94 @@ onboarding_page = st.Page(lambda: onboarding_view.render(overview_page),
                            title="Setup" if NEEDS_ONBOARDING else "Sync Games",
                            url_path="setup", default=NEEDS_ONBOARDING)
 
+# ---------- Global Search (roadmap §25) ----------
+# Pinned sidebar search box, not a global Ctrl+K -- Streamlit custom
+# components render inside their own sandboxed iframe and can't capture
+# keydown events fired anywhere else on the page, so a true global
+# keybind isn't achievable with this codebase's existing custom-component
+# pattern (see docs/implementation_roadmap.md §25 for the full
+# reasoning). Placed here, after every *_page variable above exists (the
+# url_path -> page lookup below needs them) and before st.navigation()/
+# pg.run() -- Streamlit still renders sidebar elements in script-
+# execution order regardless of where in the file the call happens, so
+# this appears below "Refresh data" in the actual sidebar despite being
+# defined near the bottom of the file. Gated on NEEDS_ONBOARDING like
+# the other data-dependent sidebar bits above (_sidebar_job_status, the
+# active-profile indicator) -- a fresh install with zero games has
+# nothing worth searching, and the onboarding wizard has its own
+# explicit navigation that a stray search hit shouldn't be able to skip
+# past.
+if not NEEDS_ONBOARDING:
+    _url_path_to_page = {
+        "overview": overview_page, "patterns": patterns_page, "openings": openings_page,
+        "matchups": matchups_page, "game-endings": endings_page,
+        "tactical-highlights": highlights_page, "insights": insights_page,
+        "points": points_page, "evolution": evolution_page,
+        "game-explorer": explorer_page, "drill-export": drill_export_page,
+        "training-queue": training_queue_page, "srs-drills": srs_drill_page,
+        "opening-tree": opening_tree_page, "opponent-prep": prep_page,
+        "ask": ask_page, "settings": settings_page,
+        "analysis-jobs": analysis_jobs_page, "batch-impact": batch_impact_page,
+    }
+    _search_candidates_static = list(data.PAGE_CANDIDATES) + list(data.SETTINGS_CANDIDATES)
+
+    if _pro_nav_groups:
+        # chesswright_pro is a separate proprietary repo -- dashboard/data
+        # stays free of any import from it, so its one nav page (Coach
+        # Mode) is handled entirely here rather than in data/search.py.
+        # Title/url_path below are hardcoded to match the real page
+        # object chesswright_pro/__init__.py constructs for its Coach
+        # view (title "Coach Mode", url path "coach") -- not introspected
+        # off that Pro page object itself (unverified/fragile Streamlit-
+        # internals territory). NOTE: deliberately not written here as a
+        # literal `st.Page(...)`-shaped snippet -- tests/unit/test_app_
+        # capabilities.py's regex scans this whole file's raw text
+        # (including comments) for that exact shape to find real pages;
+        # spelling out the Pro call that way here previously caused it to
+        # false-positive-match a page that doesn't actually exist in this
+        # file. The lookup below is wrapped in try/except: Pro is
+        # optional, so search must degrade gracefully (skip Coach Mode)
+        # rather than crash if anything about resolving the real page
+        # object fails.
+        _search_candidates_static.append(
+            {"category": "page", "title": "Coach Mode", "url_path": "coach"})
+        try:
+            for _pro_pages in _pro_nav_groups.values():
+                for _pro_page in _pro_pages:
+                    if getattr(_pro_page, "title", None) == "Coach Mode":
+                        _url_path_to_page["coach"] = _pro_page
+                        break
+        except Exception:
+            pass
+
+    search_query = st.sidebar.text_input(
+        "Search", key="_global_search_query",
+        placeholder="Search pages, openings, findings, settings…")
+    if search_query:
+        _search_stats = cached_headline_stats(duck_conn, sqlite_conn)
+        _search_openings_df = cached_openings_table_full(duck_conn, sqlite_conn)
+        _search_findings = cached_career_findings(
+            duck_conn, sqlite_conn, _search_stats.get("blunder_rate"))
+        _search_candidates = _search_candidates_static + data.build_dynamic_candidates(
+            _search_openings_df, _search_findings)
+        _search_results = data.rank_candidates(search_query, _search_candidates)
+        if not _search_results:
+            st.sidebar.caption("No matches.")
+        for _i, _r in enumerate(_search_results):
+            if st.sidebar.button(f"{_r['category'].capitalize()} · {_r['title']}",
+                                  key=f"_search_result_{_i}"):
+                if _r.get("preset"):
+                    st.session_state[f"_{_r['url_path']}_preset"] = _r["preset"]
+                _target = _url_path_to_page.get(_r["url_path"])
+                if _target:
+                    st.switch_page(_target)
+
 pg = st.navigation({
     "Career": [overview_page, patterns_page, openings_page, matchups_page,
                endings_page, highlights_page, insights_page, points_page,
                evolution_page],
-    "Explore": [explorer_page, drill_export_page, srs_drill_page, opening_tree_page,
-                prep_page, ask_page, detail_page],
+    "Explore": [explorer_page, drill_export_page, training_queue_page, srs_drill_page,
+                opening_tree_page, prep_page, ask_page, detail_page],
     "App": [settings_page, analysis_jobs_page, batch_impact_page, onboarding_page],
     **_pro_nav_groups,
 })

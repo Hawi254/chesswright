@@ -19,7 +19,7 @@ import charts
 import chess_display
 import data
 import theme
-from _common import get_connections
+from _common import get_connections, persist_filter, restore_filter_default
 from cached_queries import (
     cached_failed_conversion_causes, cached_headline_stats, cached_points_ledger,
 )
@@ -94,7 +94,9 @@ def render(self_page=None, detail_page=None):
 
     tc_options = ["All time controls"] + sorted(
         classified.time_control_category.dropna().unique())
-    tc = st.selectbox("Time control", tc_options)
+    restore_filter_default("points_tc", tc_options[0])
+    tc = st.selectbox("Time control", tc_options, key="points_tc")
+    persist_filter("points_tc")
     view = classified if tc == "All time controls" else \
         classified[classified.time_control_category == tc]
     if view.empty:

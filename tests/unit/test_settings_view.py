@@ -1,0 +1,95 @@
+"""Unit tests for settings_view.py's pure-logic helpers (extracted from
+Streamlit UI glue so they're testable without a real Stockfish binary)."""
+import os
+import pathlib
+import sys
+
+import pytest
+
+sys.path.insert(0, str(pathlib.Path(__file__).parent.parent.parent / "dashboard"))
+import settings_view
+
+
+@pytest.mark.unit
+class TestInstallEngineBinary:
+    def test_copies_chmods_and_validates(self, tmp_path):
+        src = tmp_path / "fake_stockfish"
+        src.write_text("#!/bin/sh\necho fake\n")
+        engines_dir = tmp_path / "engines"
+
+        name = settings_view._install_engine_binary(
+            src, engines_dir, validate_fn=lambda p: "Fake Engine 1.0")
+
+        dest = engines_dir / "fake_stockfish"
+        assert dest.exists()
+        assert os.access(dest, os.X_OK)
+        assert name == "Fake Engine 1.0"
+
+    def test_removes_file_on_validation_failure(self, tmp_path):
+        src = tmp_path / "not_an_engine"
+        src.write_text("garbage")
+        engines_dir = tmp_path / "engines"
+
+        def fail(_path):
+            raise RuntimeError("not a UCI engine")
+
+        with pytest.raises(RuntimeError, match="not a UCI engine"):
+            settings_view._install_engine_binary(src, engines_dir, validate_fn=fail)
+
+        assert not (engines_dir / "not_an_engine").exists()
+
+
+@pytest.mark.unit
+class TestInstallEngineUpload:
+    def test_writes_bytes_chmods_and_validates(self, tmp_path):
+        class FakeUpload:
+            name = "fake_upload_engine"
+            def getvalue(self):
+                return b"#!/bin/sh\necho fake\n"
+
+        engines_dir = tmp_path / "engines"
+        name = settings_view._install_engine_upload(
+            FakeUpload(), engines_dir, validate_fn=lambda p: "Fake Engine 2.0")
+
+        dest = engines_dir / "fake_upload_engine"
+        assert dest.exists()
+        assert os.access(dest, os.X_OK)
+        assert name == "Fake Engine 2.0"
+
+
+@pytest.mark.unit
+class TestClearInteractiveEngineWidgetState:
+    def test_pops_all_six_ie_keys(self, monkeypatch):
+        fake_session_state = {
+            "ie_time_sec": 0.5, "ie_depth": 15, "ie_threads": 1,
+            "ie_hash_mb": 32, "ie_store_threshold": 20,
+            "ie_use_cloud_eval": True, "unrelated_key": "untouched",
+        }
+        monkeypatch.setattr(settings_view.st, "session_state", fake_session_state)
+        settings_view._clear_interactive_engine_widget_state()
+        assert fake_session_state == {"unrelated_key": "untouched"}
+
+    def test_safe_when_keys_absent(self, monkeypatch):
+        monkeypatch.setattr(settings_view.st, "session_state", {})
+        settings_view._clear_interactive_engine_widget_state()  # must not raise
+
+
+@pytest.mark.unit
+class TestRankSettingsMatches:
+    def test_finds_timezone_by_partial_word(self):
+        matches = settings_view._rank_settings_matches("timezone")
+        labels = [label for _tab, label in matches]
+        assert "Local timezone" in labels
+
+    def test_finds_engine_location_by_keyword(self):
+        matches = settings_view._rank_settings_matches("stockfish")
+        labels = [label for _tab, label in matches]
+        assert "Engine location" in labels
+
+    def test_no_match_returns_empty(self):
+        matches = settings_view._rank_settings_matches("zzzznonsense")
+        assert matches == []
+
+    def test_respects_limit(self):
+        matches = settings_view._rank_settings_matches("settings", limit=2)
+        assert len(matches) <= 2

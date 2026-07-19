@@ -99,3 +99,50 @@ def get_win_rate_by_color(duck_conn):
         FROM db.games WHERE outcome_for_player IS NOT NULL
         GROUP BY player_color
     """).fetchdf()
+
+
+def get_rating_snapshot(duck_conn):
+    """Current rating (most recent game's player_rating) and all-time peak.
+    Board-derived, same population as get_rating_trajectory -- no analysis
+    needed."""
+    row = duck_conn.execute("""
+        SELECT
+            (SELECT player_rating FROM db.games
+             WHERE player_rating IS NOT NULL
+             ORDER BY utc_date DESC, utc_time DESC LIMIT 1) AS current_rating,
+            (SELECT MAX(player_rating) FROM db.games) AS peak_rating
+    """).fetchone()
+    return {"current_rating": row[0], "peak_rating": row[1]}
+
+
+def get_current_streak(duck_conn):
+    """Current ACTIVE streak (consecutive most-recent games sharing the same
+    outcome) -- distinct from achievements.py's _longest_win_streak_end,
+    which computes the longest-EVER streak for unlock checks. All games, not
+    analyzed-only: outcome_for_player needs no engine analysis."""
+    df = duck_conn.execute("""
+        SELECT outcome_for_player FROM db.games
+        WHERE outcome_for_player IS NOT NULL
+        ORDER BY utc_date DESC, utc_time DESC
+    """).fetchdf()
+    if len(df) == 0:
+        return {"outcome": None, "length": 0}
+    outcomes = df["outcome_for_player"].tolist()
+    current = outcomes[0]
+    length = 0
+    for outcome in outcomes:
+        if outcome != current:
+            break
+        length += 1
+    return {"outcome": current, "length": length}
+
+
+def get_recent_form_snapshot(duck_conn, n=5):
+    """Last n games for Overview's recent-form ticker. All board-derived
+    (result/opponent/date/rating-change), no analysis dependency."""
+    return duck_conn.execute("""
+        SELECT outcome_for_player, opponent_name, utc_date, player_rating_change
+        FROM db.games
+        ORDER BY utc_date DESC, utc_time DESC
+        LIMIT ?
+    """, [n]).fetchdf()

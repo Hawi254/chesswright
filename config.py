@@ -213,9 +213,9 @@ def _set_section_scalar(section: str, key: str, value, path=None):
 
 
 def set_engine_setting(key: str, value, path=None):
-    """key in {depth, multipv, threads, hash_mb} -- NOT path (see
-    set_engine_path(), which needs quoting for Windows paths with
-    spaces; these are all bare numbers)."""
+    """key in {depth, multipv, threads, hash_mb, pv_max_len, reuse_evals}
+    -- NOT path (see set_engine_path(), which needs quoting for Windows
+    paths with spaces; these are all bare numbers/booleans)."""
     _set_section_scalar("engine", key, value, path)
 
 
@@ -224,6 +224,35 @@ def set_worker_setting(key: str, value, path=None):
     both ("no cap" for either, matching config.yaml's own documented
     default), not an error case to special-case away."""
     _set_section_scalar("worker", key, value, path)
+
+
+def set_analytics_setting(key: str, value, path=None):
+    """key in {min_sample_size, utc_offset_hours, ...} -- any bare-scalar
+    key under analytics:. Same _set_section_scalar mechanism as
+    set_engine_setting/set_worker_setting."""
+    _set_section_scalar("analytics", key, value, path)
+
+
+def set_ingestion_setting(key: str, value, path=None):
+    """key in {variant_policy, queue_strategy, berserk_max_clock_fraction,
+    backlog_quota, backlog_quota_window} -- any bare-scalar key under
+    ingestion:. variant_policy/queue_strategy are bare, unquoted words in
+    config.yaml and _set_section_scalar's str(value) already renders a
+    bare word correctly for these two (no spaces/special YAML chars), so
+    no separate quoting branch is needed the way set_engine_path() needs
+    one for filesystem paths."""
+    _set_section_scalar("ingestion", key, value, path)
+
+
+def set_sync_setting(key: str, value, path=None):
+    """key: request_timeout_seconds -- the only scalar under sync: today."""
+    _set_section_scalar("sync", key, value, path)
+
+
+def set_sync_chesscom_setting(key: str, value, path=None):
+    """key: request_timeout_seconds -- the only scalar under
+    sync_chesscom: today."""
+    _set_section_scalar("sync_chesscom", key, value, path)
 
 
 def save_interactive_engine(settings: dict, path=None):
@@ -367,3 +396,81 @@ def set_engine_path(engine_path, path=None):
         raise ValueError(
             f"Could not find an engine.path line to update in {path}.")
     path.write_text(new_text)
+
+
+def reset_engine_path(path=None) -> None:
+    """Clears engine.path back to null (auto-detect) -- the Settings
+    page's 'Reset to defaults' action for the Engine location control.
+    Distinct from set_engine_path() (which always quotes a real path
+    string) since null must render as the bare YAML null literal, not
+    the string "None"."""
+    _set_section_scalar("engine", "path", None, path)
+
+
+# ---------------------------------------------------------------------------
+# Engine Profiles -- named snapshots of engine.*/interactive_engine.* only
+# (batch depth/multipv/threads/hash_mb + all interactive_engine fields).
+# Distinct from the Pro profile machinery above (PROFILES_DIR/list_profiles/
+# initialize_profile/remove_profile), which snapshots a whole separate
+# student database + config -- these are just speed/depth presets like
+# "Laptop" vs "Deep Analysis", stored in one small YAML file, not a
+# directory per profile.
+# ---------------------------------------------------------------------------
+
+ENGINE_PROFILES_PATH = CHESSWRIGHT_DIR / "engine_profiles.yaml"
+
+_ENGINE_PROFILE_FIELDS = {
+    "engine": ["depth", "multipv", "threads", "hash_mb"],
+    "interactive_engine": ["time_sec", "depth", "threads", "hash_mb",
+                            "store_threshold", "use_lichess_cloud_eval"],
+}
+
+
+def _load_engine_profiles() -> dict:
+    if not ENGINE_PROFILES_PATH.exists():
+        return {}
+    with open(ENGINE_PROFILES_PATH) as f:
+        return yaml.safe_load(f) or {}
+
+
+def save_engine_profile(name: str, path=None) -> None:
+    """Snapshots the CURRENT engine.*/interactive_engine.* values (from
+    the live config, or *path* if given) under *name*. Overwrites any
+    existing profile of the same name."""
+    cfg = load_config(path)
+    snapshot = {}
+    for section, keys in _ENGINE_PROFILE_FIELDS.items():
+        for key in keys:
+            snapshot[f"{section}.{key}"] = cfg[section][key]
+    profiles = _load_engine_profiles()
+    profiles[name] = snapshot
+    CHESSWRIGHT_DIR.mkdir(exist_ok=True)
+    ENGINE_PROFILES_PATH.write_text(yaml.dump(profiles, default_flow_style=False))
+
+
+def list_engine_profiles() -> list[str]:
+    return sorted(_load_engine_profiles().keys())
+
+
+def apply_engine_profile(name: str, path=None) -> None:
+    """Writes a saved profile's engine.*/interactive_engine.* values back
+    into config.yaml (or *path*) in one action. Raises KeyError if *name*
+    doesn't exist."""
+    snapshot = _load_engine_profiles()[name]
+    engine_settings = {}
+    interactive_settings = {}
+    for dotted_key, value in snapshot.items():
+        section, key = dotted_key.split(".", 1)
+        if section == "engine":
+            engine_settings[key] = value
+        else:
+            interactive_settings[key] = value
+    for key, value in engine_settings.items():
+        set_engine_setting(key, value, path=path)
+    save_interactive_engine(interactive_settings, path=path)
+
+
+def delete_engine_profile(name: str) -> None:
+    profiles = _load_engine_profiles()
+    profiles.pop(name, None)
+    ENGINE_PROFILES_PATH.write_text(yaml.dump(profiles, default_flow_style=False))

@@ -57,10 +57,14 @@ class TestAllCareerPagesRender:
         "openings_view",
         "game_endings_view",
         "insights_view",
+        "training_queue_view",  # render(drill_export_page=None, prep_page=None, analysis_jobs_page=None) defaults
         "points_view",  # render(self_page=None, detail_page=None) defaults
         "srs_drill_view",  # renders upsell when pro_gate inactive, full tabs when active
         "evolution_view",
         "batch_impact_view",  # render(self_page=None, detail_page=None) defaults
+        "analysis_jobs_view",  # render(batch_impact_page=None) default
+        "ask_view",  # free-tier body when pro_gate inactive, delegates to AI Coach when active
+        "settings_view",
     ])
     def test_no_arg_page_renders(self, module_name):
         at = _page_apptest(module_name)
@@ -76,6 +80,37 @@ class TestAllCareerPagesRender:
         at = _page_apptest(module_name, call_with_dummy_pages=True)
         at.run(timeout=60)
         assert not at.exception, f"{module_name} raised: {at.exception}"
+
+
+@pytest.mark.ui
+class TestAskViewFreeTierUnchanged:
+    """Dedicated coverage for the Pro gate added to ask_view.py. Confirms
+    the free-tier body (preset buttons, ask_history session state) still
+    renders exactly as before, and that the chesswright_pro import path is
+    never attempted, when pro_gate.is_pro_active() is False -- the actual
+    state in this dev/test environment (no license key active), verified
+    directly rather than assumed."""
+
+    def test_pro_gate_inactive_in_this_environment(self):
+        import pro_gate
+        assert pro_gate.is_pro_active() is False
+
+    def test_free_tier_renders_with_preset_buttons_and_upsell(self, monkeypatch):
+        import pro_gate
+        monkeypatch.setattr(pro_gate, "is_pro_active", lambda: False)
+
+        at = _page_apptest("ask_view")
+        at.run(timeout=60)
+        assert not at.exception, f"ask_view raised: {at.exception}"
+
+        # Free-tier preset-question buttons still render (unchanged body).
+        preset_labels = {b.label for b in at.button}
+        assert "Blunder timing" in preset_labels
+        assert "Ask" in preset_labels
+
+        # Honest upsell blurb present, no Pro-import error surfaced.
+        assert any("AI Coach" in i.value for i in at.info)
+        assert not at.error
 
 
 @pytest.mark.ui
@@ -153,3 +188,71 @@ class TestNarrativeDeterminism:
         n1 = narrative.generate_narrative(header, moves)
         n2 = narrative.generate_narrative(header, moves)
         assert n1 == n2, "Narrative is not deterministic for the same game"
+
+
+@pytest.mark.ui
+class TestAnalysisJobsBackfillSection:
+    """Dedicated coverage for the eval-reuse cache backfill section added to
+    analysis_jobs_view.py. Unlike every other test in this file, this one
+    actually WRITES (the backfill button click writes batch_eval_cache
+    rows) -- so, per this project's rule against tests touching the real
+    chess.db, it runs against an isolated tmp_path scratch DB pre-seeded
+    with backfill-eligible historical moves, with
+    analysis_jobs_view.resolve_db_path monkeypatched to point at it (same
+    module-attribute-patch approach as tests/unit/test_duckdb_extension_
+    loading.py's monkeypatch.setattr(_common, ...) pattern, adapted here
+    since AppTest's LocalScriptRunner runs the generated script in-process,
+    so the patched module attribute is visible to it)."""
+
+    def _seed_pending_db(self, db_path):
+        import sqlite3
+        import chess
+        from migrate import migrate
+
+        migrate(db_path)
+        conn = sqlite3.connect(db_path)
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute(
+            "INSERT INTO analysis_runs (id, started_at, depth, multipv) VALUES (1, 't0', 8, 1)")
+        conn.execute("""
+            INSERT INTO games (id, white, black, num_plies, last_analyzed_ply, analysis_status, queue_order)
+            VALUES ('g1', 'W', 'B', 1, 1, 'done', 0)
+        """)
+        fen_before = chess.Board().fen()
+        conn.execute("""
+            INSERT INTO moves (id, game_id, ply, move_number, color, san, fen_before, engine_version,
+                                analysis_run_id, eval_source)
+            VALUES (1, 'g1', 1, 1, 'white', 'e4', ?, 'Stockfish 16', 1, 'engine')
+        """, (fen_before,))
+        conn.execute("""
+            INSERT INTO move_lines (move_id, pv_rank, eval_cp, eval_mate, move_san, pv_json, score_is_exact)
+            VALUES (1, 1, 35, NULL, 'e4', '["e4"]', 1)
+        """)
+        conn.commit()
+        conn.close()
+
+    def test_backfill_button_appears_and_backfill_click_writes_cache(self, tmp_path, monkeypatch):
+        db_path = str(tmp_path / "pending.db")
+        self._seed_pending_db(db_path)
+
+        import analysis_jobs_view
+        monkeypatch.setattr(analysis_jobs_view, "resolve_db_path", lambda: db_path)
+
+        at = _page_apptest("analysis_jobs_view")
+        at.run(timeout=60)
+        assert not at.exception, f"analysis_jobs_view raised: {at.exception}"
+
+        backfill_buttons = [b for b in at.button if "Backfill eval-reuse cache now" in b.label]
+        assert backfill_buttons, "Backfill button not shown despite a pending eligible position"
+
+        backfill_buttons[0].click().run(timeout=60)
+        assert not at.exception, f"analysis_jobs_view raised on backfill click: {at.exception}"
+
+        successes = [s.value for s in at.success]
+        assert any("Backfilled" in s for s in successes), f"No backfill success message: {successes}"
+
+        import sqlite3
+        conn = sqlite3.connect(db_path)
+        cache_count = conn.execute("SELECT COUNT(*) FROM batch_eval_cache").fetchone()[0]
+        conn.close()
+        assert cache_count > 0, "Backfill click did not actually write batch_eval_cache rows"

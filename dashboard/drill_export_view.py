@@ -15,7 +15,7 @@ import analytics
 import data
 from cached_queries import cached_headline_stats
 from chess_display import drills_to_pgn_study, drills_to_anki_csv
-from _common import get_connections
+from _common import get_connections, render_where_next
 from theme import thin_data_message
 
 # Slider ceiling for "Max positions per source" -- the decisive-moments
@@ -51,7 +51,7 @@ _MOTIF_OPTIONS = [
 ]
 
 
-def render():
+def render(srs_drill_page=None):
     st.title("Drill Export")
     st.write(
         "Build a training set from your analysed games. "
@@ -217,3 +217,5 @@ def render():
             "Anki: File → Import, separator: Tab. "
             "Fields: FEN | Side to move | Engine best | Source | Context."
         )
+
+    render_where_next([("→ SRS Drills", srs_drill_page)])

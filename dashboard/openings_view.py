@@ -19,20 +19,7 @@ import data
 import live_engine
 import theme
 from _common import get_connections
-from cached_queries import cached_headline_stats
-
-
-@st.cache_data(show_spinner="Loading your opening statistics…")
-def cached_openings_table_full(_duck_conn, _sqlite_conn):
-    """Deliberately NOT keyed on the min-games slider -- the expensive
-    half of get_openings_table (a ~0.3s GROUP BY over all analyzed moves
-    for the ACPL column) never depended on min_games, only the HAVING on
-    the games-count half did, so keying on it made every slider move a
-    fresh cache miss (~0.4s measured). One unfiltered fetch per session;
-    callers filter `n >= min_games` in pandas. Also collapses what used
-    to be two separate cache entries (section 1's slider value and
-    section 4's fixed min_games=1) into one."""
-    return data.get_openings_table(_duck_conn, _sqlite_conn, min_games=1)
+from cached_queries import cached_headline_stats, cached_openings_table_full
 
 
 @st.cache_data(show_spinner="Finding your most-repeated positions…")
@@ -102,6 +89,15 @@ def render(drill_export_page=None):
             analytics.ensure_repertoire_holes_cache(sqlite_conn)
         st.session_state["openings_caches_ready"] = True
 
+    # Popped ONCE here, before either fragment runs -- Global Search
+    # (roadmap §25) sets "_openings_preset" then st.switch_page()s here.
+    # Has to happen in render() itself, not inside a fragment, for the
+    # same reason the caches-ready prep above does: a fragment only
+    # reruns in isolation on its own widget interactions, so session
+    # state a fragment depends on at first render has to be settled
+    # before that fragment's first run, not during it.
+    preset = st.session_state.pop("_openings_preset", None)
+
     # Each section is its own @st.fragment -- confirmed independent
     # before splitting, unlike a first look might suggest: section 4
     # (below) used to read section 1's own min_games-filtered
@@ -114,19 +110,47 @@ def render(drill_export_page=None):
     # played should be selectable there regardless of section 1's own
     # filter, which is arguably more correct than the accidental
     # coupling this replaces, not just a technical workaround.
-    _render_openings_table_section(sqlite_conn, duck_conn)
+    _render_openings_table_section(sqlite_conn, duck_conn, preset=preset)
     _render_most_repeated_positions_section(sqlite_conn)
     _render_repertoire_holes_section(sqlite_conn, drill_export_page)
     _render_opening_ply_accuracy_section(sqlite_conn, duck_conn)
 
 
 @st.fragment
-def _render_openings_table_section(sqlite_conn, duck_conn):
+def _render_openings_table_section(sqlite_conn, duck_conn, preset=None):
     with st.container(border=True):
         st.subheader("Your openings")
         st.caption("Click a column header to sort. The slider hides openings "
                    "you've played fewer times than the minimum.")
-        min_games = st.slider("Minimum games", 1, 50, 5)
+        # Global Search (roadmap §25) lands here with a specific
+        # opening_family to select below -- the min_games slider is a
+        # display filter, not a data-availability filter (openings_df
+        # from cached_openings_table_full includes every opening ever
+        # played), so a fresh preset forces it down to 1 to guarantee
+        # the target opening is actually visible in the table/selectbox
+        # rather than hidden by whatever the slider was last left at.
+        # Must happen BEFORE the slider widget below is instantiated --
+        # Streamlit requires a widget's key be written to session_state
+        # before that widget is created in the same script run, not
+        # after (confirmed live elsewhere in this codebase, e.g. the
+        # native-file-picker section of settings_view.py).
+        #
+        # Gated on a one-shot sentinel (not just "preset is not None"):
+        # @st.fragment reruns triggered by widgets INSIDE this fragment
+        # (e.g. dragging this very slider) re-invoke this function with
+        # the same frozen `preset` argument it was first called with,
+        # not None -- an unconditional force-set would silently snap the
+        # slider back to 1 on every such interaction, fighting the user
+        # for the rest of this preset's fragment lifetime. Applying it
+        # only once per distinct opening_family avoids that.
+        if preset is not None and st.session_state.get(
+                "_openings_preset_applied_for") != preset["opening_family"]:
+            st.session_state["openings_min_games"] = 1
+            st.session_state["_openings_preset_applied_for"] = preset["opening_family"]
+            _preset_freshly_applied = True
+        else:
+            _preset_freshly_applied = False
+        min_games = st.slider("Minimum games", 1, 50, 5, key="openings_min_games")
         full_df = cached_openings_table_full(duck_conn, sqlite_conn)
         # Cheap pandas filter over the session-cached full table --
         # equivalent to the old per-slider-value HAVING COUNT(*) >= ?.
@@ -160,6 +184,27 @@ def _render_openings_table_section(sqlite_conn, duck_conn):
         if not openings_df.empty:
             opening_labels = [f"{r.opening_family} ({r.player_color})"
                                for r in openings_df.itertuples()]
+            # Preset from Global Search: land on the first label matching
+            # the target opening_family (there may be one per color --
+            # whichever comes first is an honest MVP choice, not
+            # over-engineered color-matching). Written directly into
+            # session_state (before the widget below is created) rather
+            # than passed as `index=` -- this selectbox already has an
+            # explicit `key`, and once a key has a value in session_state
+            # a later `index=` is inert, so `index=` alone would silently
+            # do nothing for a user who already touched this selectbox
+            # earlier in the session. Gated on the same one-shot sentinel
+            # as the min_games slider above, for the same reason (a
+            # fragment-scoped rerun would otherwise re-force the user's
+            # own reselection back to the preset). Left unset (falls back
+            # to normal default behavior) if no match is found -- the
+            # min_games=1 reset above should always guarantee one, but
+            # openings_df could theoretically be empty.
+            if _preset_freshly_applied and preset is not None:
+                for label, r in zip(opening_labels, openings_df.itertuples()):
+                    if r.opening_family == preset["opening_family"]:
+                        st.session_state["opening_commentary_select"] = label
+                        break
             chosen_label = st.selectbox("Tell me about this opening", opening_labels,
                                          key="opening_commentary_select")
             chosen_row = openings_df.iloc[opening_labels.index(chosen_label)]
@@ -404,3 +449,43 @@ def _render_opening_ply_accuracy_section(sqlite_conn, duck_conn):
                                        f"{r.blunder_rate:.0f}% blunder)"
                                        for r in worst.itertuples())
                 st.caption(f"Highest-CPL move numbers: {worst_nums}")
+
+            compare_labels = ["None"] + drill_labels
+            compare_label = st.selectbox("Compare against", compare_labels, index=0,
+                                         key="opening_ply_compare_select")
+            if compare_label != "None" and not ply_df.empty:
+                compare_row = openings_df.iloc[drill_labels.index(compare_label)]
+                compare_df = cached_opening_ply_accuracy(
+                    duck_conn, compare_row.opening_family, compare_row.player_color, min_app)
+                if compare_df.empty:
+                    st.info(theme.thin_data_message(0, min_app))
+                else:
+                    fig_overlay = theme.render_comparison_panel(
+                        [{"df": ply_df, "x": "move_number", "y": "avg_cpl",
+                          "label": drill_label},
+                         {"df": compare_df, "x": "move_number", "y": "avg_cpl",
+                          "label": compare_label}],
+                        mode="overlay", x_title="Move number",
+                        y_title="Average centipawn loss")
+                    st.plotly_chart(fig_overlay, theme=None)
+                    st.caption(f"{drill_label} vs. {compare_label}: average centipawn loss "
+                               f"by move number, side by side.")
+
+                    common_moves = set(ply_df.move_number) & set(compare_df.move_number)
+                    if not common_moves:
+                        st.info(theme.thin_data_message(0, 1))
+                    else:
+                        ply_common = ply_df[ply_df.move_number.isin(common_moves)]
+                        compare_common = compare_df[compare_df.move_number.isin(common_moves)]
+                        fig_diff = theme.render_comparison_panel(
+                            [{"df": ply_common, "x": "move_number", "y": "avg_cpl",
+                              "label": drill_label},
+                             {"df": compare_common, "x": "move_number", "y": "avg_cpl",
+                              "label": compare_label}],
+                            mode="difference", x_title="Move number",
+                            y_title=f"CPL difference ({compare_label} minus {drill_label}; "
+                                    f"positive = {compare_label} more accurate)")
+                        st.plotly_chart(fig_diff, theme=None)
+                        st.caption(f"Move numbers where both openings have enough games "
+                                   f"({len(common_moves)} shared move numbers). Positive bars "
+                                   f"mean {compare_label} loses less here than {drill_label}.")

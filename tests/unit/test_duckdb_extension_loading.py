@@ -19,6 +19,7 @@ sys.path.insert(0, str(REPO_ROOT / "dashboard"))
 import duckdb
 
 import _common
+import connections
 
 _FETCHED_EXT = (REPO_ROOT / "build_assets" / "duckdb_extensions"
                 / "sqlite_scanner.duckdb_extension")
@@ -37,7 +38,7 @@ def _offline_conn(tmp_path):
     reason="run scripts/fetch_duckdb_extensions.py once (online) first",
 )
 def test_bundled_extension_loads_with_no_network(tmp_path, monkeypatch):
-    monkeypatch.setattr(_common, "_bundled_sqlite_extension_path",
+    monkeypatch.setattr(connections, "_bundled_sqlite_extension_path",
                         lambda: _FETCHED_EXT)
     conn = _offline_conn(tmp_path)
     try:
@@ -52,7 +53,7 @@ def test_bundled_extension_loads_with_no_network(tmp_path, monkeypatch):
 
 
 def test_no_bundle_no_network_raises_actionable_error(tmp_path, monkeypatch):
-    monkeypatch.setattr(_common, "_bundled_sqlite_extension_path",
+    monkeypatch.setattr(connections, "_bundled_sqlite_extension_path",
                         lambda: tmp_path / "nope.duckdb_extension")
     conn = _offline_conn(tmp_path)
     try:

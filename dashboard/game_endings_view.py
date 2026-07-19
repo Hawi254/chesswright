@@ -8,7 +8,7 @@ import streamlit as st
 import charts
 import data
 import theme
-from _common import get_connections
+from _common import get_connections, render_where_next
 from cached_queries import (
     cached_resignation_loss_causes, cached_time_forfeit_loss_breakdown,
 )
@@ -49,7 +49,7 @@ def cached_resignation_time_pressure_trend(_duck_conn):
     return data.get_resignation_time_pressure_trend(_duck_conn)
 
 
-def render():
+def render(patterns_page=None):
     sqlite_conn, duck_conn = get_connections()
     st.title("Game Endings")
 
@@ -268,3 +268,5 @@ def render():
                      ("pct_mutual", "mutual scramble", theme.ACCENT_GOLD)],
                     x_title="Quarter", y_title="% of time-forfeit losses"),
                 theme=None)
+
+    render_where_next([("→ Patterns & Tendencies", patterns_page)])

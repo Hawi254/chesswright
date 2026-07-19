@@ -202,3 +202,27 @@ class TestClassifyPositionCharacter:
         # tension despite both being "central-ish" in rank.
         r = cu.classify_position_character("4k3/8/8/4p3/P7/8/8/4K3 w - - 0 1")
         assert r["central_tension"] is False
+
+
+@pytest.mark.unit
+class TestClassifyBishopColorEnding:
+    def test_same_color_bishops(self):
+        # White bishop c1 (file 2, rank 1, sum=3, odd) and Black bishop f8
+        # (file 5, rank 8, sum=13, odd) -- same parity, same square color.
+        r = cu.classify_bishop_color_ending("4kb2/8/8/8/8/8/8/2B1K3 w - - 0 1")
+        assert r == "same"
+
+    def test_opposite_color_bishops(self):
+        # White bishop c1 (odd) and Black bishop c8 (file 2, rank 8, sum=10,
+        # even) -- same file, but ranks 7 apart flips the square color.
+        r = cu.classify_bishop_color_ending("2bk4/8/8/8/8/8/8/2B1K3 w - - 0 1")
+        assert r == "opposite"
+
+    def test_no_bishops_returns_none(self):
+        assert cu.classify_bishop_color_ending("4k3/8/8/8/8/8/8/4K3 w - - 0 1") is None
+
+    def test_unequal_bishop_counts_returns_none(self):
+        # White has two bishops (c1, f1), Black has one (f8) -- the
+        # same/opposite-color concept doesn't generalize past 1-vs-1.
+        r = cu.classify_bishop_color_ending("4kb2/8/8/8/8/8/8/2B1KB2 w - - 0 1")
+        assert r is None

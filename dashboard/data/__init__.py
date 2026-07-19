@@ -36,7 +36,8 @@ from ._shared import (
 )
 from .overview import (
     get_rating_trajectory, get_acpl_trajectory, get_win_rate_by_color,
-    get_progress_by_month,
+    get_progress_by_month, get_rating_snapshot, get_current_streak,
+    get_recent_form_snapshot,
 )
 from .openings import (
     INITIAL_FEN, FLIP_SCAN_MIN_TOTAL_GAMES,
@@ -45,14 +46,14 @@ from .openings import (
     store_position_analysis, get_opening_moves_from_fen,
     get_opening_moves_by_year, get_player_move_year_stats,
     compute_dominant_move_flips, summarize_position_timeline,
-    get_path_to_position,
+    get_path_to_position, resolve_move_squares,
 )
 from .patterns import (
     SHARPNESS_BUCKETS, PIECE_ORDER, PIECE_NAME,
     get_blunder_rate_by_time_pressure, get_acpl_by_time_control,
     get_phase_accuracy, get_prior_outcome_performance,
     get_session_position_performance, get_day_hour_heatmap,
-    get_material_structure_table, get_piece_movement_patterns,
+    get_material_structure_table, get_bishop_color_ending_performance, get_piece_movement_patterns,
     get_piece_blunder_by_phase, get_piece_blunder_by_sharpness,
     get_bishop_square_color_performance, get_rook_king_backrank_performance,
     get_castling_performance, get_sharpness_blunder_correlation,
@@ -60,12 +61,16 @@ from .patterns import (
     get_instant_move_rate_by_phase, get_instant_move_accuracy_by_legal_replies,
     get_position_character_performance, get_game_side_performance,
     get_square_blunder_heatmap,
+    get_favorite_underdog_performance, get_clock_pressure_by_rating_bucket,
+    get_clock_pressure_by_outcome, get_clock_pressure_by_color, get_clock_pressure_by_opening,
+    get_openings_by_rating_bucket, get_session_rollup,
+    get_event_type_performance, get_event_name_breakdown,
 )
 from .matchups import (
     get_win_rate_by_rating_diff, get_comeback_collapse_counts,
     get_color_performance_by_rating, get_giant_killing_counts,
     get_nemesis_opponents, get_giant_killing_collapse_causes,
-    get_giant_killing_rate_trend,
+    get_giant_killing_rate_trend, get_opponent_profile, get_opponent_swindle_rate,
 )
 from .game_endings import (
     get_game_end_type_breakdown, get_endgame_type_performance, get_resignation_loss_causes,
@@ -102,6 +107,7 @@ from .analysis_batches import (
 )
 from .drills import (
     get_motif_drill_positions, get_decisive_moment_positions, build_drill_cards,
+    drill_source_options,
 )
 from .srs import (
     SrsCard, get_due_cards, get_card_counts, add_cards, apply_rating, delete_card,
@@ -111,11 +117,20 @@ from .srs import (
     compute_motif_transfer,
 )
 from .prep import open_opponent_connections, get_recent_form, get_opening_tendencies
+from .ai_coach import (
+    start_conversation, add_turn, record_feedback, get_conversation_messages,
+    get_all_turns, get_profile, upsert_profile, count_turns_since,
+    record_capability_gap, get_capability_gaps,
+)
 from .variations import (
     Variation, Annotation,
     compute_variation_fen,
     save_variation, update_variation_moves, delete_variation,
     list_variations, get_variation_annotations, upsert_annotation,
+)
+from .search import (
+    PAGE_CANDIDATES, SETTINGS_CANDIDATES,
+    build_dynamic_candidates, rank_candidates,
 )
 
 __all__ = [
@@ -130,12 +145,12 @@ __all__ = [
     "store_position_analysis", "FLIP_SCAN_MIN_TOTAL_GAMES",
     "get_opening_moves_by_year", "get_player_move_year_stats",
     "compute_dominant_move_flips", "summarize_position_timeline",
-    "get_path_to_position",
+    "get_path_to_position", "resolve_move_squares",
     "SHARPNESS_BUCKETS", "PIECE_ORDER", "PIECE_NAME",
     "get_blunder_rate_by_time_pressure", "get_acpl_by_time_control",
     "get_phase_accuracy", "get_prior_outcome_performance",
     "get_session_position_performance", "get_day_hour_heatmap",
-    "get_material_structure_table", "get_piece_movement_patterns",
+    "get_material_structure_table", "get_bishop_color_ending_performance", "get_piece_movement_patterns",
     "get_piece_blunder_by_phase", "get_piece_blunder_by_sharpness",
     "get_bishop_square_color_performance", "get_rook_king_backrank_performance",
     "get_castling_performance", "get_sharpness_blunder_correlation",
@@ -143,10 +158,14 @@ __all__ = [
     "get_instant_move_rate_by_phase", "get_instant_move_accuracy_by_legal_replies",
     "get_position_character_performance", "get_game_side_performance",
     "get_square_blunder_heatmap",
+    "get_favorite_underdog_performance", "get_clock_pressure_by_rating_bucket",
+    "get_clock_pressure_by_outcome", "get_clock_pressure_by_color", "get_clock_pressure_by_opening",
+    "get_openings_by_rating_bucket", "get_session_rollup",
+    "get_event_type_performance", "get_event_name_breakdown",
     "get_win_rate_by_rating_diff", "get_comeback_collapse_counts",
     "get_color_performance_by_rating", "get_giant_killing_counts",
     "get_nemesis_opponents", "get_giant_killing_collapse_causes",
-    "get_giant_killing_rate_trend",
+    "get_giant_killing_rate_trend", "get_opponent_profile", "get_opponent_swindle_rate",
     "get_game_end_type_breakdown", "get_endgame_type_performance", "get_resignation_loss_causes",
     "get_resignation_time_pressure_trend",
     "RIM_SQL",
@@ -168,6 +187,7 @@ __all__ = [
     "get_endgame_type_batch_delta", "get_motif_batch_delta", "get_new_blunders_this_run",
     "get_batch_trend", "get_batch_record_flags", "get_batch_counter",
     "get_motif_drill_positions", "get_decisive_moment_positions", "build_drill_cards",
+    "drill_source_options",
     "SrsCard", "get_due_cards", "get_card_counts", "add_cards", "apply_rating", "delete_card",
     "TRANSFER_MIN_MOVES_AFTER",
     "get_review_history", "weekly_recall", "learning_curve", "recall_by_source",
@@ -178,4 +198,9 @@ __all__ = [
     "compute_variation_fen",
     "save_variation", "update_variation_moves", "delete_variation",
     "list_variations", "get_variation_annotations", "upsert_annotation",
+    "start_conversation", "add_turn", "record_feedback", "get_conversation_messages",
+    "get_all_turns", "get_profile", "upsert_profile", "count_turns_since",
+    "record_capability_gap", "get_capability_gaps",
+    "PAGE_CANDIDATES", "SETTINGS_CANDIDATES",
+    "build_dynamic_candidates", "rank_candidates",
 ]

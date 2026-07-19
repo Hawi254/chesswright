@@ -241,6 +241,321 @@ def _render_saved_variations(sqlite_conn, gid: str) -> None:
                 st.rerun()
 
 
+@st.fragment
+def _render_board_and_chat(sqlite_conn, duck_conn, selected_game_id, header,
+                            moves, ply, num_plies, _load_ply_key) -> None:
+    """The per-ply board region (variation-mode and non-variation-mode
+    branches) plus the Pro Board Chat panel, all inside one @st.fragment.
+
+    Board Chat's own turn-processing writes arrows/highlights into
+    session_state; those can only reach chessboard_component.render() on a
+    fragment-scoped rerun if that render() call lives in the SAME fragment
+    function as the chat panel -- see
+    docs/scoping/ai-coach-board-interaction-implementation-plan-2026-07-08.md
+    §5.1. The staleness-fix blocks below (comparing against
+    board_chat_directive_fen__) stop a chat-drawn arrow from surviving a
+    position change the chat didn't cause (§5.3).
+    """
+    row = moves[moves.ply == ply].iloc[0]
+    board_before = chess.Board(row.fen_before)
+    move = board_before.parse_san(row.san)
+    game_fen_after = narrative.position_after_ply(moves, ply)
+    orientation = "black" if header.player_color == "black" else "white"
+    in_variation = st.session_state.get(f"var_mode__{selected_game_id}", False)
+
+    if in_variation:
+        branch_fen  = st.session_state[f"var_branch_fen__{selected_game_id}"]
+        var_moves   = st.session_state.get(f"var_moves__{selected_game_id}", [])
+        var_step    = st.session_state.get(f"var_step__{selected_game_id}", 0)
+        current_fen = data.compute_variation_fen(branch_fen, var_moves, var_step)
+
+        branch_ply_val = st.session_state.get(f"var_branch_ply__{selected_game_id}", ply)
+        hdr_col, exit_col = st.columns([5, 1])
+        hdr_col.markdown(f"**Variation from move {(branch_ply_val + 1) // 2}** — "
+                         f"{var_step} of {len(var_moves)} moves")
+        if exit_col.button("Exit", key=f"var_exit__{selected_game_id}"):
+            for k in [f"var_mode__{selected_game_id}", f"var_branch_ply__{selected_game_id}",
+                      f"var_branch_fen__{selected_game_id}", f"var_moves__{selected_game_id}",
+                      f"var_step__{selected_game_id}", f"var_last_fen__{selected_game_id}"]:
+                st.session_state.pop(k, None)
+            st.rerun()
+
+        # Look up engine result BEFORE rendering board so arrows can be passed in.
+        live_var_key = f"live_result__{current_fen}"
+        live_var     = st.session_state.get(live_var_key)
+        var_engine_arrows = []
+        if live_var and live_var.best_move_san:
+            try:
+                _var_board = chess.Board(current_fen)
+                _em = _var_board.parse_san(live_var.best_move_san)
+                var_engine_arrows = [{"from": chess.square_name(_em.from_square),
+                                      "to":   chess.square_name(_em.to_square),
+                                      "color": f"{theme.POSITIVE}90"}]
+            except Exception:
+                pass
+
+        # Stable key (no `var_step`) -- see the non-variation board's
+        # comment above for why: avoids the remount-per-step flash,
+        # staleness now handled via "nonce" instead.
+        _directive_fen_key = f"board_chat_directive_fen__{selected_game_id}"
+        chat_arrows, chat_highlights = [], []
+        if st.session_state.get(_directive_fen_key) == current_fen:
+            chat_arrows     = st.session_state.get(f"board_chat_arrows__{selected_game_id}", [])
+            chat_highlights = st.session_state.get(f"board_chat_highlights__{selected_game_id}", [])
+
+        var_board_key = f"var_board__{selected_game_id}"
+        board_result = chessboard_component.render(
+            fen=current_fen, orientation=orientation, interactive=True,
+            arrows=var_engine_arrows + chat_arrows,
+            highlighted_squares=chat_highlights,
+            enable_keyboard_nav=True,
+            key=var_board_key,
+        )
+        var_board_nonce_key = f"{var_board_key}__nonce"
+        var_result_nonce = board_result.get("nonce") if board_result else None
+        is_new_var_event = (
+            board_result is not None
+            and var_result_nonce != st.session_state.get(var_board_nonce_key)
+        )
+        if is_new_var_event:
+            st.session_state[var_board_nonce_key] = var_result_nonce
+        if is_new_var_event and board_result.get("type") == "nav":
+            if board_result["direction"] == "prev" and var_step > 0:
+                st.session_state[f"var_step__{selected_game_id}"] = var_step - 1
+                st.rerun()
+            elif board_result["direction"] == "next" and var_step < len(var_moves):
+                st.session_state[f"var_step__{selected_game_id}"] = var_step + 1
+                st.rerun()
+        elif is_new_var_event and board_result.get("fen") != current_fen:
+            last_processed = st.session_state.get(f"var_last_fen__{selected_game_id}")
+            if board_result["fen"] != last_processed:
+                uci = board_result["uci"]
+                # Validate UCI against the actual current position before storing.
+                # A stale component result (from Bug 1) could carry a UCI that is
+                # illegal on current_fen and would crash compute_variation_fen.
+                try:
+                    _chk = chess.Board(current_fen)
+                    _chk.push_uci(uci)
+                except Exception:
+                    uci = None  # silently discard stale / invalid move
+                if uci:
+                    new_moves = var_moves[:var_step] + [uci]
+                    new_step  = var_step + 1
+                    st.session_state[f"var_moves__{selected_game_id}"]    = new_moves
+                    st.session_state[f"var_step__{selected_game_id}"]     = new_step
+                    st.session_state[f"var_last_fen__{selected_game_id}"] = board_result["fen"]
+                    var_id = st.session_state.get(f"var_id__{selected_game_id}")
+                    if var_id is None:
+                        var_id = data.save_variation(
+                            sqlite_conn, selected_game_id, branch_ply_val, branch_fen, new_moves)
+                        st.session_state[f"var_id__{selected_game_id}"] = var_id
+                    else:
+                        data.update_variation_moves(sqlite_conn, var_id, new_moves)
+                    st.rerun()
+
+        # Eval bar — shown only when a result is already available so
+        # the bar doesn't appear empty before the user clicks Analyse.
+        if live_var:
+            st.markdown(
+                chess_display.eval_bar_html(live_var.eval_cp, live_var.eval_mate, current_fen),
+                unsafe_allow_html=True,
+            )
+
+        # SAN sequence display + prev/next navigation
+        pv_col, nav_col = st.columns([6, 2])
+        with pv_col:
+            try:
+                vboard = chess.Board(branch_fen)
+                san_parts = []
+                for i, uci in enumerate(var_moves[:var_step]):
+                    m = chess.Move.from_uci(uci)
+                    san = vboard.san(m)
+                    if vboard.turn == chess.WHITE:
+                        san_parts.append(f"{vboard.fullmove_number}. {san}")
+                    elif i == 0:
+                        san_parts.append(f"{vboard.fullmove_number}… {san}")
+                    else:
+                        san_parts.append(san)
+                    vboard.push(m)
+                st.caption("Line: " + " ".join(san_parts) if san_parts else "Branch point")
+            except Exception:
+                pass
+        with nav_col:
+            nc1, nc2 = st.columns(2)
+            if nc1.button("< Prev", key=f"var_prev__{selected_game_id}",
+                          disabled=(var_step == 0)):
+                st.session_state[f"var_step__{selected_game_id}"] = var_step - 1
+                st.rerun()
+            if nc2.button("Next >", key=f"var_next__{selected_game_id}",
+                          disabled=(var_step >= len(var_moves))):
+                st.session_state[f"var_step__{selected_game_id}"] = var_step + 1
+                st.rerun()
+
+        # Engine eval display / analyse button
+        if live_var:
+            eval_label = chess_display.eval_str(live_var.eval_cp, live_var.eval_mate)
+            pv         = chess_display.pv_str(current_fen, live_var.pv_json)
+            depth_str  = f" (depth {live_var.depth})" if live_var.depth else ""
+            st.caption("Engine: " + eval_label + (f" — {pv}" if pv else "") + depth_str)
+        else:
+            engine_svc = live_engine.get_engine_service()
+            if engine_svc and not live_engine.batch_running():
+                if st.button("Analyse position",
+                             key=f"var_analyse__{selected_game_id}__{var_step}"):
+                    with st.spinner("Analysing..."):
+                        result = engine_svc.analyse(current_fen)
+                    if result:
+                        st.session_state[live_var_key] = result
+                        data.store_position_analysis(sqlite_conn, current_fen, result)
+                    st.rerun()
+
+        var_id = st.session_state.get(f"var_id__{selected_game_id}")
+        if var_id:
+            _render_annotation_panel(sqlite_conn, var_id, var_step, current_fen)
+
+        if st.button("Discard variation", key=f"var_discard__{selected_game_id}",
+                     type="secondary"):
+            vid = st.session_state.get(f"var_id__{selected_game_id}")
+            if vid:
+                data.delete_variation(sqlite_conn, vid)
+            for k in [f"var_mode__{selected_game_id}", f"var_branch_ply__{selected_game_id}",
+                      f"var_branch_fen__{selected_game_id}", f"var_moves__{selected_game_id}",
+                      f"var_step__{selected_game_id}", f"var_id__{selected_game_id}",
+                      f"var_last_fen__{selected_game_id}"]:
+                st.session_state.pop(k, None)
+            st.rerun()
+
+    else:
+        live_detail_key = f"live_detail__{selected_game_id}__{ply}"
+        live_result     = st.session_state.get(live_detail_key)
+
+        engine_arrows = []
+        if live_result and live_result.best_move_san:
+            try:
+                board_after_obj = chess.Board(game_fen_after)
+                em = board_after_obj.parse_san(live_result.best_move_san)
+                engine_arrows = [{"from": chess.square_name(em.from_square),
+                                  "to":   chess.square_name(em.to_square),
+                                  "color": f"{theme.POSITIVE}90"}]
+            except Exception:
+                pass
+
+        # A stable key (no `ply`) keeps the component's iframe mounted
+        # across navigation instead of forcing a full remount every ply
+        # -- that remount was the actual mechanism behind a visible
+        # board flash on every Prev/Next/keyboard-nav click. Staleness
+        # (a Streamlit custom component keeps re-returning its last
+        # value on every subsequent rerun until it sends a new one) is
+        # now handled by comparing "nonce" against the last one this
+        # game processed, rather than by forcing a fresh instance.
+        _directive_fen_key = f"board_chat_directive_fen__{selected_game_id}"
+        chat_arrows, chat_highlights = [], []
+        if st.session_state.get(_directive_fen_key) == game_fen_after:
+            chat_arrows     = st.session_state.get(f"board_chat_arrows__{selected_game_id}", [])
+            chat_highlights = st.session_state.get(f"board_chat_highlights__{selected_game_id}", [])
+
+        game_board_key = f"game_board__{selected_game_id}"
+        board_result = chessboard_component.render(
+            fen=game_fen_after,
+            orientation=orientation,
+            arrows=engine_arrows + chat_arrows,
+            highlighted_squares=chat_highlights,
+            interactive=True,
+            lastmove_from=chess.square_name(move.from_square),
+            lastmove_to=chess.square_name(move.to_square),
+            enable_keyboard_nav=True,
+            key=game_board_key,
+        )
+        game_board_nonce_key = f"{game_board_key}__nonce"
+        result_nonce = board_result.get("nonce") if board_result else None
+        is_new_board_event = (
+            board_result is not None
+            and result_nonce != st.session_state.get(game_board_nonce_key)
+        )
+        if is_new_board_event:
+            st.session_state[game_board_nonce_key] = result_nonce
+        if is_new_board_event and board_result.get("type") == "nav":
+            # Can't set st.session_state[ply_key] directly here -- the
+            # st.slider bound to that same key already ran earlier in
+            # this script (same constraint the "jump to a critical
+            # moment" flow above already works around via
+            # _load_ply_key). Route through the same pending-key
+            # indirection instead of duplicating a second mechanism.
+            if board_result["direction"] == "prev":
+                st.session_state[_load_ply_key] = max(1, ply - 1)
+            else:
+                st.session_state[_load_ply_key] = min(num_plies, ply + 1)
+            st.rerun()
+        elif is_new_board_event and board_result.get("fen") != game_fen_after:
+            uci = board_result["uci"]
+            # Validate before entering variation mode -- a stale component
+            # result could carry a UCI legal on a previous ply but illegal here.
+            try:
+                _chk = chess.Board(game_fen_after)
+                _chk.push_uci(uci)
+            except Exception:
+                uci = None
+            if uci:
+                st.session_state[f"var_mode__{selected_game_id}"]       = True
+                st.session_state[f"var_branch_ply__{selected_game_id}"] = ply
+                st.session_state[f"var_branch_fen__{selected_game_id}"] = game_fen_after
+                st.session_state[f"var_moves__{selected_game_id}"]      = [uci]
+                st.session_state[f"var_step__{selected_game_id}"]       = 1
+                st.session_state[f"var_last_fen__{selected_game_id}"]   = board_result["fen"]
+                var_id = data.save_variation(sqlite_conn, selected_game_id, ply,
+                                             game_fen_after, [uci])
+                st.session_state[f"var_id__{selected_game_id}"] = var_id
+                st.rerun()
+
+        move_no = (ply + 1) // 2
+        who   = "White" if ply % 2 == 1 else "Black"
+        mover = "You" if row.is_player_move else header.opponent_name
+        detail = (f" — {row.classification}: cost {int(row.cpl)} centipawns "
+                  f"vs. the engine's best (100 = one pawn)"
+                  if pd.notna(row.cpl) and row.cpl > 0
+                  else (f" — {row.classification}" if pd.notna(row.cpl) else ""))
+        st.caption(f"Move {move_no} ({who}, {mover}): {row.san}{detail}")
+
+        if live_result:
+            eval_label = chess_display.eval_str(live_result.eval_cp, live_result.eval_mate)
+            pv         = chess_display.pv_str(game_fen_after, live_result.pv_json)
+            depth_str  = f" (depth {live_result.depth})" if live_result.depth else ""
+            st.caption("Engine: " + eval_label + (f" — {pv}" if pv else "") + depth_str)
+            _render_move_explanation(selected_game_id, ply, game_fen_after, live_result)
+        elif game_fen_after:
+            engine_svc = live_engine.get_engine_service()
+            if engine_svc is not None:
+                if live_engine.batch_running():
+                    st.caption("Batch analysis running — live engine paused.")
+                elif st.button("Analyse position",
+                               key=f"analyse_btn__{selected_game_id}__{ply}"):
+                    with st.spinner("Analysing..."):
+                        result = engine_svc.analyse(game_fen_after)
+                    if result:
+                        st.session_state[live_detail_key] = result
+                        data.store_position_analysis(sqlite_conn, game_fen_after, result)
+                    st.rerun()
+
+    active_fen = current_fen if in_variation else game_fen_after
+    if not pro_gate.is_pro_active():
+        st.info(
+            "**Board Chat** is a Chesswright Pro feature — ask Claude about "
+            "this exact position, with arrows and highlights drawn on the "
+            "board as it answers. Upgrade at "
+            "[chesswright.gumroad.com](https://chesswright.gumroad.com)."
+        )
+    else:
+        try:
+            from chesswright_pro import board_chat
+        except ImportError:
+            st.error(
+                "Pro is licensed but the chesswright_pro package couldn't be "
+                "imported. Try reinstalling it."
+            )
+        else:
+            board_chat.render(duck_conn, sqlite_conn, selected_game_id, active_fen)
+
+
 def render():
     sqlite_conn, duck_conn = get_connections()
     selected_game_id = st.session_state.get("selected_game_id")
@@ -315,271 +630,8 @@ def render():
                             help="One turn = one player's move. A full chess move "
                                  "is two turns, so turn 59 is White's 30th move.")
 
-        row = moves[moves.ply == ply].iloc[0]
-        board_before = chess.Board(row.fen_before)
-        move = board_before.parse_san(row.san)
-        game_fen_after = narrative.position_after_ply(moves, ply)
-        orientation = "black" if header.player_color == "black" else "white"
-        in_variation = st.session_state.get(f"var_mode__{selected_game_id}", False)
-
-        if in_variation:
-            branch_fen  = st.session_state[f"var_branch_fen__{selected_game_id}"]
-            var_moves   = st.session_state.get(f"var_moves__{selected_game_id}", [])
-            var_step    = st.session_state.get(f"var_step__{selected_game_id}", 0)
-            current_fen = data.compute_variation_fen(branch_fen, var_moves, var_step)
-
-            branch_ply_val = st.session_state.get(f"var_branch_ply__{selected_game_id}", ply)
-            hdr_col, exit_col = st.columns([5, 1])
-            hdr_col.markdown(f"**Variation from move {(branch_ply_val + 1) // 2}** — "
-                             f"{var_step} of {len(var_moves)} moves")
-            if exit_col.button("Exit", key=f"var_exit__{selected_game_id}"):
-                for k in [f"var_mode__{selected_game_id}", f"var_branch_ply__{selected_game_id}",
-                          f"var_branch_fen__{selected_game_id}", f"var_moves__{selected_game_id}",
-                          f"var_step__{selected_game_id}", f"var_last_fen__{selected_game_id}"]:
-                    st.session_state.pop(k, None)
-                st.rerun()
-
-            # Look up engine result BEFORE rendering board so arrows can be passed in.
-            live_var_key = f"live_result__{current_fen}"
-            live_var     = st.session_state.get(live_var_key)
-            var_engine_arrows = []
-            if live_var and live_var.best_move_san:
-                try:
-                    _var_board = chess.Board(current_fen)
-                    _em = _var_board.parse_san(live_var.best_move_san)
-                    var_engine_arrows = [{"from": chess.square_name(_em.from_square),
-                                          "to":   chess.square_name(_em.to_square),
-                                          "color": f"{theme.POSITIVE}90"}]
-                except Exception:
-                    pass
-
-            # Stable key (no `var_step`) -- see the non-variation board's
-            # comment above for why: avoids the remount-per-step flash,
-            # staleness now handled via "nonce" instead.
-            var_board_key = f"var_board__{selected_game_id}"
-            board_result = chessboard_component.render(
-                fen=current_fen, orientation=orientation, interactive=True,
-                arrows=var_engine_arrows,
-                enable_keyboard_nav=True,
-                key=var_board_key,
-            )
-            var_board_nonce_key = f"{var_board_key}__nonce"
-            var_result_nonce = board_result.get("nonce") if board_result else None
-            is_new_var_event = (
-                board_result is not None
-                and var_result_nonce != st.session_state.get(var_board_nonce_key)
-            )
-            if is_new_var_event:
-                st.session_state[var_board_nonce_key] = var_result_nonce
-            if is_new_var_event and board_result.get("type") == "nav":
-                if board_result["direction"] == "prev" and var_step > 0:
-                    st.session_state[f"var_step__{selected_game_id}"] = var_step - 1
-                    st.rerun()
-                elif board_result["direction"] == "next" and var_step < len(var_moves):
-                    st.session_state[f"var_step__{selected_game_id}"] = var_step + 1
-                    st.rerun()
-            elif is_new_var_event and board_result.get("fen") != current_fen:
-                last_processed = st.session_state.get(f"var_last_fen__{selected_game_id}")
-                if board_result["fen"] != last_processed:
-                    uci = board_result["uci"]
-                    # Validate UCI against the actual current position before storing.
-                    # A stale component result (from Bug 1) could carry a UCI that is
-                    # illegal on current_fen and would crash compute_variation_fen.
-                    try:
-                        _chk = chess.Board(current_fen)
-                        _chk.push_uci(uci)
-                    except Exception:
-                        uci = None  # silently discard stale / invalid move
-                    if uci:
-                        new_moves = var_moves[:var_step] + [uci]
-                        new_step  = var_step + 1
-                        st.session_state[f"var_moves__{selected_game_id}"]    = new_moves
-                        st.session_state[f"var_step__{selected_game_id}"]     = new_step
-                        st.session_state[f"var_last_fen__{selected_game_id}"] = board_result["fen"]
-                        var_id = st.session_state.get(f"var_id__{selected_game_id}")
-                        if var_id is None:
-                            var_id = data.save_variation(
-                                sqlite_conn, selected_game_id, branch_ply_val, branch_fen, new_moves)
-                            st.session_state[f"var_id__{selected_game_id}"] = var_id
-                        else:
-                            data.update_variation_moves(sqlite_conn, var_id, new_moves)
-                        st.rerun()
-
-            # Eval bar — shown only when a result is already available so
-            # the bar doesn't appear empty before the user clicks Analyse.
-            if live_var:
-                st.markdown(
-                    chess_display.eval_bar_html(live_var.eval_cp, live_var.eval_mate, current_fen),
-                    unsafe_allow_html=True,
-                )
-
-            # SAN sequence display + prev/next navigation
-            pv_col, nav_col = st.columns([6, 2])
-            with pv_col:
-                try:
-                    vboard = chess.Board(branch_fen)
-                    san_parts = []
-                    for i, uci in enumerate(var_moves[:var_step]):
-                        m = chess.Move.from_uci(uci)
-                        san = vboard.san(m)
-                        if vboard.turn == chess.WHITE:
-                            san_parts.append(f"{vboard.fullmove_number}. {san}")
-                        elif i == 0:
-                            san_parts.append(f"{vboard.fullmove_number}… {san}")
-                        else:
-                            san_parts.append(san)
-                        vboard.push(m)
-                    st.caption("Line: " + " ".join(san_parts) if san_parts else "Branch point")
-                except Exception:
-                    pass
-            with nav_col:
-                nc1, nc2 = st.columns(2)
-                if nc1.button("< Prev", key=f"var_prev__{selected_game_id}",
-                              disabled=(var_step == 0)):
-                    st.session_state[f"var_step__{selected_game_id}"] = var_step - 1
-                    st.rerun()
-                if nc2.button("Next >", key=f"var_next__{selected_game_id}",
-                              disabled=(var_step >= len(var_moves))):
-                    st.session_state[f"var_step__{selected_game_id}"] = var_step + 1
-                    st.rerun()
-
-            # Engine eval display / analyse button
-            if live_var:
-                eval_label = chess_display.eval_str(live_var.eval_cp, live_var.eval_mate)
-                pv         = chess_display.pv_str(current_fen, live_var.pv_json)
-                depth_str  = f" (depth {live_var.depth})" if live_var.depth else ""
-                st.caption("Engine: " + eval_label + (f" — {pv}" if pv else "") + depth_str)
-            else:
-                engine_svc = live_engine.get_engine_service()
-                if engine_svc and not live_engine.batch_running():
-                    if st.button("Analyse position",
-                                 key=f"var_analyse__{selected_game_id}__{var_step}"):
-                        with st.spinner("Analysing..."):
-                            result = engine_svc.analyse(current_fen)
-                        if result:
-                            st.session_state[live_var_key] = result
-                            data.store_position_analysis(sqlite_conn, current_fen, result)
-                        st.rerun()
-
-            var_id = st.session_state.get(f"var_id__{selected_game_id}")
-            if var_id:
-                _render_annotation_panel(sqlite_conn, var_id, var_step, current_fen)
-
-            if st.button("Discard variation", key=f"var_discard__{selected_game_id}",
-                         type="secondary"):
-                vid = st.session_state.get(f"var_id__{selected_game_id}")
-                if vid:
-                    data.delete_variation(sqlite_conn, vid)
-                for k in [f"var_mode__{selected_game_id}", f"var_branch_ply__{selected_game_id}",
-                          f"var_branch_fen__{selected_game_id}", f"var_moves__{selected_game_id}",
-                          f"var_step__{selected_game_id}", f"var_id__{selected_game_id}",
-                          f"var_last_fen__{selected_game_id}"]:
-                    st.session_state.pop(k, None)
-                st.rerun()
-
-        else:
-            live_detail_key = f"live_detail__{selected_game_id}__{ply}"
-            live_result     = st.session_state.get(live_detail_key)
-
-            engine_arrows = []
-            if live_result and live_result.best_move_san:
-                try:
-                    board_after_obj = chess.Board(game_fen_after)
-                    em = board_after_obj.parse_san(live_result.best_move_san)
-                    engine_arrows = [{"from": chess.square_name(em.from_square),
-                                      "to":   chess.square_name(em.to_square),
-                                      "color": f"{theme.POSITIVE}90"}]
-                except Exception:
-                    pass
-
-            # A stable key (no `ply`) keeps the component's iframe mounted
-            # across navigation instead of forcing a full remount every ply
-            # -- that remount was the actual mechanism behind a visible
-            # board flash on every Prev/Next/keyboard-nav click. Staleness
-            # (a Streamlit custom component keeps re-returning its last
-            # value on every subsequent rerun until it sends a new one) is
-            # now handled by comparing "nonce" against the last one this
-            # game processed, rather than by forcing a fresh instance.
-            game_board_key = f"game_board__{selected_game_id}"
-            board_result = chessboard_component.render(
-                fen=game_fen_after,
-                orientation=orientation,
-                arrows=engine_arrows,
-                interactive=True,
-                lastmove_from=chess.square_name(move.from_square),
-                lastmove_to=chess.square_name(move.to_square),
-                enable_keyboard_nav=True,
-                key=game_board_key,
-            )
-            game_board_nonce_key = f"{game_board_key}__nonce"
-            result_nonce = board_result.get("nonce") if board_result else None
-            is_new_board_event = (
-                board_result is not None
-                and result_nonce != st.session_state.get(game_board_nonce_key)
-            )
-            if is_new_board_event:
-                st.session_state[game_board_nonce_key] = result_nonce
-            if is_new_board_event and board_result.get("type") == "nav":
-                # Can't set st.session_state[ply_key] directly here -- the
-                # st.slider bound to that same key already ran earlier in
-                # this script (same constraint the "jump to a critical
-                # moment" flow above already works around via
-                # _load_ply_key). Route through the same pending-key
-                # indirection instead of duplicating a second mechanism.
-                if board_result["direction"] == "prev":
-                    st.session_state[_load_ply_key] = max(1, ply - 1)
-                else:
-                    st.session_state[_load_ply_key] = min(num_plies, ply + 1)
-                st.rerun()
-            elif is_new_board_event and board_result.get("fen") != game_fen_after:
-                uci = board_result["uci"]
-                # Validate before entering variation mode -- a stale component
-                # result could carry a UCI legal on a previous ply but illegal here.
-                try:
-                    _chk = chess.Board(game_fen_after)
-                    _chk.push_uci(uci)
-                except Exception:
-                    uci = None
-                if uci:
-                    st.session_state[f"var_mode__{selected_game_id}"]       = True
-                    st.session_state[f"var_branch_ply__{selected_game_id}"] = ply
-                    st.session_state[f"var_branch_fen__{selected_game_id}"] = game_fen_after
-                    st.session_state[f"var_moves__{selected_game_id}"]      = [uci]
-                    st.session_state[f"var_step__{selected_game_id}"]       = 1
-                    st.session_state[f"var_last_fen__{selected_game_id}"]   = board_result["fen"]
-                    var_id = data.save_variation(sqlite_conn, selected_game_id, ply,
-                                                 game_fen_after, [uci])
-                    st.session_state[f"var_id__{selected_game_id}"] = var_id
-                    st.rerun()
-
-            move_no = (ply + 1) // 2
-            who   = "White" if ply % 2 == 1 else "Black"
-            mover = "You" if row.is_player_move else header.opponent_name
-            detail = (f" — {row.classification}: cost {int(row.cpl)} centipawns "
-                      f"vs. the engine's best (100 = one pawn)"
-                      if pd.notna(row.cpl) and row.cpl > 0
-                      else (f" — {row.classification}" if pd.notna(row.cpl) else ""))
-            st.caption(f"Move {move_no} ({who}, {mover}): {row.san}{detail}")
-
-            if live_result:
-                eval_label = chess_display.eval_str(live_result.eval_cp, live_result.eval_mate)
-                pv         = chess_display.pv_str(game_fen_after, live_result.pv_json)
-                depth_str  = f" (depth {live_result.depth})" if live_result.depth else ""
-                st.caption("Engine: " + eval_label + (f" — {pv}" if pv else "") + depth_str)
-                _render_move_explanation(selected_game_id, ply, game_fen_after, live_result)
-            elif game_fen_after:
-                engine_svc = live_engine.get_engine_service()
-                if engine_svc is not None:
-                    if live_engine.batch_running():
-                        st.caption("Batch analysis running — live engine paused.")
-                    elif st.button("Analyse position",
-                                   key=f"analyse_btn__{selected_game_id}__{ply}"):
-                        with st.spinner("Analysing..."):
-                            result = engine_svc.analyse(game_fen_after)
-                        if result:
-                            st.session_state[live_detail_key] = result
-                            data.store_position_analysis(sqlite_conn, game_fen_after, result)
-                        st.rerun()
+        _render_board_and_chat(sqlite_conn, duck_conn, selected_game_id, header,
+                                moves, ply, num_plies, _load_ply_key)
 
     _render_saved_variations(sqlite_conn, selected_game_id)
 

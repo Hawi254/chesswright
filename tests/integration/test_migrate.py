@@ -35,6 +35,7 @@ class TestMigrationApplies:
             "games", "moves", "analysis_runs", "claude_narratives",
             "position_cache", "variations", "variation_annotations",
             "structure_ctx_cache", "session_ctx_cache", "ctx_cache_meta",
+            "ai_coach_profile", "ai_coach_conversations", "ai_coach_turns",
         }
         tables = {r[0] for r in migrated_db.execute(
             "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}

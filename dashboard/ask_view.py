@@ -14,6 +14,7 @@ import streamlit as st
 
 import claude_narrative
 import data
+import pro_gate
 import theme
 from _common import get_connections
 from cached_queries import (
@@ -48,7 +49,7 @@ def _build_data_brief(_duck_conn, _sqlite_conn):
     # most expensive queries in the app (~0.4s / ~4.3s) and Overview/Insights
     # have usually already computed them (see cached_queries.py).
     stats = cached_headline_stats(_duck_conn, _sqlite_conn)
-    findings = cached_career_findings(_duck_conn, stats.get("blunder_rate"))
+    findings = cached_career_findings(_duck_conn, _sqlite_conn, stats.get("blunder_rate"))
 
     sections = []
 
@@ -243,7 +244,28 @@ def render():
         st.info("Add your own Anthropic API key on the Settings page to enable this feature.")
         return
 
+    if pro_gate.is_pro_active():
+        try:
+            from chesswright_pro import ai_coach
+        except ImportError:
+            st.error(
+                "Pro is licensed but the chesswright_pro package couldn't be "
+                "imported. Try reinstalling it."
+            )
+            return
+        ai_coach.render(duck_conn, sqlite_conn)
+        return
+
     history: list[dict] = st.session_state.setdefault("ask_history", [])
+
+    st.info(
+        "**AI Coach** (Chesswright Pro) turns this into a real back-and-forth "
+        "conversation: it remembers what you've discussed, builds a rolling "
+        "profile of your goals and tendencies that persists and updates across "
+        "sessions, lets you give thumbs up/down feedback on answers, and pulls "
+        "live data across all these same metrics automatically instead of one "
+        "fixed pre-assembled brief. Upgrade to Pro to unlock it."
+    )
 
     st.caption("Try a preset question:")
     row_size = 4

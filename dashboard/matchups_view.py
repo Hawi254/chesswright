@@ -18,8 +18,8 @@ import charts
 import claude_narrative
 import data
 import theme
-from _common import get_connections, navigate_on_row_click
-from cached_queries import cached_headline_stats
+from _common import get_connections, navigate_on_row_click, persist_filter, restore_filter_default
+from cached_queries import cached_headline_stats, cached_opponent_profile, cached_points_ledger
 
 _GK_REASON_LABELS = {
     "hung_piece":     "Hung a piece",
@@ -62,8 +62,6 @@ def cached_color_performance_by_rating(_duck_conn):
 @st.cache_data(show_spinner="Ranking your opponents…")
 def cached_nemesis_opponents(_duck_conn, min_games):
     return data.get_nemesis_opponents(_duck_conn, min_games=min_games)
-
-
 
 
 def _clickable_game_ids(game_ids, key, detail_page, self_page):
@@ -114,21 +112,24 @@ def render(self_page, detail_page, prep_page=None):
                      if gk['n_underdog_games'] else None)
         collapse_pct = (100.0 * gk['n_collapses'] / gk['n_favorite_games']
                          if gk['n_favorite_games'] else None)
-        col1, col2 = st.columns(2)
         # Plain sentences, not st.metric deltas -- the delta arrow reads as
         # "up vs. some earlier period", which these shares are not.
-        col1.metric("Giant-killing wins (300+ underdog)",
-                    f"{gk['n_upsets']} / {gk['n_underdog_games']}",
-                    help="Games won when the opponent was rated 300+ points above you, "
-                         "out of all games against such opponents.")
-        if upset_pct is not None:
-            col1.caption(f"You win {upset_pct:.1f}% of games as a heavy underdog.")
-        col2.metric("Collapse losses (300+ favorite)",
-                    f"{gk['n_collapses']} / {gk['n_favorite_games']}",
-                    help="Games lost when the opponent was rated 300+ points below you, "
-                         "out of all games against such opponents.")
-        if collapse_pct is not None:
-            col2.caption(f"You lose {collapse_pct:.1f}% of games as a heavy favorite.")
+        theme.render_comparison_panel([
+            {"render": lambda: st.metric(
+                "Giant-killing wins (300+ underdog)",
+                f"{gk['n_upsets']} / {gk['n_underdog_games']}",
+                help="Games won when the opponent was rated 300+ points above you, "
+                     "out of all games against such opponents."),
+             "caption": (f"You win {upset_pct:.1f}% of games as a heavy underdog."
+                        if upset_pct is not None else None)},
+            {"render": lambda: st.metric(
+                "Collapse losses (300+ favorite)",
+                f"{gk['n_collapses']} / {gk['n_favorite_games']}",
+                help="Games lost when the opponent was rated 300+ points below you, "
+                     "out of all games against such opponents."),
+             "caption": (f"You lose {collapse_pct:.1f}% of games as a heavy favorite."
+                        if collapse_pct is not None else None)},
+        ])
 
     with st.container(border=True):
         st.subheader("Why collapses happen")
@@ -166,8 +167,7 @@ def render(self_page, detail_page, prep_page=None):
                                       x_title="Cause", y_title="% of explained collapses"),
                     theme=None)
 
-                col1, col2 = st.columns(2)
-                with col1:
+                def _render_piece_hung():
                     st.write("**Which piece hung**")
                     if piece_df.empty:
                         st.info(theme.thin_data_message(0, 1))
@@ -183,7 +183,8 @@ def render(self_page, detail_page, prep_page=None):
                                               x_title="Piece hung",
                                               y_title="% of hung-piece collapses"),
                             theme=None)
-                with col2:
+
+                def _render_moves_to_mate():
                     st.write("**How many moves to mate**")
                     if mate_df.empty:
                         st.info(theme.thin_data_message(0, 1))
@@ -193,6 +194,9 @@ def render(self_page, detail_page, prep_page=None):
                                               x_title="Forced mate distance",
                                               y_title="% of faced-mate collapses"),
                             theme=None)
+
+                theme.render_comparison_panel(
+                    [{"render": _render_piece_hung}, {"render": _render_moves_to_mate}])
 
     with st.container(border=True):
         st.subheader("Giant-killing rate over time")
@@ -218,9 +222,10 @@ def render(self_page, detail_page, prep_page=None):
                    "at some point. Collapse: the reverse. Open a list and tick a row's "
                    "checkbox to see that game's full story.")
         cc = cached_comeback_collapse_counts(duck_conn)
-        col1, col2 = st.columns(2)
-        col1.metric("Comebacks", cc["n_comebacks"])
-        col2.metric("Collapses", cc["n_collapses"])
+        theme.render_comparison_panel([
+            {"render": lambda: st.metric("Comebacks", cc["n_comebacks"])},
+            {"render": lambda: st.metric("Collapses", cc["n_collapses"])},
+        ])
         with st.expander(f"Comeback games ({cc['n_comebacks']})"):
             _clickable_game_ids(cc["comeback_game_ids"], "comeback_games", detail_page, self_page)
         with st.expander(f"Collapse games ({cc['n_collapses']})"):
@@ -269,7 +274,10 @@ def _render_nemesis_section(sqlite_conn, duck_conn, prep_page=None):
         caption += (" Tick the checkbox at the left of a row to scout that player "
                     "in Opponent Prep.")
     st.caption(caption)
-    nem_min_games = st.slider("Minimum games against this opponent", 3, 50, 5)
+    restore_filter_default("matchups_nem_min_games", 5)
+    nem_min_games = st.slider("Minimum games against this opponent", 3, 50, 5,
+                               key="matchups_nem_min_games")
+    persist_filter("matchups_nem_min_games")
     nem_df = cached_nemesis_opponents(duck_conn, nem_min_games)
 
     # One combined W-D-L record column instead of three separate ones --
@@ -326,14 +334,17 @@ def _render_nemesis_section(sqlite_conn, duck_conn, prep_page=None):
                          hide_index=True, column_order=col_order,
                          column_config=col_config)
 
-    col1, col2 = st.columns(2)
-    with col1:
+    def _render_toughest():
         st.write("Toughest opponents (lowest score%)")
         _nem_table(nem_display.sort_values("score_pct").head(10), "nem_toughest")
-    with col2:
+
+    def _render_favorite():
         st.write("Favorite opponents (highest score%)")
         _nem_table(nem_display.sort_values("score_pct", ascending=False).head(10),
                    "nem_favorite")
+
+    theme.render_comparison_panel(
+        [{"render": _render_toughest}, {"render": _render_favorite}])
 
     st.write("Most-played opponents overall")
     _nem_table(nem_display.sort_values("n", ascending=False).head(10), "nem_most_played")
@@ -351,6 +362,50 @@ def _render_nemesis_section(sqlite_conn, duck_conn, prep_page=None):
         chosen_name = st.selectbox("Tell me about this rivalry", opponent_names,
                                     key="opponent_commentary_select")
         chosen_row = nem_df.loc[nem_df.opponent_name == chosen_name].iloc[0]
+
+        st.write(f"Profile against {chosen_name}")
+        profile = cached_opponent_profile(duck_conn, chosen_name)
+        st.caption(f"{profile['n_games']} game(s) total.")
+
+        _PCT_COLS = {"win_pct": st.column_config.NumberColumn("Win %", format="%.1f"),
+                     "blunder_rate": st.column_config.NumberColumn("Blunder %", format="%.1f")}
+
+        def _profile_table(df, caption, width="stretch"):
+            st.caption(caption)
+            if df.empty:
+                st.info(theme.thin_data_message(0, 1))
+                return
+            display_df = df.copy()
+            # acpl can be NaN (opening/bucket with no analyzed moves yet) --
+            # a bare NaN renders as the literal string "None" in st.dataframe
+            # (this codebase's own recurring null-rendering bug, see
+            # openings_view.py's identical fix); "--" reads as "not analyzed
+            # yet," matching the rest of the app's convention.
+            if "acpl" in display_df.columns:
+                display_df["acpl"] = display_df["acpl"].apply(
+                    lambda v: "--" if pd.isna(v) else f"{v:.1f}")
+            column_config = {c: cfg for c, cfg in _PCT_COLS.items() if c in display_df.columns}
+            st.dataframe(display_df, hide_index=True, width=width, column_config=column_config)
+
+        prof_col1, prof_col2 = st.columns(2)
+        with prof_col1:
+            _profile_table(profile["openings"], "By opening")
+        with prof_col2:
+            _profile_table(profile["position"], "By position character")
+
+        prof_col3, prof_col4 = st.columns(2)
+        with prof_col3:
+            _profile_table(profile["castling"], "By castling configuration")
+        with prof_col4:
+            _profile_table(profile["action_side"], "By attack side")
+
+        _profile_table(profile["clock"], "By clock pressure")
+
+        ledger = cached_points_ledger(duck_conn)
+        swindle = data.get_opponent_swindle_rate(ledger, chosen_name)
+        if swindle["n_losses"] > 0:
+            st.caption(f"Missed swindle in {swindle['n_missed_swindle']} of "
+                       f"{swindle['n_losses']} losses ({swindle['swindle_rate_pct']:.0f}%).")
 
         cached = data.get_cached_narrative(sqlite_conn, "opponent", chosen_name)
         if cached:

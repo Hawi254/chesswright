@@ -8,6 +8,7 @@ module happened to need them first.
 import pandas as pd
 
 import analytics
+import chess_utils
 
 # Mirrors analysis/time_pressure.py's BUCKETS.
 TIME_PRESSURE_BUCKETS = [
@@ -31,6 +32,65 @@ GIANT_KILLING_COLLAPSE_THRESHOLD = 300
 # Mirrors analysis/comebacks.py's COMEBACK_THRESHOLD/COLLAPSE_THRESHOLD.
 COMEBACK_WP_THRESHOLD = 0.10
 COLLAPSE_WP_THRESHOLD = 0.90
+# Middlegame trade tiers, keyed on chess_utils.non_pawn_piece_count (both
+# sides combined, max 14 = 2*(1Q+2R+2B+2N)). Unlike the endgame's 4-bucket
+# _classify_endgame_type below (piece TYPE identity, a chess-rule constant
+# that doesn't need tuning), these are numeric cutoffs chosen against the
+# real dev DB's middlegame_sig distribution at ply 24 (30,973 rows,
+# 2026-07-10): 14 alone is 31.9% (no non-pawn piece captured yet -- a real
+# invariant, not an arbitrary cut), 12-13 is 48.7% (well past the single
+# biggest exact-sig bucket, one symmetric pair traded), 9-11 is 18.7%, and
+# <=8 is a thin 0.7% tail. Kept as a fixed constant list (not
+# cfg["analytics"]) following THINKING_TIME_BUCKETS/TIME_PRESSURE_BUCKETS's
+# precedent above (an ordered (label, lo, hi) range list bucketing a
+# continuous/ordinal value), not structure_min_games_per_group/
+# action_side_capture_ratio's precedent (a single scalar gate threshold) --
+# this is a multi-cutoff scheme, not one tunable knob.
+MIDDLEGAME_TRADE_TIERS = [
+    ("No trades", 14, 15),
+    ("Light trades", 12, 14),
+    ("Moderate trades", 9, 12),
+    ("Heavy trades", 0, 9),
+]
+
+
+def _classify_endgame_type(material_sig: str) -> str | None:
+    """Map a player-relative material_sig to a broad endgame category.
+
+    material_sig format (from chess_utils.material_signature): piece letters
+    Q/R/B/N/P each followed by their count, white side first, then 'v', then
+    black side. e.g. "R1P5vP4" -> Rook, "B1N1P4vN2P3" -> Minor piece.
+    Kings are NOT in the signature (they're always present, not listed).
+
+    Originally game_endings.py-only, promoted here once a second (patterns.py)
+    and, it turns out, already a third (analysis_batches.py) module needed
+    the identical classifier -- same promotion _quarterly_zero_fill got
+    below."""
+    if not material_sig:
+        return None
+    if "Q" in material_sig:
+        return "Queen"
+    if "R" in material_sig:
+        return "Rook"
+    if "B" in material_sig or "N" in material_sig:
+        return "Minor piece"
+    return "King & pawn"
+
+
+def _classify_middlegame_trade_tier(material_sig: str) -> str | None:
+    """Map a material_sig to a MIDDLEGAME_TRADE_TIERS label via
+    chess_utils.non_pawn_piece_count. Unlike _classify_endgame_type, piece
+    TYPE is not a useful axis here -- 97.1% of real middlegame_sig rows
+    still contain a queen (confirmed live, 2026-07-10), so a type-based
+    split would dump nearly everything into one bucket. How much material
+    has come off is the real variation at this checkpoint."""
+    if not material_sig:
+        return None
+    count = chess_utils.non_pawn_piece_count(material_sig)
+    for label, lo, hi in MIDDLEGAME_TRADE_TIERS:
+        if lo <= count < hi:
+            return label
+    return None
 
 
 def _quarterly_zero_fill(df, count_cols):
@@ -99,17 +159,13 @@ def save_narrative(sqlite_conn, subject_type, subject_key, response_text, model)
             generated_at = excluded.generated_at
     """, (subject_type, subject_key, response_text, model))
     sqlite_conn.commit()
-    # Explicit checkpoint right after commit -- this dashboard also holds a
-    # long-lived DuckDB connection ATTACHed to the same sqlite file
-    # (_common.get_duckdb_connection), and empirically (confirmed live,
-    # not assumed) a plain commit() on this sqlite3 connection alone left
-    # the row sitting in the WAL, invisible to every OTHER connection to
-    # this file (a fresh `sqlite3 chess.db` query, a separate Python
-    # process) until the whole dashboard process was killed -- i.e. it
-    # would NOT have survived an actual restart, defeating the entire
-    # point of persisting this. Checkpointing from the writer connection
-    # itself, immediately, makes it durable to disk for real.
-    sqlite_conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    # No explicit checkpoint needed here: this dashboard's DuckDB connection
+    # (_common.get_duckdb_connection) only ever ATTACHes a private,
+    # read-only snapshot copy of the sqlite file, never the live file, so
+    # there's no other connection that needs this write checkpointed to
+    # disk for immediate visibility. A plain commit() on this WAL-mode
+    # sqlite3 connection is already durable and immediately visible to any
+    # other real connection to the file.
 
 
 def _fetchone_scalar(duck_conn, sql, default: int | None = 0):

@@ -16,6 +16,9 @@ chart top-N) is pure pandas on top of that frame.
 """
 import pandas as pd
 
+from _common import get_config
+from confidence import confidence_tier, default_thresholds
+
 # Quarterly buckets: with this user base's volume (hundreds to thousands
 # of games/year) quarters are the finest grain where shares aren't noise.
 QUARTERS_WINDOW = 4        # "early"/"late" comparison windows: ~1 year each
@@ -216,15 +219,23 @@ def classify_evolution(filtered: pd.DataFrame) -> pd.DataFrame:
 
 
 def family_win_trend(filtered: pd.DataFrame, family: str,
-                     min_games_per_quarter: int = 5) -> pd.DataFrame:
+                     min_games_per_quarter: int | None = None,
+                     config_path=None) -> pd.DataFrame:
     """Win% per quarter for one family, from the already-loaded counts
     frame (no DB hit). Quarters with fewer than min_games_per_quarter
-    games are dropped rather than plotted as fake-precise points."""
+    games are dropped rather than plotted as fake-precise points.
+    min_games_per_quarter defaults to analytics.min_sample_size when not
+    passed explicitly -- the shared confidence-threshold config, per
+    docs/superpowers/specs/2026-07-11-phase6-settings-design.md."""
+    if min_games_per_quarter is None:
+        min_games_per_quarter = get_config(config_path)["analytics"]["min_sample_size"]
     fam = filtered[filtered["family"] == family]
     if fam.empty:
         return pd.DataFrame(columns=["label", "n_games", "win_pct", "period"])
     out = fam.groupby("period", as_index=False)[["n_games", "n_wins"]].sum()
-    out = out[out["n_games"] >= min_games_per_quarter]
+    quarter_thresholds = default_thresholds(min_games_per_quarter)
+    out = out[out["n_games"].map(
+        lambda n: confidence_tier(n, quarter_thresholds) != "insufficient")]
     out["win_pct"] = 100.0 * out["n_wins"] / out["n_games"]
     out["label"] = out["period"].map(_period_label)
     return out.sort_values("period").reset_index(drop=True)

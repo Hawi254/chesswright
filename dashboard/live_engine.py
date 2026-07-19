@@ -43,8 +43,9 @@ class EngineService:
     """Wraps a persistent Stockfish subprocess for on-demand analysis.
 
     Thread-safe via a single threading.Lock.  Restarts on failure up to
-    _MAX_RESTARTS times.  Registers an atexit handler so the subprocess
-    doesn't linger when Streamlit exits.
+    _MAX_RESTARTS times.  Registers an atexit handler that attempts to
+    quit the subprocess when Streamlit exits -- known unreliable (see
+    _shutdown below), not a guarantee.
     """
 
     _MAX_RESTARTS = 3
@@ -132,6 +133,11 @@ class EngineService:
         )
 
     def _shutdown(self) -> None:
+        """Known-unreliable: atexit fires on the main thread, but the
+        engine's subprocess I/O runs on a background asyncio thread that
+        atexit alone doesn't reliably stop -- can hang pytest/the app at
+        exit. Deliberately deferred, not fixed here; documented so a
+        future session doesn't have to rediscover it from scratch."""
         if self._engine:
             try:
                 self._engine.quit()
@@ -140,9 +146,19 @@ class EngineService:
         self._engine = None
 
 
+# Set True only by get_engine_service() itself, never unset -- if
+# get_engine_service's st.cache_resource were ever .clear()-ed after an
+# engine had started, this flag would stay True and a later status check
+# would re-spawn the engine. Nothing clears that cache today, so this is
+# latent, not live.
+_service_started = False
+
+
 @st.cache_resource(show_spinner="Starting the analysis engine…")
 def get_engine_service() -> EngineService | None:
     """Return the singleton EngineService, or None if Stockfish is not found."""
+    global _service_started
+    _service_started = True
     cfg = config.load_config()
     ie_cfg = cfg.get("interactive_engine", {})
     path = worker.find_engine_path(cfg.get("engine", {}).get("path"))
@@ -152,6 +168,22 @@ def get_engine_service() -> EngineService | None:
         return EngineService(path, ie_cfg)
     except Exception:
         return None
+
+
+def get_engine_status_summary() -> dict:
+    """Cheap, read-only status for display (Overview's status strip). Only
+    reports on an engine ALREADY started elsewhere (e.g. Game Detail's
+    interactive analysis panel) -- never calls get_engine_service() as the
+    first caller, since that's what actually constructs a real Stockfish
+    subprocess on its first-ever invocation. Viewing Overview must never be
+    what eagerly starts the engine for a user who never opened an
+    interactive-analysis feature."""
+    if not _service_started:
+        return {"connected": False, "version": None}
+    service = get_engine_service()
+    if service is None:
+        return {"connected": False, "version": None}
+    return {"connected": not service._dead, "version": service._engine_version or None}
 
 
 def batch_running() -> bool:

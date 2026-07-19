@@ -15,38 +15,71 @@ natural practice target get a one-click "Export drill positions" or
 "Scout this opponent" button that navigates to the relevant page with
 the appropriate preset pre-selected. Pages are optional so callers that
 don't wire them (e.g. tests) continue to work unchanged.
+
+Chip/action rendering (_common.finding_chips_html / .render_finding_actions)
+moved to _common.py in the Training Queue MVP (2026-07-10) once that page
+needed the exact same rendering for the same finding dicts -- see
+_common.py's own comment for why that module, not a new one.
 """
 import streamlit as st
 
 import claude_narrative
 import data
 import theme
-from _common import get_connections
+from _common import finding_chips_html, get_connections, render_finding_actions, SEVERITY_ORDER
 from cached_queries import cached_career_findings, cached_headline_stats
 
-# Findings whose title maps to a Drill Export preset.
-# Keys match finding["title"] exactly; values are passed as _drill_preset
-# into session_state so drill_export_view can pre-select sources + motif filter.
-_DRILL_PRESETS = {
-    "Piece blunder hot-spot": {
-        "include_motifs": True,
-        "include_moments": False,
-        "include_holes": False,
-        "motif_filter": None,
-    },
-    "Tactical highlights so far": {
-        "include_motifs": True,
-        "include_moments": False,
-        "include_holes": False,
-        "motif_filter": None,
-    },
-    "King moves off the back rank": {
-        "include_motifs": True,
-        "include_moments": False,
-        "include_holes": False,
-        "motif_filter": "back_rank_mate",
-    },
-}
+
+def _render_hero_insight(finding, drill_export_page, prep_page) -> None:
+    """Gold-accented callout for the single top-severity finding, mirroring
+    overview_view.py's Focus Card pattern (_render_focus_card)."""
+    theme.render_metric_card(
+        eyebrow=f"🌟 Top insight — {finding['title']}",
+        headline=finding["headline"],
+        detail=finding["detail"],
+    )
+    chips_html = finding_chips_html(finding)
+    if chips_html:
+        st.markdown(chips_html, unsafe_allow_html=True)
+    render_finding_actions(finding, drill_export_page, prep_page)
+
+
+def _render_strengths_weaknesses(findings) -> None:
+    """Splits findings into a 2-column strengths/weaknesses panel by their
+    polarity field. Findings tagged "mixed" (already show both a good and
+    bad data point in one card, e.g. thinking-time's best/worst bucket) or
+    "neutral" (purely informational, e.g. the tactical highlights round-up)
+    don't fit a 2-column strength/weakness split and are deliberately left
+    out of this panel -- they're still visible in the list above."""
+    strengths = [f for f in findings if f.get("polarity") == "strength"]
+    weaknesses = [f for f in findings if f.get("polarity") == "weakness"]
+    if not strengths and not weaknesses:
+        return
+
+    def _render_strength_list():
+        st.subheader("💪 Strengths")
+        if not strengths:
+            st.caption("Nothing tagged as a clear strength yet with the data analyzed so far.")
+            return
+        for f in strengths:
+            st.write(f"**{f['title']}** — {f['headline']}")
+
+    def _render_weakness_list():
+        st.subheader("🎯 Areas to work on")
+        if not weaknesses:
+            st.caption("Nothing tagged as a clear weakness yet with the data analyzed so far.")
+            return
+        for f in weaknesses:
+            st.write(f"**{f['title']}** — {f['headline']}")
+
+    st.subheader("Strengths & Weaknesses")
+    theme.render_comparison_panel(
+        [{"render": _render_strength_list}, {"render": _render_weakness_list}],
+        mode="side_by_side",
+        shared_caption="Findings split by direction where the comparison has one -- mixed "
+                        "or purely informational findings aren't shown here, see the full "
+                        "list above for those.",
+    )
 
 
 def render(drill_export_page=None, prep_page=None):
@@ -71,37 +104,33 @@ def render(drill_export_page=None, prep_page=None):
                 help="Average centipawn loss — measures move accuracy across "
                      "analyzed games. Lower is better.")
 
-    findings = cached_career_findings(duck_conn, stats["blunder_rate"])
+    findings = cached_career_findings(duck_conn, sqlite_conn, stats["blunder_rate"])
 
     if not findings:
         st.info(theme.thin_data_message(stats["analyzed_games"], 1))
         return
 
-    for finding in findings:
+    findings = sorted(findings, key=lambda f: SEVERITY_ORDER.get(f.get("severity", "low"), 1))
+
+    hero, rest = findings[0], findings[1:]
+    _render_hero_insight(hero, drill_export_page, prep_page)
+
+    if rest:
+        st.caption("Other findings")
+
+    for finding in rest:
         with st.container(border=True):
             st.subheader(finding["title"])
             st.write(f"**{finding['headline']}**")
             st.caption(finding["detail"])
 
-            drill_preset = _DRILL_PRESETS.get(finding["title"])
-            if drill_preset and drill_export_page:
-                if st.button("→ Export practice positions",
-                             key=f"drill_{finding['title']}",
-                             help="Open Drill Export with this weakness pre-selected."):
-                    st.session_state["_drill_preset"] = drill_preset
-                    st.switch_page(drill_export_page)
+            chips_html = finding_chips_html(finding)
+            if chips_html:
+                st.markdown(chips_html, unsafe_allow_html=True)
 
-            if (finding["title"] == "Toughest opponent"
-                    and prep_page
-                    and finding.get("opponent_name")
-                    # Opponent Prep's fetch is lichess-only -- don't offer to
-                    # scout a chess.com username (see get_nemesis_opponents).
-                    and finding.get("opponent_on_lichess", True)):
-                if st.button("→ Scout this opponent",
-                             key="scout_nemesis",
-                             help="Open Opponent Prep with this player's username pre-filled."):
-                    st.session_state["_prep_username"] = finding["opponent_name"]
-                    st.switch_page(prep_page)
+            render_finding_actions(finding, drill_export_page, prep_page)
+
+    _render_strengths_weaknesses(findings)
 
     with st.container(border=True):
         st.subheader("Synthesis")
